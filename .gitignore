@@ -4,6 +4,7 @@ dist-ssr/
 coverage/
 .env
 .env.local
+.env*.local
 .DS_Store
 *.log
 target/

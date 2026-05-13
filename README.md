@@ -4,6 +4,8 @@ H Memo is a local-first sticky memo app. The first target is a Windows desktop a
 
 ## Development
 
+Until `apps/desktop` exists, desktop-related commands are expected to run after it is created.
+
 ```bash
 npm install
 npm run dev
@@ -18,6 +20,8 @@ npm run build
 ```
 
 ## Desktop
+
+These checks are intended to pass on an empty workspace; desktop commands should be used after `apps/desktop` is created.
 
 ```bash
 npm run tauri:dev
