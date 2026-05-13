@@ -36,6 +36,34 @@ describe("desktop App", () => {
     });
   });
 
+  it("exports hidden memos too, including via settings panel", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    fireEvent.change(screen.getByLabelText("메모 제목"), {
+      target: { value: "숨김메모" },
+    });
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "숨김 텍스트" },
+    });
+    await user.click(screen.getByRole("button", { name: "메모 숨기기" }));
+
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("숨김메모")).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "TXT 미리보기" }));
+    let preview = screen.getByLabelText("TXT 미리보기 결과");
+    expect(preview).toHaveTextContent(/숨김메모/);
+    expect(preview).toHaveTextContent(/숨김 텍스트/);
+
+    await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
+    preview = screen.getByLabelText("TXT 미리보기 결과");
+    expect(preview).toHaveTextContent(/숨김메모/);
+    expect(preview).toHaveTextContent(/숨김 텍스트/);
+  });
+
   it("excludes deleted memo from export", async () => {
     const user = userEvent.setup();
     render(<App />);

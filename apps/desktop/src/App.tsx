@@ -124,7 +124,7 @@ export function App() {
   };
 
   const handleGenerateTextPreview = async () => {
-    const contents = formatMemosAsCombinedText(visibleMemos);
+    const contents = formatMemosAsCombinedText(memos);
     setTxtPreview(contents);
 
     if (!isTauri) {
