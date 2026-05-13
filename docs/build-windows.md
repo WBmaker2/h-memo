@@ -24,6 +24,12 @@ npm ci
 npm run tauri:build -w apps/desktop
 ```
 
+빌드 전에는 먼저 버전 정합성을 확인하세요.
+
+```bash
+npm run check:versions
+```
+
 `apps/desktop/src-tauri/tauri.conf.json`에서 현재 번들 타깃은 아래와 같습니다.
 
 - `nsis`

@@ -33,6 +33,43 @@
   - `apps/desktop/src-tauri/target/release/bundle/msi/*.msi`
   - `apps/desktop/src-tauri/target/release/bundle/nsis/*.exe`
 
-## 4) 참고
+## 4) 버전 동기화 및 릴리스 태그
+
+릴리스할 때는 다음 파일의 버전이 동일해야 합니다.
+
+- `package.json` (repo root)
+- `apps/desktop/package.json`
+- `packages/*/package.json` (`memo-core`, `memo-ui`, `memo-sync`)
+- `apps/desktop/src-tauri/tauri.conf.json`
+- `apps/desktop/src-tauri/Cargo.toml`
+
+버전 정합성 확인:
+
+```bash
+npm run check:versions
+```
+
+버전 변경 절차:
+
+1. 상기 항목의 `version`을 모두 동일한 값으로 갱신합니다. 예: `0.1.0` → `0.2.0`
+2. `npm run check:versions`로 일치 여부 확인
+3. 커밋 후 태그를 생성합니다. 태그는 `v` 접두사와 동일한 버전이어야 합니다.
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+4. 일반 릴리스 진행 방식(수동/태그 push)에 따라 `Windows Tauri Build` 워크플로가 실행됩니다.
+
+`tauri.conf.json`의 앱 메타데이터도 현재 아래 값으로 함께 유지해 주세요. (제품명/title/식별자 일관성)
+
+- `productName`: `H Memo`
+- `app.windows[0].title`: `H Memo`
+- `identifier`: `com.hmemo.desktop`
+
+Windows 코드 서명은 현재 미적용 상태이므로, 추후 배포 하드닝 항목으로 `codesign` 인증서 연동과 서명된 설치 파일 배포를 추가하는 것이 권장됩니다.
+
+## 5) 참고
 
 - 이 워크플로는 `gh` CLI로 release upload를 처리합니다. 별도 써드파티 릴리스 액션은 사용하지 않습니다.

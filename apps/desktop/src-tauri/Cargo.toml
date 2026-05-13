@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "H Memo desktop app"
 license = "MIT"
-repository = "https://github.com/placeholder/h-memo"
+repository = "https://github.com/WBmaker2/h-memo"
 
 [lib]
 name = "h_memo_desktop_lib"
