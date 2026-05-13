@@ -65,6 +65,37 @@ export function updateMemoStyle(
   };
 }
 
+export function updateMemoContent(
+  memo: Memo,
+  richContent: Memo["richContent"],
+  plainText: string,
+  updatedAt: string
+): Memo {
+  return {
+    ...memo,
+    richContent,
+    plainText,
+    updatedAt,
+    syncState: "queued",
+  };
+}
+
+export function updateMemoWindowState(
+  memo: Memo,
+  windowState: Partial<Memo["windowState"]>,
+  updatedAt: string
+): Memo {
+  return {
+    ...memo,
+    windowState: {
+      ...memo.windowState,
+      ...windowState,
+    },
+    updatedAt,
+    syncState: "queued",
+  };
+}
+
 export function softDeleteMemo(memo: Memo, deletedAt: string): Memo {
   return {
     ...memo,

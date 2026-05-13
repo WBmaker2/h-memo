@@ -23,6 +23,23 @@ describe("backupPayload", () => {
       createdAt: "2026-05-13T09:05:00.000Z",
     });
 
-    expect(validateBackupPayload(payload, "user-2").ok).toBe(false);
+    expect(validateBackupPayload(payload, "user-2")).toEqual({
+      ok: false,
+      reason: "다른 사용자의 백업 데이터입니다.",
+    });
+  });
+
+  it("rejects payloads with memo missing id", () => {
+    const payload = {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:05:00.000Z",
+      memos: [{ title: "제목 없음" }],
+    };
+
+    expect(validateBackupPayload(payload, "user-1")).toEqual({
+      ok: false,
+      reason: "잘못된 메모 데이터가 포함되어 있습니다.",
+    });
   });
 });

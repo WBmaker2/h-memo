@@ -9,29 +9,45 @@ export function extractPlainText(content: unknown): string {
     return "";
   }
 
-  const node = content as RichTextNode;
+  const node = content as RichTextNode | RichTextNode[];
 
-  const walk = (target: RichTextNode): string => {
+  const getText = (target: RichTextNode): string => {
     if (target.type === "text") {
       return target.text ?? "";
     }
 
     const children = Array.isArray(target.content) ? target.content : [];
-    const result = children.map((child) => walk(child)).join("");
-
-    if (target.type === "doc" || target.type === "paragraph") {
-      return result;
-    }
-
-    return result;
+    return children.map((child) => getText(child)).join("");
   };
 
-  const lines = Array.isArray(node.content)
-    ? node.content
-        .map((child) => walk(child as RichTextNode))
-        .filter((line) => line.length > 0 || true)
-        .join("\n")
-    : walk(node);
+  const getParagraphLines = (target: RichTextNode): string[] => {
+    if (target.type === "paragraph") {
+      return [getText(target)];
+    }
 
-  return lines;
+    if (!Array.isArray(target.content)) {
+      return [];
+    }
+
+    return target.content.flatMap((child) => getParagraphLines(child));
+  };
+
+  const lines = Array.isArray(node)
+    ? node.flatMap((child) => getParagraphLines(child))
+    : getParagraphLines(node);
+
+  const normalized = lines
+    .map((line) => line)
+    .filter((line) => line.length > 0)
+    .join("\n");
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  if (Array.isArray(node)) {
+    return "";
+  }
+
+  return getText(node);
 }

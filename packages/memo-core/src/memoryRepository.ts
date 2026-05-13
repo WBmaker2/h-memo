@@ -1,7 +1,7 @@
 import type { Memo, MemoRepository } from "./types";
 import { softDeleteMemo as markSoftDelete } from "./memoFactory";
 
-export class MemoryRepository implements MemoRepository {
+export class MemoryMemoRepository implements MemoRepository {
   private readonly records = new Map<string, Memo>();
 
   async listMemos(): Promise<Memo[]> {
@@ -46,3 +46,5 @@ export class MemoryRepository implements MemoRepository {
     return restored;
   }
 }
+
+export class MemoryRepository extends MemoryMemoRepository {}

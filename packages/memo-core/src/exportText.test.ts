@@ -22,15 +22,25 @@ describe("text export", () => {
       title: "보이는 메모",
       plainText: "내용",
     };
-    const deleted = {
+    const hidden = {
       ...createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-2" }),
+      title: "숨은 메모",
+      plainText: "숨김 내용",
+      windowState: {
+        ...createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-2" }).windowState,
+        visible: false,
+      },
+    };
+    const deleted = {
+      ...createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-3" }),
       title: "삭제된 메모",
       deletedAt: "2026-05-13T09:02:00.000Z",
     };
 
-    const text = formatMemosAsCombinedText([visible, deleted]);
+    const text = formatMemosAsCombinedText([visible, hidden, deleted]);
 
     expect(text).toContain("보이는 메모");
+    expect(text).toContain("숨은 메모");
     expect(text).not.toContain("삭제된 메모");
   });
 });

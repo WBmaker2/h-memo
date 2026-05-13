@@ -9,8 +9,7 @@ export function formatMemoAsText(memo: Memo): string {
 }
 
 export function formatMemosAsCombinedText(memos: Memo[]): string {
-  const visibleMemos = memos
-    .filter((memo) => memo.deletedAt === null && memo.windowState.visible);
+  const visibleMemos = memos.filter((memo) => memo.deletedAt === null);
 
   if (visibleMemos.length === 0) {
     return "";

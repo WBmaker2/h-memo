@@ -50,15 +50,15 @@ export type ValidationResult =
 export const DEFAULT_MEMO_STYLE: MemoStyle = {
   backgroundColor: "#fff7b8",
   textColor: "#1f2937",
-  fontFamily: "Pretendard, sans-serif",
+  fontFamily: "Malgun Gothic, Segoe UI, sans-serif",
   fontSize: 16,
 };
 
 export const DEFAULT_MEMO_WINDOW_STATE: MemoWindowState = {
   x: null,
   y: null,
-  width: 260,
-  height: 220,
+  width: 320,
+  height: 280,
   visible: true,
   alwaysOnTop: false,
 };
