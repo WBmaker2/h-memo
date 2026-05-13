@@ -1,7 +1,7 @@
 import type { ChangeEvent } from "react";
 
 type SettingsPanelProps = {
-  userName: string;
+  userName: string | null;
   backupStatus: string;
   startupEnabled: boolean;
   onBackup: () => void;

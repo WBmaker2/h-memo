@@ -8,18 +8,27 @@ import { StickyMemo } from "./StickyMemo";
 describe("StickyMemo", () => {
   it("edits title, body, and style", async () => {
     const user = userEvent.setup();
-    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const memo = createMemo({
+      now: "2026-05-13T09:00:00.000Z",
+      id: "memo-1",
+      title: "",
+    });
     const onChange = vi.fn();
 
     render(<StickyMemo memo={memo} onChange={onChange} onHide={vi.fn()} onDelete={vi.fn()} />);
 
-    await user.clear(screen.getByLabelText("메모 제목"));
-    await user.type(screen.getByLabelText("메모 제목"), "오늘 할 일");
+    await user.type(screen.getByLabelText("메모 제목"), "오늘할일");
     await user.type(screen.getByLabelText("메모 내용"), "자료 정리");
     await user.click(screen.getByRole("button", { name: "노란색 배경" }));
+    await user.click(screen.getByRole("button", { name: "흰색 배경" }));
+    await user.click(screen.getByRole("button", { name: "빨강 글자" }));
 
     expect(onChange).toHaveBeenCalled();
-    expect(screen.getByDisplayValue("오늘 할 일")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("오늘할일")).toBeInTheDocument();
+    expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({
+      plainText: "자료 정리",
+      style: { backgroundColor: "#ffffff", textColor: "#b91c1c" },
+    });
   });
 
   it("requests hide and delete through icon buttons", async () => {
@@ -35,5 +44,22 @@ describe("StickyMemo", () => {
 
     expect(onHide).toHaveBeenCalledWith("memo-1");
     expect(onDelete).toHaveBeenCalledWith("memo-1");
+  });
+
+  it("uses renameMemo on each title change and applies trim fallback", async () => {
+    const user = userEvent.setup();
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const onChange = vi.fn();
+
+    render(<StickyMemo memo={memo} onChange={onChange} onHide={vi.fn()} onDelete={vi.fn()} />);
+
+    await user.clear(screen.getByLabelText("메모 제목"));
+    await user.type(screen.getByLabelText("메모 제목"), "   ");
+
+    const latest = onChange.mock.calls.at(-1)?.[0];
+    expect(latest).toMatchObject({
+      title: "새 메모",
+    });
+    expect(screen.getByDisplayValue("새 메모")).toBeInTheDocument();
   });
 });

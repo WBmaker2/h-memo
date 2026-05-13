@@ -16,41 +16,37 @@ export function StickyMemo({ memo, onChange, onHide, onDelete }: StickyMemoProps
     setEditingMemo(memo);
   }, [memo]);
 
-  const updateMeta = (nextMemo: Memo) => {
-    setEditingMemo(nextMemo);
-    onChange(nextMemo);
-  };
-
   const handleTitleChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     const now = new Date().toISOString();
-    updateMeta({
-      ...editingMemo,
-      title: value,
-      updatedAt: now,
-      syncState: "queued",
+    setEditingMemo((prevMemo) => {
+      const nextMemo = renameMemo(prevMemo, value, now);
+      onChange(nextMemo);
+      return nextMemo;
     });
   };
 
-  const handleTitleBlur = () => {
-    if (editingMemo.title.trim() !== editingMemo.title) {
-      updateMeta(renameMemo(editingMemo, editingMemo.title, new Date().toISOString()));
-    }
-  };
-
   const handleContentChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    const nextMemo = updateMemoContent(
-      editingMemo,
-      editingMemo.richContent,
-      event.target.value,
-      new Date().toISOString()
-    );
-    updateMeta(nextMemo);
+    const now = new Date().toISOString();
+    setEditingMemo((prevMemo) => {
+      const nextMemo = updateMemoContent(
+        prevMemo,
+        prevMemo.richContent,
+        event.target.value,
+        now
+      );
+      onChange(nextMemo);
+      return nextMemo;
+    });
   };
 
   const handleStyleChange = (style: Partial<Memo["style"]>) => {
-    const nextMemo = updateMemoStyle(editingMemo, style, new Date().toISOString());
-    updateMeta(nextMemo);
+    const now = new Date().toISOString();
+    setEditingMemo((prevMemo) => {
+      const nextMemo = updateMemoStyle(prevMemo, style, now);
+      onChange(nextMemo);
+      return nextMemo;
+    });
   };
 
   return (
@@ -67,7 +63,6 @@ export function StickyMemo({ memo, onChange, onHide, onDelete }: StickyMemoProps
         aria-label="메모 제목"
         value={editingMemo.title}
         onChange={handleTitleChange}
-        onBlur={handleTitleBlur}
       />
       <textarea
         aria-label="메모 내용"

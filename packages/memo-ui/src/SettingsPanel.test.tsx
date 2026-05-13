@@ -34,4 +34,28 @@ describe("SettingsPanel", () => {
     expect(onExportText).toHaveBeenCalled();
     expect(onToggleStartup).toHaveBeenCalledWith(true);
   });
+
+  it("renders fallback and calls sign-in for null userName", async () => {
+    const user = userEvent.setup();
+    const onSignIn = vi.fn();
+
+    render(
+      <SettingsPanel
+        userName={null}
+        backupStatus="백업 없음"
+        startupEnabled={true}
+        onBackup={vi.fn()}
+        onRestore={vi.fn()}
+        onExportText={vi.fn()}
+        onToggleStartup={vi.fn()}
+        onSignIn={onSignIn}
+        onSignOut={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("로그인 필요")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "로그인" }));
+    expect(onSignIn).toHaveBeenCalled();
+    expect(screen.getByRole("switch", { name: "시작프로그램 등록" })).toBeChecked();
+  });
 });

@@ -49,8 +49,8 @@ export function MemoToolbar({
         글꼴
         <select aria-label="글꼴" value={style.fontFamily} onChange={handleFontChange}>
           {fontFamilies.map((fontFamily) => (
-            <option key={fontFamily.value} value={fontFamily.value}>
-              {fontFamily.label}
+            <option key={fontFamily} value={fontFamily}>
+              {fontFamily}
             </option>
           ))}
         </select>
