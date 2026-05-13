@@ -2,21 +2,31 @@ import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 
+export type ExportTextFileResult =
+  | { status: "saved"; path: string }
+  | { status: "cancelled" }
+  | { status: "failed"; message: string };
+
 export async function exportTextFile(
   fileName: string,
   contents: string
-): Promise<string> {
-  const result = await save({
-    defaultPath: fileName,
-    filters: [{ extensions: ["txt"], name: "텍스트 파일" }],
-  });
+): Promise<ExportTextFileResult> {
+  try {
+    const result = await save({
+      defaultPath: fileName,
+      filters: [{ extensions: ["txt"], name: "텍스트 파일" }],
+    });
 
-  if (!result) {
-    return "취소됨";
+    if (!result) {
+      return { status: "cancelled" };
+    }
+
+    await writeTextFile(result, contents);
+    return { status: "saved", path: result };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "알 수 없는 오류";
+    return { status: "failed", message };
   }
-
-  await writeTextFile(result, contents);
-  return result;
 }
 
 export async function getStartupEnabled(): Promise<boolean> {

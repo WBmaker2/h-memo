@@ -5,9 +5,8 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default",
     "autostart:default",
-    "dialog:default",
+    "dialog:allow-save",
     "fs:allow-write-text-file"
   ]
 }

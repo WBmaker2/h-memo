@@ -11,6 +11,7 @@ import { SettingsPanel, StickyMemo } from "@h-memo/memo-ui";
 import { TauriMemoRepository } from "./adapters/tauriMemoRepository";
 import {
   exportTextFile,
+  type ExportTextFileResult,
   getStartupEnabled,
   setStartupEnabled as setTauriStartupEnabled,
 } from "./adapters/tauriPlatform";
@@ -53,11 +54,19 @@ export function App() {
 
     let isMounted = true;
     const loadStartup = async () => {
-      const enabled = await getStartupEnabled();
-      if (!isMounted) {
-        return;
+      try {
+        const enabled = await getStartupEnabled();
+        if (!isMounted) {
+          return;
+        }
+        setStartupEnabled(enabled);
+      } catch {
+        if (!isMounted) {
+          return;
+        }
+        setStartupEnabled(false);
+        setBackupStatus("시작프로그램 상태를 확인하지 못했습니다.");
       }
-      setStartupEnabled(enabled);
     };
 
     void loadStartup();
@@ -131,8 +140,15 @@ export function App() {
       return;
     }
 
-    const path = await exportTextFile("h-memo-backup.txt", contents);
-    setBackupStatus(`TXT 저장 완료: ${path}`);
+    const result: ExportTextFileResult = await exportTextFile("h-memo-backup.txt", contents);
+
+    if (result.status === "saved") {
+      setBackupStatus(`TXT 저장 완료: ${result.path}`);
+    } else if (result.status === "cancelled") {
+      setBackupStatus("TXT 저장을 취소했습니다.");
+    } else {
+      setBackupStatus(`TXT 저장 실패: ${result.message}`);
+    }
   };
 
   const handleBackup = () => {
@@ -144,11 +160,23 @@ export function App() {
   };
 
   const handleToggleStartup = async (enabled: boolean) => {
-    setStartupEnabled(enabled);
     if (!isTauri) {
+      setStartupEnabled(enabled);
       return;
     }
-    await setTauriStartupEnabled(enabled);
+
+    const previousEnabled = startupEnabled;
+
+    try {
+      const nextEnabled = await setTauriStartupEnabled(enabled);
+      setStartupEnabled(nextEnabled);
+      if (nextEnabled !== enabled) {
+        setBackupStatus("시작프로그램 설정을 변경하지 못했습니다.");
+      }
+    } catch {
+      setStartupEnabled(previousEnabled);
+      setBackupStatus("시작프로그램 설정을 변경하지 못했습니다.");
+    }
   };
 
   return (

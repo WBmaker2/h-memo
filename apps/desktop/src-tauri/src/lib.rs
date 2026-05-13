@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result as AnyhowResult};
 use chrono::Utc;
-use rusqlite::{params, Connection, Row};
+use rusqlite::{
+  types::Type,
+  params, Connection, Row,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{
@@ -100,9 +103,15 @@ fn parse_memo_row(row: &Row<'_>) -> rusqlite::Result<MemoRecord> {
     id: row.get(0)?,
     title: row.get(1)?,
     plain_text: row.get(2)?,
-    rich_content: serde_json::from_str(&rich_content).unwrap_or(Value::Null),
-    style: serde_json::from_str(&style).unwrap_or(Value::Null),
-    window_state: serde_json::from_str(&window_state).unwrap_or(Value::Null),
+    rich_content: serde_json::from_str(&rich_content).map_err(|error| {
+      rusqlite::Error::FromSqlConversionFailure(3, Type::Text, Box::new(error))
+    })?,
+    style: serde_json::from_str(&style).map_err(|error| {
+      rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
+    })?,
+    window_state: serde_json::from_str(&window_state).map_err(|error| {
+      rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
+    })?,
     created_at: row.get(6)?,
     updated_at: row.get(7)?,
     deleted_at: row.get(8)?,
@@ -235,7 +244,6 @@ pub fn run() {
     .plugin(tauri_plugin_autostart::Builder::new().build())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_fs::init())
-    .plugin(tauri_plugin_opener::init())
     .setup(|app| {
       let app_handle = app.handle();
       build_tray(app_handle)?;
