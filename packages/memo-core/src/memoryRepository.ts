@@ -4,8 +4,16 @@ import { softDeleteMemo as markSoftDelete } from "./memoFactory";
 export class MemoryMemoRepository implements MemoRepository {
   private readonly records = new Map<string, Memo>();
 
+  constructor(initialMemos: Memo[] = []) {
+    initialMemos.forEach((memo) => {
+      this.records.set(memo.id, { ...memo });
+    });
+  }
+
   async listMemos(): Promise<Memo[]> {
-    return Array.from(this.records.values());
+    return Array.from(this.records.values()).sort(
+      (a, b) => b.updatedAt.localeCompare(a.updatedAt)
+    );
   }
 
   async saveMemo(memo: Memo): Promise<Memo> {

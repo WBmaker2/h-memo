@@ -20,7 +20,9 @@ export function createMemo(input: MemoFactoryInput): Memo {
     id: input.id,
     title: input.title ?? "새 메모",
     plainText: input.plainText ?? "",
-    richContent: input.richContent ?? { type: "doc", content: [] },
+    richContent:
+      input.richContent ??
+      ({ type: "doc", content: [{ type: "paragraph" }] } as const),
     style: {
       ...DEFAULT_MEMO_STYLE,
       ...input.style,
@@ -41,9 +43,11 @@ export function renameMemo(
   title: string,
   updatedAt: string
 ): Memo {
+  const nextTitle = title.trim() || "새 메모";
+
   return {
     ...memo,
-    title,
+    title: nextTitle,
     updatedAt,
     syncState: "queued",
   };

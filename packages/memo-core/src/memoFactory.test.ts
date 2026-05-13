@@ -19,6 +19,10 @@ describe("memoFactory", () => {
     expect(memo.style.fontFamily).toBe("Malgun Gothic, Segoe UI, sans-serif");
     expect(memo.windowState.width).toBe(320);
     expect(memo.windowState.height).toBe(280);
+    expect(memo.richContent).toEqual({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
     expect(memo.windowState.visible).toBe(true);
     expect(memo.syncState).toBe("local-only");
   });
@@ -30,6 +34,13 @@ describe("memoFactory", () => {
     expect(updated.title).toBe("회의 메모");
     expect(updated.updatedAt).toBe("2026-05-13T09:01:00.000Z");
     expect(updated.syncState).toBe("queued");
+  });
+
+  it("falls back to default title when renamed with blank text", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const updated = renameMemo(memo, "   ", "2026-05-13T09:01:00.000Z");
+
+    expect(updated.title).toBe("새 메모");
   });
 
   it("updates style without mutating the original memo", () => {

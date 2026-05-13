@@ -1,7 +1,12 @@
 import type { Memo } from "./types";
 
 function formatSingleMemo(memo: Memo): string {
-  return `제목: ${memo.title}\n내용: ${memo.plainText}`;
+  return [
+    `제목: ${memo.title}`,
+    `수정: ${memo.updatedAt}`,
+    "",
+    memo.plainText,
+  ].join("\n");
 }
 
 export function formatMemoAsText(memo: Memo): string {
@@ -15,5 +20,5 @@ export function formatMemosAsCombinedText(memos: Memo[]): string {
     return "";
   }
 
-  return visibleMemos.map(formatSingleMemo).join("\n\n");
+  return visibleMemos.map(formatSingleMemo).join("\n\n---\n\n");
 }

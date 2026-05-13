@@ -7,13 +7,20 @@ describe("text export", () => {
     const memo = {
       ...createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" }),
       title: "수업 준비",
+      updatedAt: "2026-05-13T09:10:00.000Z",
       plainText: "준비물 확인",
     };
 
     const text = formatMemoAsText(memo);
 
-    expect(text).toContain("제목: 수업 준비");
-    expect(text).toContain("준비물 확인");
+    expect(text).toBe(
+      [
+        "제목: 수업 준비",
+        "수정: 2026-05-13T09:10:00.000Z",
+        "",
+        "준비물 확인",
+      ].join("\n")
+    );
   });
 
   it("combines visible memos and skips deleted memos", () => {
@@ -38,9 +45,23 @@ describe("text export", () => {
     };
 
     const text = formatMemosAsCombinedText([visible, hidden, deleted]);
+    const first = [
+      "제목: 보이는 메모",
+      "수정: 2026-05-13T09:00:00.000Z",
+      "",
+      "내용",
+    ].join("\n");
+    const second = [
+      "제목: 숨은 메모",
+      "수정: 2026-05-13T09:00:00.000Z",
+      "",
+      "숨김 내용",
+    ].join("\n");
 
     expect(text).toContain("보이는 메모");
     expect(text).toContain("숨은 메모");
     expect(text).not.toContain("삭제된 메모");
+
+    expect(text).toBe([first, second].join("\n\n---\n\n"));
   });
 });
