@@ -18,14 +18,14 @@
 2. **Run workflow**에서 실행할 브랜치/태그를 선택하고 `release_tag` 입력 (예: `v0.1.0`)
 3. 실행하면 선택한 ref의 워크플로 실행 커밋(`GITHUB_SHA`) 기준으로 릴리스 아티팩트가 업로드됩니다.
 
-수동 실행에서 `release_tag`가 아직 존재하지 않으면, 워크플로는 `gh release create --target "$GITHUB_SHA"`로 해당 태그를 워크플로 실행 커밋에 생성합니다. 이미 존재하는 태그라면 태그 위치를 바꾸지 않고, 같은 태그의 Release에 MSI/NSIS 설치 파일만 업로드합니다.
+수동 실행에서 `release_tag`가 아직 존재하지 않으면, 워크플로는 `gh release create --target "$GITHUB_SHA"`로 해당 태그를 워크플로 실행 커밋에 생성합니다. 이미 존재하는 태그라면 태그 SHA가 현재 워크플로 실행 커밋과 같은지 확인하고, 다르면 Release asset 덮어쓰기를 중단합니다.
 
 ## 3) 동작 정리
 
 - 릴리스 실행 여부:
   - 태그 푸시(`refs/tags/v*`)에서만 릴리스 업로드 수행
   - `workflow_dispatch` 입력 `release_tag`에서도 릴리스 업로드 수행
-  - 일반 `main` push / `pull_request`에서는 업로드 스텝을 건너뜀
+  - 일반 `main` push / `pull_request`에서는 GitHub Release 업로드 job을 건너뜀
 - 권한:
   - 빌드/테스트/아티팩트 업로드 job: `contents: read`
   - GitHub Release 업로드 job: `contents: write`
