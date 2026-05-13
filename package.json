@@ -11,6 +11,7 @@
     "dev": "npm run dev -w apps/desktop",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest --passWithNoTests",
+    "check:firebase-env": "node scripts/check-firebase-env.mjs",
     "typecheck": "node scripts/run-workspace-script.mjs typecheck",
     "build": "node scripts/run-workspace-script.mjs build",
     "tauri:dev": "npm run tauri:dev -w apps/desktop",
