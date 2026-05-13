@@ -1,24 +1,130 @@
-import { softDeleteMemo, type Memo, type MemoRepository } from "@h-memo/memo-core";
+import {
+  DEFAULT_MEMO_STYLE,
+  DEFAULT_MEMO_WINDOW_STATE,
+  softDeleteMemo,
+  type Memo,
+  type MemoRepository,
+  type MemoStyle,
+  type MemoWindowState,
+  type SyncState,
+} from "@h-memo/memo-core";
 
 const STORAGE_KEY = "h-memo:web-memo-repository-v1";
+const DEFAULT_RICH_CONTENT = { type: "doc", content: [{ type: "paragraph" }] } as const;
+const SYNC_STATES = new Set<SyncState>([
+  "local-only",
+  "queued",
+  "backed-up",
+  "conflict",
+]);
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function isMemo(value: unknown): value is Memo {
-  if (!value || typeof value !== "object") {
-    return false;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function readString(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function readPositiveNumber(value: unknown, fallback: number): number {
+  return isFiniteNumber(value) && value > 0 ? value : fallback;
+}
+
+function readNullableNumber(value: unknown, fallback: number | null): number | null {
+  return value === null || isFiniteNumber(value) ? value : fallback;
+}
+
+function normalizeStyle(value: unknown): MemoStyle {
+  if (!isRecord(value)) {
+    return clone(DEFAULT_MEMO_STYLE);
   }
 
-  const memo = value as Memo;
-  return (
-    typeof memo.id === "string" &&
-    typeof memo.title === "string" &&
-    typeof memo.plainText === "string" &&
-    typeof memo.createdAt === "string" &&
-    typeof memo.updatedAt === "string"
-  );
+  return {
+    backgroundColor: readString(
+      value.backgroundColor,
+      DEFAULT_MEMO_STYLE.backgroundColor
+    ),
+    textColor: readString(value.textColor, DEFAULT_MEMO_STYLE.textColor),
+    fontFamily: readString(value.fontFamily, DEFAULT_MEMO_STYLE.fontFamily),
+    fontSize: readPositiveNumber(value.fontSize, DEFAULT_MEMO_STYLE.fontSize),
+  };
+}
+
+function normalizeWindowState(value: unknown): MemoWindowState {
+  if (!isRecord(value)) {
+    return clone(DEFAULT_MEMO_WINDOW_STATE);
+  }
+
+  return {
+    x: readNullableNumber(value.x, DEFAULT_MEMO_WINDOW_STATE.x),
+    y: readNullableNumber(value.y, DEFAULT_MEMO_WINDOW_STATE.y),
+    width: readPositiveNumber(value.width, DEFAULT_MEMO_WINDOW_STATE.width),
+    height: readPositiveNumber(value.height, DEFAULT_MEMO_WINDOW_STATE.height),
+    visible:
+      typeof value.visible === "boolean"
+        ? value.visible
+        : DEFAULT_MEMO_WINDOW_STATE.visible,
+    alwaysOnTop:
+      typeof value.alwaysOnTop === "boolean"
+        ? value.alwaysOnTop
+        : DEFAULT_MEMO_WINDOW_STATE.alwaysOnTop,
+  };
+}
+
+function normalizeSyncState(value: unknown): SyncState {
+  return typeof value === "string" && SYNC_STATES.has(value as SyncState)
+    ? (value as SyncState)
+    : "local-only";
+}
+
+function normalizeDeletedAt(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function normalizeMemo(value: unknown): Memo | null {
+  if (!isRecord(value) || typeof value.id !== "string") {
+    return null;
+  }
+
+  if (typeof value.createdAt !== "string" || typeof value.updatedAt !== "string") {
+    return null;
+  }
+
+  return {
+    id: value.id,
+    title: readString(value.title, "새 메모"),
+    plainText: readString(value.plainText, ""),
+    richContent:
+      value.richContent === undefined ? clone(DEFAULT_RICH_CONTENT) : value.richContent,
+    style: normalizeStyle(value.style),
+    windowState: normalizeWindowState(value.windowState),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    deletedAt: normalizeDeletedAt(value.deletedAt),
+    syncState: normalizeSyncState(value.syncState),
+  };
+}
+
+function isMemo(value: Memo | null): value is Memo {
+  return value !== null;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "알 수 없는 오류";
 }
 
 function safeReadStorage(): Memo[] {
@@ -26,18 +132,18 @@ function safeReadStorage(): Memo[] {
     return [];
   }
 
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return [];
-  }
-
   try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
       return [];
     }
 
-    return parsed.filter(isMemo).map(clone);
+    return parsed.map(normalizeMemo).filter(isMemo).map(clone);
   } catch {
     return [];
   }
@@ -45,13 +151,13 @@ function safeReadStorage(): Memo[] {
 
 function writeStorage(value: Memo[]) {
   if (typeof window === "undefined" || typeof window.localStorage === "undefined") {
-    return;
+    throw new Error("localStorage를 사용할 수 없습니다.");
   }
 
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
-  } catch {
-    // keep memory state only
+  } catch (error) {
+    throw new Error(`localStorage 저장 실패: ${getErrorMessage(error)}`);
   }
 }
 
@@ -68,8 +174,15 @@ export class LocalStorageMemoRepository implements MemoRepository {
     }
   }
 
-  private persist() {
-    writeStorage(sortMemos(Array.from(this.records.values())));
+  private persistRecords(records: Map<string, Memo>) {
+    writeStorage(sortMemos(Array.from(records.values())));
+  }
+
+  private replaceRecords(records: Map<string, Memo>) {
+    this.records.clear();
+    for (const [id, memo] of records.entries()) {
+      this.records.set(id, clone(memo));
+    }
   }
 
   async listMemos(): Promise<Memo[]> {
@@ -78,8 +191,10 @@ export class LocalStorageMemoRepository implements MemoRepository {
 
   async saveMemo(memo: Memo): Promise<Memo> {
     const nextMemo = clone(memo);
-    this.records.set(nextMemo.id, nextMemo);
-    this.persist();
+    const nextRecords = new Map(this.records);
+    nextRecords.set(nextMemo.id, nextMemo);
+    this.persistRecords(nextRecords);
+    this.replaceRecords(nextRecords);
     return clone(nextMemo);
   }
 
@@ -90,8 +205,10 @@ export class LocalStorageMemoRepository implements MemoRepository {
     }
 
     const next = softDeleteMemo(found, deletedAt);
-    this.records.set(next.id, clone(next));
-    this.persist();
+    const nextRecords = new Map(this.records);
+    nextRecords.set(next.id, clone(next));
+    this.persistRecords(nextRecords);
+    this.replaceRecords(nextRecords);
     return clone(next);
   }
 
@@ -112,8 +229,10 @@ export class LocalStorageMemoRepository implements MemoRepository {
       },
     };
 
-    this.records.set(id, clone(next));
-    this.persist();
+    const nextRecords = new Map(this.records);
+    nextRecords.set(id, clone(next));
+    this.persistRecords(nextRecords);
+    this.replaceRecords(nextRecords);
     return clone(next);
   }
 }

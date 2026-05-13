@@ -1,4 +1,4 @@
-import type { FirebaseClientEnv } from "@h-memo/memo-sync";
+import type { FirebaseClientEnv } from "@h-memo/memo-sync/firebase-env-validation";
 
 type RawViteEnv = Record<string, string | undefined>;
 

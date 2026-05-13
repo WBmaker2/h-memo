@@ -84,4 +84,30 @@ describe("SettingsPanel", () => {
     await user.click(screen.getByRole("button", { name: "로그아웃" }));
     expect(onSignOut).toHaveBeenCalled();
   });
+
+  it("disables startup switch when startup is unavailable", async () => {
+    const user = userEvent.setup();
+    const onToggleStartup = vi.fn();
+
+    render(
+      <SettingsPanel
+        userName={null}
+        backupStatus="웹 미리보기"
+        startupEnabled={false}
+        isStartupAvailable={false}
+        onBackup={vi.fn()}
+        onRestore={vi.fn()}
+        onExportText={vi.fn()}
+        onToggleStartup={onToggleStartup}
+        onSignIn={vi.fn()}
+        onSignOut={vi.fn()}
+      />
+    );
+
+    const startupSwitch = screen.getByRole("switch", { name: "시작프로그램 등록" });
+    expect(startupSwitch).toBeDisabled();
+
+    await user.click(startupSwitch);
+    expect(onToggleStartup).not.toHaveBeenCalled();
+  });
 });

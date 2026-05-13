@@ -7,13 +7,18 @@ import {
   type MemoRepository,
 } from "@h-memo/memo-core";
 import { MemoWorkspace } from "@h-memo/memo-ui";
-import { hasFirebaseConfig, type HMemoUser } from "@h-memo/memo-sync";
+import { hasFirebaseConfig } from "@h-memo/memo-sync/firebase-env-validation";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
 import { LocalStorageMemoRepository } from "./adapters/localStorageMemoRepository";
 
 const FIREBASE_UNAVAILABLE_MESSAGE = "Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.";
 const BROWSER_PREVIEW_MESSAGE = "브라우저 미리보기에서는 서버 백업/동기화 기능이 비활성입니다.";
 const STARTUP_UNAVAILABLE_MESSAGE = "브라우저 미리보기에서는 시작프로그램 등록을 사용할 수 없습니다.";
+
+type WebPreviewUser = {
+  displayName?: string | null;
+  email?: string | null;
+};
 
 function createRepository() {
   return new LocalStorageMemoRepository();
@@ -43,14 +48,17 @@ export function WebApp() {
   const [txtPreview, setTxtPreview] = useState("");
   const [startupEnabled, setStartupEnabled] = useState(false);
   const [backupStatus, setBackupStatus] = useState(BROWSER_PREVIEW_MESSAGE);
-  const [user, setUser] = useState<HMemoUser | null>(null);
+  const [user, setUser] = useState<WebPreviewUser | null>(null);
   const [isBusy] = useState(false);
 
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
 
   const firebaseClientEnv = useMemo(() => getFirebaseClientEnv(), []);
-  const hasFirebaseConfigSet = useMemo(() => hasFirebaseConfig(firebaseClientEnv), [firebaseClientEnv]);
+  const hasFirebaseConfigSet = useMemo(
+    () => hasFirebaseConfig(firebaseClientEnv),
+    [firebaseClientEnv]
+  );
   const [servicesAvailable, setServicesAvailable] = useState(hasFirebaseConfigSet);
 
   const reloadMemos = useCallback(async () => {
@@ -112,7 +120,11 @@ export function WebApp() {
       title: "",
     });
 
-    await persistMemo(nextMemo);
+    try {
+      await persistMemo(nextMemo);
+    } catch (error) {
+      setBackupStatus(`메모 저장 실패: ${getErrorMessage(error)}`);
+    }
   };
 
   const handleMemoChange = (nextMemo: Memo) => {
@@ -129,7 +141,11 @@ export function WebApp() {
     }
 
     const hidden = updateMemoWindowState(target, { visible: false }, new Date().toISOString());
-    await persistMemo(hidden);
+    try {
+      await persistMemo(hidden);
+    } catch (error) {
+      setBackupStatus(`메모 숨기기 실패: ${getErrorMessage(error)}`);
+    }
   };
 
   const handleDeleteMemo = async (memoId: string) => {
@@ -138,9 +154,13 @@ export function WebApp() {
       return;
     }
 
-    const deletedAt = new Date().toISOString();
-    const deleted = await repository.softDeleteMemo(memoId, deletedAt);
-    upsertMemo(deleted);
+    try {
+      const deletedAt = new Date().toISOString();
+      const deleted = await repository.softDeleteMemo(memoId, deletedAt);
+      upsertMemo(deleted);
+    } catch (error) {
+      setBackupStatus(`메모 삭제 실패: ${getErrorMessage(error)}`);
+    }
   };
 
   const handleGenerateTextPreview = async () => {
