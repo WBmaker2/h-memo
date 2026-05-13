@@ -1,18 +1,49 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { createMemo } from "@h-memo/memo-core";
 
 const {
+  MockTauriMemoRepository,
   mockExportTextFile,
   mockGetStartupEnabled,
   mockSetStartupEnabled,
+  mockSignInWithGoogle,
+  mockSignOutUser,
+  mockGetFirebaseClientEnv,
+  mockBackupMemos,
+  mockRestoreLatestBackup,
+  mockGetFirestore,
+  mockCreateFirebaseApp,
+  mockGetFirebaseAuth,
   tauriRepositoryState,
-  MockTauriMemoRepository,
 } = vi.hoisted(() => {
   const mockExportTextFile = vi.fn();
   const mockGetStartupEnabled = vi.fn();
   const mockSetStartupEnabled = vi.fn();
+  const mockSignInWithGoogle = vi.fn();
+  const mockSignOutUser = vi.fn();
+  const mockBackupMemos = vi.fn();
+  const mockRestoreLatestBackup = vi.fn();
+  const mockGetFirestore = vi.fn((_app: unknown) => ({
+    isMockFirestore: true,
+  })) as Mock<(app: unknown) => { isMockFirestore: true }>;
+  const mockCreateFirebaseApp = vi.fn((_env: unknown) => ({
+    isMockFirebaseApp: true,
+  })) as Mock<(env: unknown) => { isMockFirebaseApp: true }>;
+  const mockGetFirebaseAuth = vi.fn((_app: unknown) => ({
+    isMockFirebaseAuth: true,
+  })) as Mock<(app: unknown) => { isMockFirebaseAuth: true }>;
+  const mockGetFirebaseClientEnv = vi.fn(() => ({
+    apiKey: "",
+    authDomain: "",
+    projectId: "",
+    appId: "",
+    storageBucket: "",
+    messagingSenderId: "",
+    measurementId: "",
+  }));
 
   const tauriRepositoryState = new Map<string, any>();
 
@@ -67,8 +98,70 @@ const {
     mockExportTextFile,
     mockGetStartupEnabled,
     mockSetStartupEnabled,
+    mockSignInWithGoogle,
+    mockSignOutUser,
+    mockGetFirebaseClientEnv,
+    mockBackupMemos,
+    mockRestoreLatestBackup,
+    mockGetFirestore,
+    mockCreateFirebaseApp,
+    mockGetFirebaseAuth,
     tauriRepositoryState,
     MockTauriMemoRepository,
+  };
+});
+
+function setMockFirebaseClientEnv(value: {
+  apiKey: string;
+  authDomain: string;
+  projectId: string;
+  appId: string;
+  storageBucket?: string;
+  messagingSenderId?: string;
+  measurementId?: string;
+}) {
+  mockGetFirebaseClientEnv.mockReturnValue({
+    apiKey: value.apiKey,
+    authDomain: value.authDomain,
+    projectId: value.projectId,
+    appId: value.appId,
+    storageBucket: value.storageBucket ?? "",
+    messagingSenderId: value.messagingSenderId ?? "",
+    measurementId: value.measurementId ?? "",
+  });
+}
+
+vi.mock("./env/firebaseEnv", () => ({
+  getFirebaseClientEnv: () => mockGetFirebaseClientEnv(),
+}));
+
+vi.mock("firebase/firestore", () => ({
+  getFirestore: (app: unknown) => mockGetFirestore(app),
+}));
+
+vi.mock("@h-memo/memo-sync", () => {
+  return {
+    FirestoreBackupGateway: class {
+      saveBackup = vi.fn();
+      loadLatestBackup = vi.fn();
+    },
+    backupMemos: (gateway: unknown, userId: string, memos: unknown[]) =>
+      mockBackupMemos(gateway, userId, memos),
+    createFirebaseApp: (env: unknown) => mockCreateFirebaseApp(env),
+    getFirebaseAuth: (app: unknown) => mockGetFirebaseAuth(app),
+    hasFirebaseConfig: (env: Record<string, unknown>) =>
+      typeof env.apiKey === "string" &&
+      env.apiKey.trim() !== "" &&
+      typeof env.authDomain === "string" &&
+      env.authDomain.trim() !== "" &&
+      typeof env.projectId === "string" &&
+      env.projectId.trim() !== "" &&
+      typeof env.appId === "string" &&
+      env.appId.trim() !== "",
+    restoreLatestBackup: (gateway: unknown, userId: string) =>
+      mockRestoreLatestBackup(gateway, userId),
+    signInWithGoogle: (auth: unknown) => mockSignInWithGoogle(auth),
+    signOutUser: (auth: unknown) => mockSignOutUser(auth),
   };
 });
 
@@ -98,12 +191,53 @@ function setTauriRuntime(enabled: boolean) {
   }
 }
 
+function getMemoFromTime({
+  id = `memo-${Date.now()}`,
+  now = new Date().toISOString(),
+  title,
+  text,
+}: {
+  id?: string;
+  now?: string;
+  title: string;
+  text: string;
+}) {
+  return createMemo({
+    id,
+    now,
+    title,
+    plainText: text,
+  });
+}
+
+function getStatus() {
+  return screen.getByRole("status");
+}
+
 beforeEach(() => {
   setTauriRuntime(false);
   tauriRepositoryState.clear();
   mockExportTextFile.mockReset();
   mockGetStartupEnabled.mockReset();
   mockSetStartupEnabled.mockReset();
+  mockSignInWithGoogle.mockReset();
+  mockSignOutUser.mockReset();
+  mockBackupMemos.mockReset();
+  mockRestoreLatestBackup.mockReset();
+  mockGetFirestore.mockReset();
+  mockCreateFirebaseApp.mockReset();
+  mockGetFirebaseAuth.mockReset();
+
+  mockGetFirestore.mockReturnValue({ isMockFirestore: true });
+  mockCreateFirebaseApp.mockReturnValue({ isMockFirebaseApp: true });
+  mockGetFirebaseAuth.mockReturnValue({ isMockFirebaseAuth: true });
+
+  setMockFirebaseClientEnv({
+    apiKey: "",
+    authDomain: "",
+    projectId: "",
+    appId: "",
+  });
 });
 
 describe("desktop App", () => {
@@ -170,8 +304,8 @@ describe("desktop App", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const status = screen.getByRole("status");
-    expect(status).toHaveTextContent("백업 정보 없음");
+    const status = getStatus();
+    expect(status).toHaveTextContent("Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.");
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
     fireEvent.change(screen.getByLabelText("메모 제목"), {
@@ -185,7 +319,6 @@ describe("desktop App", () => {
     const preview = screen.getByLabelText("TXT 미리보기 결과");
     expect(preview).toHaveTextContent(/브라우저메모/);
     expect(preview).toHaveTextContent(/browser text/);
-    expect(status).toHaveTextContent("백업 정보 없음");
     expect(mockExportTextFile).not.toHaveBeenCalled();
   });
 
@@ -303,18 +436,148 @@ describe("desktop App", () => {
     expect(startupSwitch).toBeChecked();
   });
 
-  it("updates status on backup and restore actions", async () => {
-    const user = userEvent.setup();
+  it("disables server controls when Firebase config is missing", async () => {
     render(<App />);
 
-    const status = screen.getByRole("status");
+    await waitFor(() => {
+      expect(getStatus()).toHaveTextContent(
+        "Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다."
+      );
+    });
+    expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "서버 복원" })).toBeDisabled();
+  });
+
+  it("disables backup button before login when config is available", async () => {
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("백업 정보 없음");
+    });
+    expect(screen.getByRole("button", { name: "로그인" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "서버 복원" })).toBeDisabled();
+  });
+
+  it("calls memo-sync backup after login and reports success", async () => {
+    const user = userEvent.setup();
+    const now = new Date().toISOString();
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    mockSignInWithGoogle.mockResolvedValue({
+      uid: "user-1",
+      displayName: "테스터",
+      email: "test@example.com",
+      photoURL: "",
+    });
+    mockBackupMemos.mockResolvedValue({
+      path: "users/user-1/backups/1",
+      payload: {
+        version: 1,
+        userId: "user-1",
+        createdAt: now,
+        memos: [],
+      },
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    fireEvent.change(screen.getByLabelText("메모 제목"), {
+      target: { value: "로컬메모" },
+    });
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "로컬 내용" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("로그인했습니다.");
+    });
+
     const backupButton = screen.getByRole("button", { name: "서버 백업" });
-    const restoreButton = screen.getByRole("button", { name: "서버 복원" });
-
     await user.click(backupButton);
-    expect(status).toHaveTextContent("백업 예정");
 
-    await user.click(restoreButton);
-    expect(status).toHaveTextContent("복원 완료");
+    await waitFor(() => {
+      expect(mockBackupMemos).toHaveBeenCalledWith(
+        expect.anything(),
+        "user-1",
+        expect.arrayContaining([
+          expect.objectContaining({
+            title: "로컬메모",
+            plainText: "로컬 내용",
+          }),
+        ])
+      );
+      expect(mockBackupMemos).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("status")).toHaveTextContent("백업 완료: users/user-1/backups/1");
+    });
+  });
+
+  it("restores latest backup and replaces local memos", async () => {
+    const user = userEvent.setup();
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    const restoredMemo = createMemo({
+      id: "server-1",
+      now: "2026-01-02T03:00:00.000Z",
+      title: "서버복원메모",
+      plainText: "서버 복원 텍스트",
+    });
+
+    mockSignInWithGoogle.mockResolvedValue({
+      uid: "user-1",
+      displayName: "테스터",
+      email: "test@example.com",
+      photoURL: "",
+    });
+    mockRestoreLatestBackup.mockResolvedValue({
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      memos: [restoredMemo],
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    fireEvent.change(screen.getByLabelText("메모 제목"), {
+      target: { value: "로컬메모" },
+    });
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "로컬 내용" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("로그인했습니다.");
+    });
+
+    await user.click(screen.getByRole("button", { name: "서버 복원" }));
+
+    await waitFor(() => {
+      expect(mockRestoreLatestBackup).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("status")).toHaveTextContent("복원 완료: 1개 메모");
+    });
+
+    expect(screen.queryByDisplayValue("로컬메모")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("서버복원메모")).toBeInTheDocument();
   });
 });

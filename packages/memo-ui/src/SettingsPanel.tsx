@@ -4,6 +4,11 @@ type SettingsPanelProps = {
   userName: string | null;
   backupStatus: string;
   startupEnabled: boolean;
+  isServerAvailable?: boolean;
+  isServerBusy?: boolean;
+  isBackupDisabled?: boolean;
+  isRestoreDisabled?: boolean;
+  isAuthDisabled?: boolean;
   onBackup: () => void;
   onRestore: () => void;
   onExportText: () => void;
@@ -16,6 +21,11 @@ export function SettingsPanel({
   userName,
   backupStatus,
   startupEnabled,
+  isServerAvailable = true,
+  isServerBusy = false,
+  isBackupDisabled = false,
+  isRestoreDisabled = false,
+  isAuthDisabled = false,
   onBackup,
   onRestore,
   onExportText,
@@ -39,7 +49,7 @@ export function SettingsPanel({
     <section className="settings-panel">
       <header>
         <p>{userName || "로그인 필요"}</p>
-        <button type="button" onClick={handleAuthClick}>
+        <button type="button" onClick={handleAuthClick} disabled={isAuthDisabled || !isServerAvailable}>
           {userName ? "로그아웃" : "로그인"}
         </button>
       </header>
@@ -47,13 +57,25 @@ export function SettingsPanel({
       <p role="status">{backupStatus}</p>
 
       <div>
-        <button type="button" onClick={onBackup}>
+        <button
+          type="button"
+          onClick={onBackup}
+          disabled={isBackupDisabled || !isServerAvailable}
+        >
           서버 백업
         </button>
-        <button type="button" onClick={onRestore}>
+        <button
+          type="button"
+          onClick={onRestore}
+          disabled={isRestoreDisabled || !isServerAvailable}
+        >
           서버 복원
         </button>
-        <button type="button" onClick={onExportText}>
+        <button
+          type="button"
+          onClick={onExportText}
+          disabled={isServerBusy}
+        >
           TXT 내보내기
         </button>
       </div>
