@@ -44,3 +44,7 @@ npm run tauri:build -w apps/desktop
 - 설치 후 실행/삭제가 되는지
 - Firebase 로그인(선택) 및 백업 버튼이 동작하는지
 - 기본 메모 생성/저장/숨김/복원이 동작하는지
+
+## 5) GitHub 릴리스
+
+Windows 태그 릴리스 및 수동 릴리스 실행 방법은 [`docs/release.md`](./release.md)를 참고하세요.

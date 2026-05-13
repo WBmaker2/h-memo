@@ -1,11 +1,20 @@
 name: Windows Tauri Build
 
+permissions:
+  contents: write
+
 on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish (예: v0.1.0)"
+        required: true
 
 jobs:
   windows-tauri:
@@ -47,6 +56,25 @@ jobs:
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID || vars.VITE_FIREBASE_MESSAGING_SENDER_ID || '' }}
           VITE_FIREBASE_MEASUREMENT_ID: ${{ secrets.VITE_FIREBASE_MEASUREMENT_ID || vars.VITE_FIREBASE_MEASUREMENT_ID || '' }}
 
+      - name: Resolve release tag
+        id: release_tag
+        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $tag = '${{ inputs.release_tag }}'
+          } else {
+            $tag = '${{ github.ref_name }}'
+          }
+
+          if (-not ($tag -match '^v.+')) {
+            Write-Error "Release tag must start with 'v' (예: v0.1.0). Provided: $tag"
+            exit 1
+          }
+
+          Write-Host "Using release tag: $tag"
+          "release_tag=$tag" >> $env:GITHUB_OUTPUT
+
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4
         if: always()
@@ -60,3 +88,39 @@ jobs:
         with:
           name: h-memo-windows-nsis
           path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Upload installers to GitHub Release
+        if: steps.release_tag.outputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+        run: |
+          $msiFiles = Get-ChildItem -Path "apps/desktop/src-tauri/target/release/bundle/msi" -Filter "*.msi"
+          if ($msiFiles.Count -eq 0) {
+            Write-Error "No MSI file found in bundle/msi."
+            exit 1
+          }
+
+          $nsisFiles = Get-ChildItem -Path "apps/desktop/src-tauri/target/release/bundle/nsis" -Filter "*.exe"
+          if ($nsisFiles.Count -eq 0) {
+            Write-Error "No NSIS installer file found in bundle/nsis."
+            exit 1
+          }
+
+          $artifacts = @()
+          $artifacts += $msiFiles | ForEach-Object { $_.FullName }
+          $artifacts += $nsisFiles | ForEach-Object { $_.FullName }
+
+          Write-Host "Found $($msiFiles.Count) MSI and $($nsisFiles.Count) NSIS files."
+
+          gh release view "$env:RELEASE_TAG" --json tagName -q .tagName > $null 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $env:RELEASE_TAG already exists. Uploading installers..."
+            gh release upload "$env:RELEASE_TAG" @artifacts --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host "Creating new release $env:RELEASE_TAG..."
+            gh release create "$env:RELEASE_TAG" @artifacts --title "H Memo $env:RELEASE_TAG" --notes "Release $env:RELEASE_TAG"
+            exit $LASTEXITCODE
+          }

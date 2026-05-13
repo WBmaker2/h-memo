@@ -60,3 +60,4 @@ npm run tauri:build -w apps/desktop
 - GitHub Actions
   - [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
   - [`.github/workflows/windows-tauri.yml`](.github/workflows/windows-tauri.yml)
+  - [`docs/release.md`](./docs/release.md)
