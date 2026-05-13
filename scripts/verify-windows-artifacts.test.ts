@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseArgs,
   verifyWindowsArtifacts,
-} from "./verify-windows-artifacts.mjs";
+} from "./lib/verify-windows-artifacts.js";
 
 function createTempBundleFixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "h-memo-windows-artifacts-"));

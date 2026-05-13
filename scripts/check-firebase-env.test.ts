@@ -9,7 +9,7 @@ import {
   getDotEnvFileOrder,
   loadFirebaseEnv,
   parseArgs,
-} from "./check-firebase-env.mjs";
+} from "./lib/check-firebase-env.js";
 
 function createTempEnvDir() {
   const root = mkdtempSync(path.join(os.tmpdir(), "h-memo-firebase-env-"));

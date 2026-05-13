@@ -9,7 +9,7 @@ import {
   checkVersionConsistency,
   parseArgs,
   runVersionCheck,
-} from "./check-version-consistency.mjs";
+} from "./lib/check-version-consistency.js";
 
 function createFixtureRoot() {
   const root = mkdtempSync(path.join(os.tmpdir(), "h-memo-version-check-"));
