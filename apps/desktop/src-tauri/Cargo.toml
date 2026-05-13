@@ -1,0 +1,26 @@
+[package]
+name = "h-memo-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "H Memo desktop app"
+license = "MIT"
+repository = "https://github.com/placeholder/h-memo"
+
+[lib]
+name = "h_memo_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-opener = "2"

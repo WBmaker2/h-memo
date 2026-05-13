@@ -5,17 +5,33 @@ import {
   formatMemosAsCombinedText,
   updateMemoWindowState,
   type Memo,
+  type MemoRepository,
 } from "@h-memo/memo-core";
 import { SettingsPanel, StickyMemo } from "@h-memo/memo-ui";
+import { TauriMemoRepository } from "./adapters/tauriMemoRepository";
+import {
+  exportTextFile,
+  getStartupEnabled,
+  setStartupEnabled as setTauriStartupEnabled,
+} from "./adapters/tauriPlatform";
 
 type BackupMessage = string;
+
+function isTauriRuntime() {
+  return "__TAURI_INTERNALS__" in window;
+}
+
+function createRepository(isTauri: boolean): MemoRepository {
+  return isTauri ? new TauriMemoRepository() : new MemoryMemoRepository();
+}
 
 function createMemoId(): string {
   return `memo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function App() {
-  const repository = useMemo(() => new MemoryMemoRepository(), []);
+  const isTauri = isTauriRuntime();
+  const repository = useMemo(() => createRepository(isTauri), [isTauri]);
   const [memos, setMemos] = useState<Memo[]>([]);
   const [txtPreview, setTxtPreview] = useState("");
   const [startupEnabled, setStartupEnabled] = useState(false);
@@ -29,6 +45,27 @@ export function App() {
   useEffect(() => {
     void reloadMemos();
   }, [reloadMemos]);
+
+  useEffect(() => {
+    if (!isTauri) {
+      return;
+    }
+
+    let isMounted = true;
+    const loadStartup = async () => {
+      const enabled = await getStartupEnabled();
+      if (!isMounted) {
+        return;
+      }
+      setStartupEnabled(enabled);
+    };
+
+    void loadStartup();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isTauri]);
 
   const visibleMemos = useMemo(
     () => memos.filter((memo) => memo.deletedAt === null && memo.windowState.visible),
@@ -62,7 +99,7 @@ export function App() {
   };
 
   const handleMemoChange = (nextMemo: Memo) => {
-    void persistMemo(nextMemo);
+    persistMemo(nextMemo);
   };
 
   const handleHideMemo = async (memoId: string) => {
@@ -86,8 +123,16 @@ export function App() {
     upsertMemo(deleted);
   };
 
-  const handleGenerateTextPreview = () => {
-    setTxtPreview(formatMemosAsCombinedText(visibleMemos));
+  const handleGenerateTextPreview = async () => {
+    const contents = formatMemosAsCombinedText(visibleMemos);
+    setTxtPreview(contents);
+
+    if (!isTauri) {
+      return;
+    }
+
+    const path = await exportTextFile("h-memo-backup.txt", contents);
+    setBackupStatus(`TXT 저장 완료: ${path}`);
   };
 
   const handleBackup = () => {
@@ -98,8 +143,12 @@ export function App() {
     setBackupStatus(`복원 완료: ${new Date().toLocaleString()}`);
   };
 
-  const handleToggleStartup = (enabled: boolean) => {
+  const handleToggleStartup = async (enabled: boolean) => {
     setStartupEnabled(enabled);
+    if (!isTauri) {
+      return;
+    }
+    await setTauriStartupEnabled(enabled);
   };
 
   return (
