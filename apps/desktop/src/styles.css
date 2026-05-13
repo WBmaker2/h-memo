@@ -1,0 +1,57 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Malgun Gothic", "Segoe UI", sans-serif;
+  background: #f8fafc;
+  color: #111827;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.desktop-app {
+  width: min(960px, 100%);
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.desktop-app__header h1 {
+  margin: 0 0 12px;
+  font-size: 1.5rem;
+}
+
+.desktop-app__actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.desktop-app__actions button {
+  padding: 8px 12px;
+}
+
+.desktop-app__memos {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.desktop-app__preview {
+  margin: 0 0 12px;
+  min-height: 120px;
+  white-space: pre-wrap;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.sticky-memo {
+  border: 1px solid #facc15;
+  border-radius: 6px;
+  padding: 10px;
+}
