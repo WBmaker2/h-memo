@@ -697,6 +697,68 @@ describe("desktop App", () => {
     });
   });
 
+  it("does not soft delete local memo when restored memo save fails", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    const restoredMemo = getMemoFromTime({
+      id: "server-1",
+      now: "2026-01-02T03:00:00.000Z",
+      title: "서버복원메모",
+      text: "서버 복원 텍스트",
+    });
+
+    mockSignInWithGoogle.mockResolvedValue({
+      uid: "user-1",
+      displayName: "테스터",
+      email: "test@example.com",
+      photoURL: "",
+    });
+    mockRestoreLatestBackup.mockResolvedValue({
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      memos: [restoredMemo],
+    });
+    mockSaveMemo.mockImplementation(async (memo: unknown) => {
+      if ((memo as { id?: string }).id === "server-1") {
+        throw new Error("server memo save failed");
+      }
+      return defaultSaveMemo(memo as any);
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    fireEvent.change(screen.getByLabelText("메모 제목"), {
+      target: { value: "로컬메모" },
+    });
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "로컬 내용" },
+    });
+    const localMemoId = [...tauriRepositoryState.keys()][0];
+
+    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "서버 복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("복원 실패:");
+      expect(screen.queryByDisplayValue("서버복원메모")).not.toBeInTheDocument();
+      expect(screen.getByDisplayValue("로컬메모")).toBeInTheDocument();
+    });
+    expect(mockSoftDeleteMemo).not.toHaveBeenCalledWith(localMemoId, expect.any(String));
+  });
+
   it("restores latest backup and replaces local memos", async () => {
     const user = userEvent.setup();
     setMockFirebaseClientEnv({
