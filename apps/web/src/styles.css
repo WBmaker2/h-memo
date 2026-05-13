@@ -1,0 +1,61 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Malgun Gothic", "Segoe UI", sans-serif;
+  background: #f8fafc;
+  color: #111827;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.web-app {
+  width: min(960px, 100%);
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.web-app__header h1 {
+  margin: 0 0 12px;
+  font-size: 1.5rem;
+}
+
+.web-app__actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.web-app__actions button {
+  padding: 8px 12px;
+}
+
+.web-app__memos {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.web-app__preview {
+  margin: 0 0 12px;
+  min-height: 120px;
+  white-space: pre-wrap;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-panel .memo-toolbar__row {
+  display: flex;
+  gap: 8px;
+}

@@ -9,7 +9,7 @@ import {
   type Memo,
   type MemoRepository,
 } from "@h-memo/memo-core";
-import { SettingsPanel, StickyMemo } from "@h-memo/memo-ui";
+import { MemoWorkspace } from "@h-memo/memo-ui";
 import { TauriMemoRepository } from "./adapters/tauriMemoRepository";
 import {
   exportTextFile,
@@ -434,52 +434,32 @@ export function App() {
   const isAuthDisabled = !isServerReady || isBusy;
 
   return (
-    <main className="desktop-app">
-      <header className="desktop-app__header">
-        <h1>H Memo</h1>
-      </header>
-
-      <section className="desktop-app__actions">
-        <button type="button" onClick={handleCreateMemo}>
-          새 메모
-        </button>
-        <button type="button" onClick={handleGenerateTextPreview}>
-          TXT 미리보기
-        </button>
-      </section>
-
-      <section className="desktop-app__memos">
-        {visibleMemos.map((memo) => (
-          <StickyMemo
-            key={memo.id}
-            memo={memo}
-            onChange={handleMemoChange}
-            onHide={handleHideMemo}
-            onDelete={handleDeleteMemo}
-          />
-        ))}
-      </section>
-
-      <pre aria-label="TXT 미리보기 결과" className="desktop-app__preview">
-        {txtPreview}
-      </pre>
-
-      <SettingsPanel
-        userName={user ? user.displayName || user.email || "로그인 필요" : null}
-        backupStatus={backupStatus}
-        startupEnabled={startupEnabled}
-        onBackup={handleBackup}
-        onRestore={handleRestore}
-        onExportText={handleGenerateTextPreview}
-        onToggleStartup={handleToggleStartup}
-        onSignIn={handleSignIn}
-        onSignOut={handleSignOut}
-        isServerAvailable={servicesAvailable}
-        isServerBusy={isBusy}
-        isBackupDisabled={isBackupDisabled}
-        isRestoreDisabled={isRestoreDisabled}
-        isAuthDisabled={isAuthDisabled}
-      />
-    </main>
+    <MemoWorkspace
+      appClassName="desktop-app"
+      title="H Memo"
+      memos={visibleMemos}
+      txtPreview={txtPreview}
+      onCreateMemo={handleCreateMemo}
+      onExportText={handleGenerateTextPreview}
+      onMemoChange={handleMemoChange}
+      onHideMemo={handleHideMemo}
+      onDeleteMemo={handleDeleteMemo}
+      settingsProps={{
+        userName: user ? user.displayName || user.email || "로그인 필요" : null,
+        backupStatus,
+        startupEnabled,
+        onBackup: handleBackup,
+        onRestore: handleRestore,
+        onExportText: handleGenerateTextPreview,
+        onToggleStartup: handleToggleStartup,
+        onSignIn: handleSignIn,
+        onSignOut: handleSignOut,
+        isServerAvailable: servicesAvailable,
+        isServerBusy: isBusy,
+        isBackupDisabled,
+        isRestoreDisabled,
+        isAuthDisabled,
+      }}
+    />
   );
 }

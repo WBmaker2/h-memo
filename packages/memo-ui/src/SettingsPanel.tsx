@@ -1,9 +1,10 @@
 import type { ChangeEvent } from "react";
 
-type SettingsPanelProps = {
+export type SettingsPanelProps = {
   userName: string | null;
   backupStatus: string;
   startupEnabled: boolean;
+  isStartupAvailable?: boolean;
   isServerAvailable?: boolean;
   isServerBusy?: boolean;
   isBackupDisabled?: boolean;
@@ -21,6 +22,7 @@ export function SettingsPanel({
   userName,
   backupStatus,
   startupEnabled,
+  isStartupAvailable = true,
   isServerAvailable = true,
   isServerBusy = false,
   isBackupDisabled = false,
@@ -87,6 +89,7 @@ export function SettingsPanel({
           role="switch"
           aria-label="시작프로그램 등록"
           checked={startupEnabled}
+          disabled={!isStartupAvailable}
           onChange={handleToggleStartup}
         />
       </label>
