@@ -47,7 +47,7 @@ function writeJson(filePath, data) {
 function writeCargoToml(filePath, version) {
   writeFileSync(
     filePath,
-    `[package]\nname = "h-memo-desktop"\nversion = "${version}"\n`
+    `[package]\nname = "h-memo-desktop"\nversion = "${version}" # release version\n`
   );
 }
 
@@ -66,6 +66,8 @@ describe("check-version-consistency args", () => {
       "apps/desktop/src-tauri/tauri.conf.json",
       "--cargo",
       "apps/desktop/src-tauri/Cargo.toml",
+      "--release-tag",
+      "v0.9.0",
     ]);
 
     expect(parsed.rootDir).toBe("/tmp/h-memo");
@@ -78,6 +80,7 @@ describe("check-version-consistency args", () => {
     expect(parsed.tauriConfigPath).toBe("apps/desktop/src-tauri/tauri.conf.json");
     expect(parsed.desktopPackagePath).toBe("apps/desktop/package.json");
     expect(parsed.cargoTomlPath).toBe("apps/desktop/src-tauri/Cargo.toml");
+    expect(parsed.releaseTag).toBe("v0.9.0");
   });
 });
 
@@ -128,7 +131,7 @@ describe("check-version-consistency", () => {
     }
   });
 
-  it("reports mismatch and throws with runVersionCheck", () => {
+  it("reports mismatches from runVersionCheck", () => {
     const fixture = createFixtureRoot();
     try {
       const coreRoot = fixture.mkdirDesktop();
@@ -171,6 +174,103 @@ describe("check-version-consistency", () => {
           expected: "1.0.0",
         }),
       ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("passes when the release tag matches the shared version", () => {
+    const fixture = createFixtureRoot();
+    try {
+      const desktopRoot = fixture.mkdirDesktop();
+      const packageRoot = fixture.mkdirWorkspacePackage("memo-core");
+
+      writeJson(path.join(fixture.root, "package.json"), {
+        name: "h-memo",
+        version: "2.0.0",
+      });
+      writeJson(path.join(desktopRoot, "package.json"), {
+        name: "@h-memo/desktop",
+        version: "2.0.0",
+      });
+      writeJson(path.join(desktopRoot, "src-tauri", "tauri.conf.json"), {
+        productName: "H Memo",
+        identifier: "com.hmemo.desktop",
+        version: "2.0.0",
+      });
+      writeJson(path.join(packageRoot, "package.json"), {
+        name: "@h-memo/memo-core",
+        version: "2.0.0",
+      });
+      writeCargoToml(path.join(desktopRoot, "src-tauri", "Cargo.toml"), "2.0.0");
+
+      const result = runVersionCheck({
+        rootDir: fixture.root,
+        releaseTag: "v2.0.0",
+      });
+
+      expect(result.allMatch).toBe(true);
+      expect(result.releaseTagCheck).toEqual(
+        expect.objectContaining({
+          ok: true,
+          releaseTag: "v2.0.0",
+          tagVersion: "2.0.0",
+          expectedTag: "v2.0.0",
+        })
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("fails the release tag check when the tag is malformed or mismatched", () => {
+    const fixture = createFixtureRoot();
+    try {
+      const desktopRoot = fixture.mkdirDesktop();
+
+      writeJson(path.join(fixture.root, "package.json"), {
+        name: "h-memo",
+        version: "2.0.0",
+      });
+      writeJson(path.join(desktopRoot, "package.json"), {
+        name: "@h-memo/desktop",
+        version: "2.0.0",
+      });
+      writeJson(path.join(desktopRoot, "src-tauri", "tauri.conf.json"), {
+        productName: "H Memo",
+        identifier: "com.hmemo.desktop",
+        version: "2.0.0",
+      });
+      writeCargoToml(path.join(desktopRoot, "src-tauri", "Cargo.toml"), "2.0.0");
+
+      const noPrefix = runVersionCheck({
+        rootDir: fixture.root,
+        releaseTag: "2.0.0",
+      });
+      const mismatched = runVersionCheck({
+        rootDir: fixture.root,
+        releaseTag: "v2.0.1",
+      });
+
+      expect(noPrefix.releaseTagCheck).toEqual(
+        expect.objectContaining({
+          ok: false,
+          expectedTag: "v2.0.0",
+        })
+      );
+      expect(noPrefix.releaseTagCheck.failures[0]).toMatch(
+        /must start with 'v'/
+      );
+      expect(mismatched.releaseTagCheck).toEqual(
+        expect.objectContaining({
+          ok: false,
+          releaseTag: "v2.0.1",
+          expectedTag: "v2.0.0",
+        })
+      );
+      expect(mismatched.releaseTagCheck.failures[0]).toMatch(
+        /does not match shared version/
+      );
     } finally {
       fixture.cleanup();
     }

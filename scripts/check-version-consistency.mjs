@@ -12,6 +12,7 @@ const DEFAULTS = {
   tauriConfigPath: path.join("apps", "desktop", "src-tauri", "tauri.conf.json"),
   cargoTomlPath: path.join("apps", "desktop", "src-tauri", "Cargo.toml"),
   workspacePatterns: ["apps/*", "packages/*"],
+  releaseTag: null,
 };
 
 export function parseArgs(argv = process.argv.slice(2)) {
@@ -22,6 +23,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
     tauriConfigPath: DEFAULTS.tauriConfigPath,
     cargoTomlPath: DEFAULTS.cargoTomlPath,
     workspacePatterns: [...DEFAULTS.workspacePatterns],
+    releaseTag: DEFAULTS.releaseTag,
     help: false,
   };
 
@@ -102,6 +104,20 @@ export function parseArgs(argv = process.argv.slice(2)) {
       continue;
     }
 
+    if (arg === "--release-tag") {
+      if (i + 1 >= argv.length) {
+        throw new Error("--release-tag requires a value.");
+      }
+      options.releaseTag = argv[i + 1];
+      i += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--release-tag=")) {
+      options.releaseTag = arg.slice("--release-tag=".length);
+      continue;
+    }
+
     throw new Error(`Unknown option: ${arg}`);
   }
 
@@ -172,7 +188,7 @@ export function readCargoVersion(cargoTomlPath) {
       continue;
     }
 
-    const versionMatch = trimmed.match(/^\s*version\s*=\s*"(.*?)"\s*$/);
+    const versionMatch = trimmed.match(/^\s*version\s*=\s*"(.*?)"\s*(?:#.*)?$/);
     if (versionMatch) {
       const version = versionMatch[1].trim();
       if (version === "") {
@@ -226,12 +242,12 @@ export function discoverWorkspacePackageFiles(rootDir, patterns) {
       continue;
     }
 
-      const entries = readdirSync(baseDirPath, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .sort()
-        .map((name) =>
-          resolveFilePath(baseDirPath, path.join(name, "package.json"))
+    const entries = readdirSync(baseDirPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+      .map((name) =>
+        resolveFilePath(baseDirPath, path.join(name, "package.json"))
       );
 
     for (const entryFile of entries) {
@@ -317,12 +333,61 @@ export function checkVersionConsistency(entries) {
   };
 }
 
+export function checkReleaseTagVersion(releaseTag, expectedVersion) {
+  if (releaseTag == null || String(releaseTag).trim() === "") {
+    return {
+      provided: false,
+      ok: true,
+      releaseTag: "",
+      tagVersion: "",
+      expectedTag: `v${expectedVersion}`,
+      failures: [],
+    };
+  }
+
+  const normalizedTag = String(releaseTag).trim();
+  const expectedTag = `v${expectedVersion}`;
+  const failures = [];
+  let tagVersion = "";
+
+  if (!normalizedTag.startsWith("v")) {
+    failures.push(
+      `Release tag must start with 'v' (example: ${expectedTag}). Provided: ${normalizedTag}`
+    );
+  } else {
+    tagVersion = normalizedTag.slice(1);
+    if (tagVersion === "") {
+      failures.push(
+        `Release tag must include a version after 'v' (example: ${expectedTag}).`
+      );
+    } else if (tagVersion !== expectedVersion) {
+      failures.push(
+        `Release tag ${normalizedTag} does not match shared version ${expectedVersion}. Expected ${expectedTag}.`
+      );
+    }
+  }
+
+  return {
+    provided: true,
+    ok: failures.length === 0,
+    releaseTag: normalizedTag,
+    tagVersion,
+    expectedTag,
+    failures,
+  };
+}
+
 export function runVersionCheck(options = {}) {
   const entries = collectVersionEntries(options);
   const result = checkVersionConsistency(entries);
+  const releaseTagCheck = checkReleaseTagVersion(
+    options.releaseTag,
+    result.expectedVersion
+  );
   return {
     ...result,
     entries,
+    releaseTagCheck,
   };
 }
 
@@ -345,6 +410,9 @@ function printUsage() {
   console.log(
     "  --cargo <path>                 Cargo.toml path relative to root (default: apps/desktop/src-tauri/Cargo.toml)"
   );
+  console.log(
+    "  --release-tag <tag>            Optional release tag to validate against the shared version (example: v0.1.0)"
+  );
   console.log("  --help                        Show this help message");
 }
 
@@ -357,21 +425,35 @@ function main() {
       return;
     }
 
-    const { expectedVersion, mismatches, entries, allMatch } =
+    const { expectedVersion, mismatches, entries, allMatch, releaseTagCheck } =
       runVersionCheck(options);
 
-    if (allMatch) {
+    if (allMatch && releaseTagCheck.ok) {
       console.log(
         `[versions] All version fields match: ${expectedVersion} (${entries.length} entries)`
       );
+      if (releaseTagCheck.provided) {
+        console.log(
+          `[versions] Release tag matches shared version: ${releaseTagCheck.releaseTag}`
+        );
+      }
       return;
     }
 
-    console.error("[versions] Version mismatch detected:");
-    for (const mismatch of mismatches) {
-      console.error(
-        `  - ${mismatch.source}: version ${mismatch.version} (expected ${mismatch.expected})`
-      );
+    if (!allMatch) {
+      console.error("[versions] Version mismatch detected:");
+      for (const mismatch of mismatches) {
+        console.error(
+          `  - ${mismatch.source}: version ${mismatch.version} (expected ${mismatch.expected})`
+        );
+      }
+    }
+
+    if (!releaseTagCheck.ok) {
+      console.error("[versions] Release tag mismatch detected:");
+      for (const failure of releaseTagCheck.failures) {
+        console.error(`  - ${failure}`);
+      }
     }
 
     process.exitCode = 1;

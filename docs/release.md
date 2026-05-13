@@ -47,12 +47,13 @@
 
 ```bash
 npm run check:versions
+npm run check:versions -- --release-tag v0.2.0
 ```
 
 버전 변경 절차:
 
 1. 상기 항목의 `version`을 모두 동일한 값으로 갱신합니다. 예: `0.1.0` → `0.2.0`
-2. `npm run check:versions`로 일치 여부 확인
+2. `npm run check:versions -- --release-tag v0.2.0`로 버전/태그 일치 여부 확인
 3. 커밋 후 태그를 생성합니다. 태그는 `v` 접두사와 동일한 버전이어야 합니다.
 
 ```bash
