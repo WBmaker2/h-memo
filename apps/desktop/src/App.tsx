@@ -85,6 +85,7 @@ export function App() {
   const [user, setUser] = useState<HMemoUser | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [servicesAvailable, setServicesAvailable] = useState(hasFirebaseConfigSet);
+  const pendingPersistRef = useRef(new Set<Promise<void>>());
 
   const syncServicesRef = useRef<SyncServices | null>(null);
 
@@ -172,9 +173,27 @@ export function App() {
     });
   };
 
-  const persistMemo = async (nextMemo: Memo) => {
-    const saved = await repository.saveMemo(nextMemo);
-    upsertMemo(saved);
+  const addPendingPersist = (promise: Promise<unknown>) => {
+    const pending: Promise<void> = Promise.resolve(promise).then(() => {});
+    pending.finally(() => {
+      pendingPersistRef.current.delete(pending);
+    });
+
+    pendingPersistRef.current.add(pending);
+    return pending;
+  };
+
+  const waitForPendingPersists = async () => {
+    while (pendingPersistRef.current.size > 0) {
+      await Promise.all(pendingPersistRef.current);
+    }
+  };
+
+  const persistMemo = (nextMemo: Memo, options?: { skipStateUpdate: boolean }) => {
+    const persistence = options?.skipStateUpdate
+      ? repository.saveMemo(nextMemo)
+      : repository.saveMemo(nextMemo).then((saved) => upsertMemo(saved));
+    return addPendingPersist(persistence.then(() => undefined));
   };
 
   const replaceMemosFromBackup = async (nextMemos: Memo[]) => {
@@ -184,11 +203,10 @@ export function App() {
 
     const removePromises = currentMemos
       .filter((memo) => !keptIds.has(memo.id))
-      .map((memo) => repository.softDeleteMemo(memo.id, removedAt).catch(() => {}));
+      .map((memo) => repository.softDeleteMemo(memo.id, removedAt));
     const savePromises = nextMemos.map((memo) => repository.saveMemo(memo));
 
-    await Promise.all(removePromises);
-    await Promise.all(savePromises);
+    await Promise.all([...removePromises, ...savePromises]);
     setMemos(sortMemos(nextMemos));
   };
 
@@ -204,7 +222,8 @@ export function App() {
   };
 
   const handleMemoChange = (nextMemo: Memo) => {
-    void persistMemo(nextMemo);
+    upsertMemo(nextMemo);
+    void persistMemo(nextMemo, { skipStateUpdate: true });
   };
 
   const handleHideMemo = async (memoId: string) => {
@@ -314,7 +333,9 @@ export function App() {
     setIsBusy(true);
     setBackupStatus("백업을 시작합니다.");
     try {
-      const result = await backupMemos(services.gateway, user.uid, memos);
+      await waitForPendingPersists();
+      const persistedMemos = await repository.listMemos();
+      const result = await backupMemos(services.gateway, user.uid, persistedMemos);
       setBackupStatus(`백업 완료: ${result.path}`);
     } catch (error) {
       setBackupStatus(`${BACKUP_FAILED_PREFIX} ${getErrorMessage(error)}`);
@@ -342,6 +363,7 @@ export function App() {
     setIsBusy(true);
     setBackupStatus("복원을 시작합니다.");
     try {
+      await waitForPendingPersists();
       const payload = await restoreLatestBackup(services.gateway, user.uid);
 
       if (!payload) {

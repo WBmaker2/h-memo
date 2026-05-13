@@ -11,7 +11,13 @@ const {
   mockSetStartupEnabled,
   mockSignInWithGoogle,
   mockSignOutUser,
+  mockSaveMemo,
+  mockSoftDeleteMemo,
+  mockRestoreMemo,
   mockGetFirebaseClientEnv,
+  defaultSaveMemo,
+  defaultSoftDeleteMemo,
+  defaultRestoreMemo,
   mockBackupMemos,
   mockRestoreLatestBackup,
   mockGetFirestore,
@@ -24,6 +30,9 @@ const {
   const mockSetStartupEnabled = vi.fn();
   const mockSignInWithGoogle = vi.fn();
   const mockSignOutUser = vi.fn();
+  const mockSaveMemo = vi.fn();
+  const mockSoftDeleteMemo = vi.fn();
+  const mockRestoreMemo = vi.fn();
   const mockBackupMemos = vi.fn();
   const mockRestoreLatestBackup = vi.fn();
   const mockGetFirestore = vi.fn((_app: unknown) => ({
@@ -53,12 +62,12 @@ const {
     return [...tauriRepositoryState.values()].map(cloneMemo);
   };
 
-  const saveMemo = async (nextMemo: any) => {
+  const defaultSaveMemo = async (nextMemo: any) => {
     tauriRepositoryState.set(nextMemo.id, cloneMemo(nextMemo));
     return cloneMemo(nextMemo);
   };
 
-  const softDeleteMemo = async (id: string, deletedAt: string) => {
+  const defaultSoftDeleteMemo = async (id: string, deletedAt: string) => {
     const current = tauriRepositoryState.get(id);
     if (!current) {
       throw new Error(`Cannot soft delete memo: memo not found (${id})`);
@@ -68,7 +77,7 @@ const {
     return cloneMemo(next);
   };
 
-  const restoreMemo = async (id: string, restoredAt: string) => {
+  const defaultRestoreMemo = async (id: string, restoredAt: string) => {
     const current = tauriRepositoryState.get(id);
     if (!current) {
       throw new Error(`Cannot restore memo: memo not found (${id})`);
@@ -89,9 +98,9 @@ const {
 
   class MockTauriMemoRepository {
     listMemos = listMemos;
-    saveMemo = saveMemo;
-    softDeleteMemo = softDeleteMemo;
-    restoreMemo = restoreMemo;
+    saveMemo = mockSaveMemo;
+    softDeleteMemo = mockSoftDeleteMemo;
+    restoreMemo = mockRestoreMemo;
   }
 
   return {
@@ -100,6 +109,12 @@ const {
     mockSetStartupEnabled,
     mockSignInWithGoogle,
     mockSignOutUser,
+    mockSaveMemo,
+    mockSoftDeleteMemo,
+    mockRestoreMemo,
+    defaultSaveMemo,
+    defaultSoftDeleteMemo,
+    defaultRestoreMemo,
     mockGetFirebaseClientEnv,
     mockBackupMemos,
     mockRestoreLatestBackup,
@@ -214,6 +229,16 @@ function getStatus() {
   return screen.getByRole("status");
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
   setTauriRuntime(false);
   tauriRepositoryState.clear();
@@ -222,11 +247,22 @@ beforeEach(() => {
   mockSetStartupEnabled.mockReset();
   mockSignInWithGoogle.mockReset();
   mockSignOutUser.mockReset();
+  mockSaveMemo.mockReset();
+  mockSoftDeleteMemo.mockReset();
+  mockRestoreMemo.mockReset();
   mockBackupMemos.mockReset();
   mockRestoreLatestBackup.mockReset();
   mockGetFirestore.mockReset();
   mockCreateFirebaseApp.mockReset();
   mockGetFirebaseAuth.mockReset();
+
+  mockSaveMemo.mockImplementation((nextMemo: any) => defaultSaveMemo(nextMemo));
+  mockSoftDeleteMemo.mockImplementation((id: string, deletedAt: string) =>
+    defaultSoftDeleteMemo(id, deletedAt)
+  );
+  mockRestoreMemo.mockImplementation((id: string, restoredAt: string) =>
+    defaultRestoreMemo(id, restoredAt)
+  );
 
   mockGetFirestore.mockReturnValue({ isMockFirestore: true });
   mockCreateFirebaseApp.mockReturnValue({ isMockFirebaseApp: true });
@@ -523,6 +559,141 @@ describe("desktop App", () => {
       );
       expect(mockBackupMemos).toHaveBeenCalledTimes(1);
       expect(screen.getByRole("status")).toHaveTextContent("백업 완료: users/user-1/backups/1");
+    });
+  });
+
+  it("backs up latest edit even when persistence is delayed", async () => {
+    const user = userEvent.setup();
+    const now = new Date().toISOString();
+    const pendingEditSave = deferred<void>();
+    let saveCallCount = 0;
+
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    mockSaveMemo.mockImplementation(async (nextMemo: unknown) => {
+      saveCallCount += 1;
+      if (saveCallCount > 1) {
+        await pendingEditSave.promise;
+      }
+      return defaultSaveMemo(nextMemo as any);
+    });
+
+    mockSignInWithGoogle.mockResolvedValue({
+      uid: "user-1",
+      displayName: "테스터",
+      email: "test@example.com",
+      photoURL: "",
+    });
+    mockBackupMemos.mockResolvedValue({
+      path: "users/user-1/backups/1",
+      payload: {
+        version: 1,
+        userId: "user-1",
+        createdAt: now,
+        memos: [],
+      },
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    fireEvent.change(screen.getByLabelText("메모 제목"), {
+      target: { value: "초기 제목" },
+    });
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "초기 내용" },
+    });
+
+    fireEvent.change(screen.getByLabelText("메모 제목"), {
+      target: { value: "최종 제목" },
+    });
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "최종 내용" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("로그인했습니다.");
+    });
+
+    await user.click(screen.getByRole("button", { name: "서버 백업" }));
+
+    pendingEditSave.resolve();
+    await waitFor(() => {
+      expect(mockBackupMemos).toHaveBeenCalledWith(
+        expect.anything(),
+        "user-1",
+        expect.arrayContaining([
+          expect.objectContaining({
+            title: "최종 제목",
+            plainText: "최종 내용",
+          }),
+        ])
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("백업 완료: users/user-1/backups/1");
+    });
+  });
+
+  it("does not hide local memo when restore persistence fails", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    const restoredMemo = getMemoFromTime({
+      id: "server-1",
+      now: "2026-01-02T03:00:00.000Z",
+      title: "서버복원메모",
+      text: "서버 복원 텍스트",
+    });
+
+    mockSignInWithGoogle.mockResolvedValue({
+      uid: "user-1",
+      displayName: "테스터",
+      email: "test@example.com",
+      photoURL: "",
+    });
+    mockRestoreLatestBackup.mockResolvedValue({
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      memos: [restoredMemo],
+    });
+    mockSoftDeleteMemo.mockImplementation(async () => {
+      throw new Error("persist soft delete failed");
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    fireEvent.change(screen.getByLabelText("메모 제목"), {
+      target: { value: "로컬메모" },
+    });
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "로컬 내용" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("로그인했습니다.");
+    });
+
+    await user.click(screen.getByRole("button", { name: "서버 복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("복원 실패:");
+      expect(screen.queryByDisplayValue("서버복원메모")).not.toBeInTheDocument();
+      expect(screen.getByDisplayValue("로컬메모")).toBeInTheDocument();
     });
   });
 
