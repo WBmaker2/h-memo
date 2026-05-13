@@ -22,47 +22,43 @@ export function StickyMemo({ memo, onChange, onHide, onDelete }: StickyMemoProps
     setEditingMemo(memo);
   }, [memo]);
 
+  const commitMemo = (nextMemo: Memo) => {
+    setEditingMemo(nextMemo);
+    onChange(nextMemo);
+  };
+
   const handleTitleChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     const now = new Date().toISOString();
-    setEditingMemo((prevMemo) => {
-      const nextMemo = renameMemo(prevMemo, value, now);
-      onChange(nextMemo);
-      return nextMemo;
-    });
+    const nextMemo = renameMemo(editingMemo, value, now);
+    commitMemo(nextMemo);
   };
 
   const handleContentChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     const now = new Date().toISOString();
-    setEditingMemo((prevMemo) => {
-      const text = event.target.value;
-      const richContent = {
-        type: "doc",
-        content: [
-          {
-            type: "paragraph",
-            content: [{ type: "text", text }],
-          },
-        ],
-      };
-      const nextMemo = updateMemoContent(
-        prevMemo,
-        richContent,
-        extractPlainText(richContent),
-        now
-      );
-      onChange(nextMemo);
-      return nextMemo;
-    });
+    const text = event.target.value;
+    const richContent = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text }],
+        },
+      ],
+    };
+    const nextMemo = updateMemoContent(
+      editingMemo,
+      richContent,
+      extractPlainText(richContent),
+      now
+    );
+    commitMemo(nextMemo);
   };
 
   const handleStyleChange = (style: Partial<Memo["style"]>) => {
     const now = new Date().toISOString();
-    setEditingMemo((prevMemo) => {
-      const nextMemo = updateMemoStyle(prevMemo, style, now);
-      onChange(nextMemo);
-      return nextMemo;
-    });
+    const nextMemo = updateMemoStyle(editingMemo, style, now);
+    commitMemo(nextMemo);
   };
 
   return (

@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { StickyMemo } from "./StickyMemo";
+import { StrictMode } from "react";
 
 describe("StickyMemo", () => {
   it("edits title, body, and style", async () => {
@@ -65,5 +66,30 @@ describe("StickyMemo", () => {
       title: "새 메모",
     });
     expect(screen.getByDisplayValue("새 메모")).toBeInTheDocument();
+  });
+
+  it("does not duplicate onChange in StrictMode per single edit", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+
+    render(
+      <StrictMode>
+        <StickyMemo
+          memo={createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" })}
+          onChange={onChange}
+          onHide={vi.fn()}
+          onDelete={vi.fn()}
+        />
+      </StrictMode>
+    );
+
+    const titleInput = screen.getByLabelText("메모 제목");
+    const backgroundButton = screen.getByRole("button", { name: "흰색 배경" });
+
+    await user.click(backgroundButton);
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    await user.type(titleInput, "A");
+    expect(onChange).toHaveBeenCalledTimes(2);
   });
 });

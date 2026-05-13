@@ -35,6 +35,7 @@ export function MemoToolbar({
             key={background.value}
             type="button"
             aria-label={background.label}
+            aria-pressed={style.backgroundColor === background.value}
             onClick={() => onStyleChange({ backgroundColor: background.value })}
             style={{
               backgroundColor: background.value,
@@ -72,6 +73,7 @@ export function MemoToolbar({
             key={textColor.value}
             type="button"
             aria-label={textColor.label}
+            aria-pressed={style.textColor === textColor.value}
             onClick={() => onStyleChange({ textColor: textColor.value })}
             style={{
               backgroundColor: textColor.value,
