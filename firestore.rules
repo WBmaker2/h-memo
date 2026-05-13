@@ -2,8 +2,38 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function hasValidBackupSnapshotShape(uid) {
+      return request.resource.data.keys().hasOnly([
+          "version",
+          "userId",
+          "createdAt",
+          "memos",
+          "savedAt"
+        ])
+        && request.resource.data.keys().hasAll([
+          "version",
+          "userId",
+          "createdAt",
+          "memos"
+        ])
+        && request.resource.data.version == 1
+        && request.resource.data.userId == uid
+        && request.resource.data.createdAt is string
+        && request.resource.data.memos is list
+        && (
+          !request.resource.data.keys().hasAny(["savedAt"])
+          || request.resource.data.savedAt is timestamp
+        );
+    }
+
     match /users/{uid}/backupSnapshots/{snapshotId} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if isOwner(uid);
+      allow create, update: if isOwner(uid) && hasValidBackupSnapshotShape(uid);
+      allow delete: if isOwner(uid);
     }
   }
 }

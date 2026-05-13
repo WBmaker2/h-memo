@@ -2,6 +2,10 @@ import { initializeApp, type FirebaseOptions } from "firebase/app";
 import type { FirebaseApp } from "firebase/app";
 import { type FirebaseClientEnv, validateFirebaseClientEnv } from "./firebaseEnvValidation";
 
+function normalize(value: string | undefined): string {
+  return value?.trim() ?? "";
+}
+
 export function createFirebaseApp(
   env: Partial<FirebaseClientEnv>,
   name?: string
@@ -15,14 +19,22 @@ export function createFirebaseApp(
     );
   }
 
+  const apiKey = normalize(env.apiKey);
+  const authDomain = normalize(env.authDomain);
+  const projectId = normalize(env.projectId);
+  const appId = normalize(env.appId);
+  const storageBucket = normalize(env.storageBucket);
+  const messagingSenderId = normalize(env.messagingSenderId);
+  const measurementId = normalize(env.measurementId);
+
   const options: FirebaseOptions = {
-    apiKey: env.apiKey,
-    authDomain: env.authDomain,
-    projectId: env.projectId,
-    appId: env.appId,
-    ...(env.storageBucket ? { storageBucket: env.storageBucket } : {}),
-    ...(env.messagingSenderId ? { messagingSenderId: env.messagingSenderId } : {}),
-    ...(env.measurementId ? { measurementId: env.measurementId } : {}),
+    apiKey,
+    authDomain,
+    projectId,
+    appId,
+    ...(storageBucket ? { storageBucket } : {}),
+    ...(messagingSenderId ? { messagingSenderId } : {}),
+    ...(measurementId ? { measurementId } : {}),
   };
 
   return initializeApp(options, name);
