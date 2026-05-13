@@ -14,22 +14,6 @@ function createMemoId(): string {
   return `memo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function normalizeEditedMemoTitle(previousTitle: string, nextTitle: string) {
-  if (previousTitle === "새 메모" && nextTitle.startsWith("새 메모")) {
-    return nextTitle.slice("새 메모".length).trimStart();
-  }
-
-  return nextTitle;
-}
-
-function normalizeTitleForPreview(title: string) {
-  if (/메모$/.test(title) && title.length > 2 && !title.includes(" ")) {
-    return `${title.slice(0, -2)} ${title.slice(-2)}`;
-  }
-
-  return title;
-}
-
 export function App() {
   const repository = useMemo(() => new MemoryMemoRepository(), []);
   const [memos, setMemos] = useState<Memo[]>([]);
@@ -61,6 +45,11 @@ export function App() {
     });
   };
 
+  const persistMemo = async (nextMemo: Memo) => {
+    const saved = await repository.saveMemo(nextMemo);
+    upsertMemo(saved);
+  };
+
   const handleCreateMemo = async () => {
     const now = new Date().toISOString();
     const nextMemo = createMemo({
@@ -69,21 +58,11 @@ export function App() {
       title: "",
     });
 
-    upsertMemo(nextMemo);
-    await repository.saveMemo(nextMemo);
+    await persistMemo(nextMemo);
   };
 
   const handleMemoChange = (nextMemo: Memo) => {
-    const previousMemo = memos.find((memo) => memo.id === nextMemo.id);
-    const normalizedMemo = previousMemo
-      ? {
-          ...nextMemo,
-          title: normalizeEditedMemoTitle(previousMemo.title, nextMemo.title),
-        }
-      : nextMemo;
-
-    upsertMemo(normalizedMemo);
-    void repository.saveMemo(normalizedMemo);
+    void persistMemo(nextMemo);
   };
 
   const handleHideMemo = async (memoId: string) => {
@@ -93,37 +72,22 @@ export function App() {
     }
 
     const hidden = updateMemoWindowState(target, { visible: false }, new Date().toISOString());
-    upsertMemo(hidden);
-    void repository.saveMemo(hidden);
+    await persistMemo(hidden);
   };
 
-  const handleDeleteMemo = (memoId: string) => {
+  const handleDeleteMemo = async (memoId: string) => {
     const target = memos.find((memo) => memo.id === memoId);
     if (!target) {
       return;
     }
 
-    const deleted = {
-      ...target,
-      deletedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      syncState: "queued" as const,
-      windowState: {
-        ...target.windowState,
-        visible: false,
-      },
-    };
-
+    const deletedAt = new Date().toISOString();
+    const deleted = await repository.softDeleteMemo(memoId, deletedAt);
     upsertMemo(deleted);
-    void repository.softDeleteMemo(memoId, new Date().toISOString());
   };
 
   const handleGenerateTextPreview = () => {
-    const withSpacing = visibleMemos.map((memo) => ({
-      ...memo,
-      title: normalizeTitleForPreview(memo.title),
-    }));
-    setTxtPreview(formatMemosAsCombinedText(withSpacing));
+    setTxtPreview(formatMemosAsCombinedText(visibleMemos));
   };
 
   const handleBackup = () => {
