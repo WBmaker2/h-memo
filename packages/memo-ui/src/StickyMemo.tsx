@@ -1,5 +1,11 @@
 import { type ChangeEvent, useEffect, useState } from "react";
-import { renameMemo, type Memo, updateMemoContent, updateMemoStyle } from "@h-memo/memo-core";
+import {
+  extractPlainText,
+  renameMemo,
+  type Memo,
+  updateMemoContent,
+  updateMemoStyle,
+} from "@h-memo/memo-core";
 import { MemoToolbar } from "./MemoToolbar";
 
 type StickyMemoProps = {
@@ -29,10 +35,20 @@ export function StickyMemo({ memo, onChange, onHide, onDelete }: StickyMemoProps
   const handleContentChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     const now = new Date().toISOString();
     setEditingMemo((prevMemo) => {
+      const text = event.target.value;
+      const richContent = {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text }],
+          },
+        ],
+      };
       const nextMemo = updateMemoContent(
         prevMemo,
-        prevMemo.richContent,
-        event.target.value,
+        richContent,
+        extractPlainText(richContent),
         now
       );
       onChange(nextMemo);

@@ -26,6 +26,10 @@ describe("StickyMemo", () => {
     expect(onChange).toHaveBeenCalled();
     expect(screen.getByDisplayValue("오늘할일")).toBeInTheDocument();
     expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({
+      richContent: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "자료 정리" }] }],
+      },
       plainText: "자료 정리",
       style: { backgroundColor: "#ffffff", textColor: "#b91c1c" },
     });
