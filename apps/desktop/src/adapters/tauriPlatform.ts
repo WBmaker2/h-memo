@@ -1,6 +1,6 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 
 export type ExportTextFileResult =
   | { status: "saved"; path: string }
@@ -21,7 +21,7 @@ export async function exportTextFile(
       return { status: "cancelled" };
     }
 
-    await writeTextFile(result, contents);
+    await invoke("write_text_file", { path: result, contents });
     return { status: "saved", path: result };
   } catch (error) {
     const message = error instanceof Error ? error.message : "알 수 없는 오류";

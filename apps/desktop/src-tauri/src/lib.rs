@@ -71,6 +71,12 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
   show_main_window_inner(&app)
 }
 
+#[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<(), String> {
+  std::fs::write(&path, contents).map_err(|error| error.to_string())?;
+  Ok(())
+}
+
 fn show_main_window_inner(app: &AppHandle) -> Result<(), String> {
   let window = app
     .get_webview_window(WINDOW_LABEL)
@@ -243,13 +249,17 @@ pub fn run() {
   let _ = tauri::Builder::default()
     .plugin(tauri_plugin_autostart::Builder::new().build())
     .plugin(tauri_plugin_dialog::init())
-    .plugin(tauri_plugin_fs::init())
     .setup(|app| {
       let app_handle = app.handle();
       build_tray(app_handle)?;
       Ok(())
     })
-    .invoke_handler(tauri::generate_handler![list_memos, save_memo, show_main_window])
+    .invoke_handler(tauri::generate_handler![
+      list_memos,
+      save_memo,
+      show_main_window,
+      write_text_file
+    ])
     .run(tauri::generate_context!())
     .expect("failed to run H Memo");
 }
