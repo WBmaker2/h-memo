@@ -86,4 +86,22 @@ describe("backupPayload", () => {
       reason: "잘못된 메모 데이터가 포함되어 있습니다.",
     });
   });
+
+  it("rejects payloads with missing richContent", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const brokenMemo = { ...memo } as Record<string, unknown>;
+    delete brokenMemo.richContent;
+
+    const payload = {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:05:00.000Z",
+      memos: [brokenMemo],
+    };
+
+    expect(validateBackupPayload(payload, "user-1")).toEqual({
+      ok: false,
+      reason: "잘못된 메모 데이터가 포함되어 있습니다.",
+    });
+  });
 });

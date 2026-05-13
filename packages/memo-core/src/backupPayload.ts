@@ -34,6 +34,9 @@ function isValidMemoShape(memo: unknown): memo is Memo {
   if (typeof candidate.syncState !== "string" || !SYNC_STATES.includes(candidate.syncState)) {
     return false;
   }
+  if (!Object.prototype.hasOwnProperty.call(candidate, "richContent")) {
+    return false;
+  }
 
   if (!(candidate.deletedAt === null || typeof candidate.deletedAt === "string")) {
     return false;
