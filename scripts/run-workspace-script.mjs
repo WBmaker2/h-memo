@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const scriptName = process.argv[2];
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 if (!scriptName) {
   console.error("Usage: node scripts/run-workspace-script.mjs <scriptName>");
@@ -42,7 +43,7 @@ function runScriptInWorkspace(workspacePath, scriptName) {
     return { workspacePath, skipped: true };
   }
 
-  execFileSync("npm", ["run", scriptName, "-w", workspacePath], {
+  execFileSync(npmCommand, ["run", scriptName, "-w", workspacePath], {
     stdio: "inherit",
   });
 
