@@ -1,7 +1,7 @@
 name: Windows Tauri Build
 
 permissions:
-  contents: write
+  contents: read
 
 on:
   push:
@@ -21,6 +21,8 @@ jobs:
     name: Build Windows Tauri Artifacts
     runs-on: windows-latest
     timeout-minutes: 50
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -56,25 +58,6 @@ jobs:
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID || vars.VITE_FIREBASE_MESSAGING_SENDER_ID || '' }}
           VITE_FIREBASE_MEASUREMENT_ID: ${{ secrets.VITE_FIREBASE_MEASUREMENT_ID || vars.VITE_FIREBASE_MEASUREMENT_ID || '' }}
 
-      - name: Resolve release tag
-        id: release_tag
-        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
-        shell: pwsh
-        run: |
-          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
-            $tag = '${{ inputs.release_tag }}'
-          } else {
-            $tag = '${{ github.ref_name }}'
-          }
-
-          if (-not ($tag -match '^v.+')) {
-            Write-Error "Release tag must start with 'v' (예: v0.1.0). Provided: $tag"
-            exit 1
-          }
-
-          Write-Host "Using release tag: $tag"
-          "release_tag=$tag" >> $env:GITHUB_OUTPUT
-
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4
         if: always()
@@ -89,38 +72,75 @@ jobs:
           name: h-memo-windows-nsis
           path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
 
+  release:
+    name: Publish GitHub Release
+    needs: windows-tauri
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve release tag
+        id: release_tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_RELEASE_TAG"
+          else
+            tag="$REF_NAME"
+          fi
+
+          if [[ ! "$tag" =~ ^v.+ ]]; then
+            echo "Release tag must start with 'v' (예: v0.1.0). Provided: $tag" >&2
+            exit 1
+          fi
+
+          echo "Using release tag: $tag"
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download MSI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: h-memo-windows-msi
+          path: release-assets/msi
+
+      - name: Download NSIS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: h-memo-windows-nsis
+          path: release-assets/nsis
+
       - name: Upload installers to GitHub Release
-        if: steps.release_tag.outputs.release_tag != ''
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+          RELEASE_TARGET: ${{ github.sha }}
         run: |
-          $msiFiles = Get-ChildItem -Path "apps/desktop/src-tauri/target/release/bundle/msi" -Filter "*.msi"
-          if ($msiFiles.Count -eq 0) {
-            Write-Error "No MSI file found in bundle/msi."
+          mapfile -t msi_files < <(find release-assets/msi -type f -name "*.msi" | sort)
+          if [ "${#msi_files[@]}" -eq 0 ]; then
+            echo "No MSI file found in release-assets/msi." >&2
             exit 1
-          }
+          fi
 
-          $nsisFiles = Get-ChildItem -Path "apps/desktop/src-tauri/target/release/bundle/nsis" -Filter "*.exe"
-          if ($nsisFiles.Count -eq 0) {
-            Write-Error "No NSIS installer file found in bundle/nsis."
+          mapfile -t nsis_files < <(find release-assets/nsis -type f -name "*.exe" | sort)
+          if [ "${#nsis_files[@]}" -eq 0 ]; then
+            echo "No NSIS installer file found in release-assets/nsis." >&2
             exit 1
-          }
+          fi
 
-          $artifacts = @()
-          $artifacts += $msiFiles | ForEach-Object { $_.FullName }
-          $artifacts += $nsisFiles | ForEach-Object { $_.FullName }
+          artifacts=("${msi_files[@]}" "${nsis_files[@]}")
+          echo "Found ${#msi_files[@]} MSI and ${#nsis_files[@]} NSIS files."
 
-          Write-Host "Found $($msiFiles.Count) MSI and $($nsisFiles.Count) NSIS files."
-
-          gh release view "$env:RELEASE_TAG" --json tagName -q .tagName > $null 2>&1
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release $env:RELEASE_TAG already exists. Uploading installers..."
-            gh release upload "$env:RELEASE_TAG" @artifacts --clobber
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          } else {
-            Write-Host "Creating new release $env:RELEASE_TAG..."
-            gh release create "$env:RELEASE_TAG" @artifacts --title "H Memo $env:RELEASE_TAG" --notes "Release $env:RELEASE_TAG"
-            exit $LASTEXITCODE
-          }
+          if gh release view "$RELEASE_TAG" --json tagName -q .tagName > /dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists. Uploading installers..."
+            gh release upload "$RELEASE_TAG" "${artifacts[@]}" --clobber
+          else
+            echo "Creating new release $RELEASE_TAG at $RELEASE_TARGET..."
+            gh release create "$RELEASE_TAG" "${artifacts[@]}" --title "H Memo $RELEASE_TAG" --notes "Release $RELEASE_TAG" --target "$RELEASE_TARGET"
+          fi
