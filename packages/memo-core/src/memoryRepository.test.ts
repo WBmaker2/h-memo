@@ -43,4 +43,41 @@ describe("memoryMemoRepository", () => {
 
     expect(sorted[0].id).toBe("memo-1");
   });
+
+  it("does not retain references to constructor initial memo array", async () => {
+    const initial = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const initialMemos = [initial];
+    const repo = new MemoryMemoRepository(initialMemos);
+
+    initial.title = "변경됨";
+
+    const loaded = await repo.listMemos();
+
+    expect(loaded[0].title).toBe("새 메모");
+  });
+
+  it("returns cloned objects from listMemos", async () => {
+    const repo = new MemoryMemoRepository([
+      createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" }),
+    ]);
+
+    const memos = await repo.listMemos();
+    memos[0].title = "클론 변경";
+
+    const reloaded = await repo.listMemos();
+
+    expect(reloaded[0].title).toBe("새 메모");
+  });
+
+  it("does not leak input memo references through saveMemo", async () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const repo = new MemoryMemoRepository();
+
+    await repo.saveMemo(memo);
+    memo.title = "입력 변경";
+
+    const loaded = await repo.listMemos();
+
+    expect(loaded[0].title).toBe("새 메모");
+  });
 });

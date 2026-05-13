@@ -11,25 +11,36 @@ export function extractPlainText(content: unknown): string {
 
   const node = content as RichTextNode | RichTextNode[];
 
-  const getText = (target: RichTextNode): string => {
-    if (target.type === "text") {
-      return target.text ?? "";
+  const getText = (target: unknown): string => {
+    if (!target || typeof target !== "object") {
+      return "";
     }
 
-    const children = Array.isArray(target.content) ? target.content : [];
+    const candidate = target as RichTextNode;
+
+    if (candidate.type === "text") {
+      return typeof candidate.text === "string" ? candidate.text : "";
+    }
+
+    const children = Array.isArray(candidate.content) ? candidate.content : [];
     return children.map((child) => getText(child)).join("");
   };
 
-  const getParagraphLines = (target: RichTextNode): string[] => {
-    if (target.type === "paragraph") {
-      return [getText(target)];
-    }
-
-    if (!Array.isArray(target.content)) {
+  const getParagraphLines = (target: unknown): string[] => {
+    if (!target || typeof target !== "object") {
       return [];
     }
 
-    return target.content.flatMap((child) => getParagraphLines(child));
+    const candidate = target as RichTextNode;
+    if (candidate.type === "paragraph") {
+      return [getText(candidate)];
+    }
+
+    if (!Array.isArray(candidate.content)) {
+      return [];
+    }
+
+    return candidate.content.flatMap((child) => getParagraphLines(child));
   };
 
   const lines = Array.isArray(node)
@@ -37,7 +48,6 @@ export function extractPlainText(content: unknown): string {
     : getParagraphLines(node);
 
   const normalized = lines
-    .map((line) => line)
     .filter((line) => line.length > 0)
     .join("\n");
 

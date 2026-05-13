@@ -37,4 +37,21 @@ describe("extractPlainText", () => {
     expect(extractPlainText("plain")).toBe("");
     expect(extractPlainText({ type: "doc", content: "bad" })).toBe("");
   });
+
+  it("ignores malformed children in content array", () => {
+    const content = {
+      type: "doc",
+      content: [
+        null,
+        0,
+        "text",
+        { type: "paragraph", content: [{ type: "text", text: "good" }] },
+        { type: "paragraph", content: null },
+        { type: "blockquote", content: [{}, { type: "paragraph", content: [{ type: "text", text: "nested" }]}] },
+        { type: "paragraph", content: [{ type: "text", text: 123 }] },
+      ],
+    };
+
+    expect(extractPlainText(content)).toBe("good\nnested");
+  });
 });

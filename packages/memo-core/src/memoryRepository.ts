@@ -1,25 +1,29 @@
 import type { Memo, MemoRepository } from "./types";
 import { softDeleteMemo as markSoftDelete } from "./memoFactory";
 
+function cloneMemo(memo: Memo): Memo {
+  return JSON.parse(JSON.stringify(memo)) as Memo;
+}
+
 export class MemoryMemoRepository implements MemoRepository {
   private readonly records = new Map<string, Memo>();
 
   constructor(initialMemos: Memo[] = []) {
     initialMemos.forEach((memo) => {
-      this.records.set(memo.id, { ...memo });
+      this.records.set(memo.id, cloneMemo(memo));
     });
   }
 
   async listMemos(): Promise<Memo[]> {
-    return Array.from(this.records.values()).sort(
-      (a, b) => b.updatedAt.localeCompare(a.updatedAt)
-    );
+    return Array.from(this.records.values())
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((memo) => cloneMemo(memo));
   }
 
   async saveMemo(memo: Memo): Promise<Memo> {
-    const memoToSave = { ...memo };
+    const memoToSave = cloneMemo(memo);
     this.records.set(memoToSave.id, memoToSave);
-    return memoToSave;
+    return cloneMemo(memoToSave);
   }
 
   async softDeleteMemo(id: string, deletedAt: string): Promise<Memo> {
@@ -28,9 +32,9 @@ export class MemoryMemoRepository implements MemoRepository {
       throw new Error(`Cannot soft delete memo: memo not found (${id})`);
     }
 
-    const updated = markSoftDelete(found, deletedAt);
+    const updated = cloneMemo(markSoftDelete(found, deletedAt));
     this.records.set(id, updated);
-    return updated;
+    return cloneMemo(updated);
   }
 
   async restoreMemo(id: string, restoredAt: string): Promise<Memo> {
@@ -50,8 +54,9 @@ export class MemoryMemoRepository implements MemoRepository {
       },
     };
 
-    this.records.set(id, restored);
-    return restored;
+    const stored = cloneMemo(restored);
+    this.records.set(id, stored);
+    return cloneMemo(stored);
   }
 }
 

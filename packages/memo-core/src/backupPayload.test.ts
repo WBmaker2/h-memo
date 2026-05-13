@@ -42,4 +42,48 @@ describe("backupPayload", () => {
       reason: "잘못된 메모 데이터가 포함되어 있습니다.",
     });
   });
+
+  it("rejects payloads with malformed memo fields", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const payload = {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:05:00.000Z",
+      memos: [
+        {
+          ...(memo as unknown as Record<string, unknown>),
+          syncState: "unsupported",
+        },
+      ],
+    };
+
+    expect(validateBackupPayload(payload, "user-1")).toEqual({
+      ok: false,
+      reason: "잘못된 메모 데이터가 포함되어 있습니다.",
+    });
+  });
+
+  it("rejects payloads with invalid nested shape (style/windowState)", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const payload = {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:05:00.000Z",
+      memos: [
+        {
+          ...memo,
+          style: { ...memo.style, fontSize: "16" },
+          windowState: {
+            ...memo.windowState,
+            width: "320",
+          },
+        },
+      ],
+    };
+
+    expect(validateBackupPayload(payload, "user-1")).toEqual({
+      ok: false,
+      reason: "잘못된 메모 데이터가 포함되어 있습니다.",
+    });
+  });
 });
