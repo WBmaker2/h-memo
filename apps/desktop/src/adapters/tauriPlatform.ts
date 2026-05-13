@@ -1,5 +1,4 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
 export type ExportTextFileResult =
@@ -12,19 +11,18 @@ export async function exportTextFile(
   contents: string
 ): Promise<ExportTextFileResult> {
   try {
-    const result = await save({
-      defaultPath: fileName,
-      filters: [{ extensions: ["txt"], name: "텍스트 파일" }],
+    const savedPath = await invoke<string | null>("export_text_file", {
+      fileName,
+      contents,
     });
 
-    if (!result) {
+    if (savedPath == null) {
       return { status: "cancelled" };
     }
 
-    await invoke("write_text_file", { path: result, contents });
-    return { status: "saved", path: result };
+    return { status: "saved", path: savedPath };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "알 수 없는 오류";
+    const message = typeof error === "string" ? error : String(error);
     return { status: "failed", message };
   }
 }

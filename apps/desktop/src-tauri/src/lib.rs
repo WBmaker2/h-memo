@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result as AnyhowResult};
@@ -13,6 +14,7 @@ use tauri::{
   tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
   AppHandle, Manager,
 };
+use tauri_plugin_dialog::{DialogExt, FilePath};
 
 const WINDOW_LABEL: &str = "main";
 const SHOW_MEMO_LABEL: &str = "show_memo";
@@ -72,9 +74,35 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn write_text_file(path: String, contents: String) -> Result<(), String> {
-  std::fs::write(&path, contents).map_err(|error| error.to_string())?;
-  Ok(())
+async fn export_text_file(
+  app: AppHandle,
+  file_name: String,
+  contents: String,
+) -> Result<Option<String>, String> {
+  let selected = app
+    .dialog()
+    .file()
+    .add_filter("텍스트 파일", &["txt"])
+    .set_file_name(&file_name)
+    .blocking_save_file()
+    .map_err(|error| format!("파일 저장 대화상자 열기 실패: {error}"))?;
+
+  let file_path = match selected {
+    Some(path) => path,
+    None => return Ok(None),
+  };
+
+  let file_system_path = match file_path {
+    FilePath::Path(path) => path,
+    other => {
+      return Err(format!(
+        "선택한 경로는 로컬 파일 경로로 해석할 수 없습니다: {other:?}"
+      ))
+    }
+  };
+
+  fs::write(&file_system_path, contents).map_err(|error| error.to_string())?;
+  Ok(Some(file_system_path.to_string_lossy().to_string()))
 }
 
 fn show_main_window_inner(app: &AppHandle) -> Result<(), String> {
@@ -258,7 +286,7 @@ pub fn run() {
       list_memos,
       save_memo,
       show_main_window,
-      write_text_file
+      export_text_file
     ])
     .run(tauri::generate_context!())
     .expect("failed to run H Memo");
