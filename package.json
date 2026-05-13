@@ -14,7 +14,8 @@
     "typecheck": "node scripts/run-workspace-script.mjs typecheck",
     "build": "node scripts/run-workspace-script.mjs build",
     "tauri:dev": "npm run tauri:dev -w apps/desktop",
-    "tauri:build": "npm run tauri:build -w apps/desktop"
+    "tauri:build": "npm run tauri:build -w apps/desktop",
+    "verify:windows-artifacts": "node scripts/verify-windows-artifacts.mjs"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",
