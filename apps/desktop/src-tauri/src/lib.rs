@@ -44,14 +44,13 @@ async fn list_memos(app: AppHandle) -> Result<Vec<MemoRecord>, String> {
     )
     .map_err(|error| error.to_string())?;
 
-  let mut rows = statement
+  let rows = statement
     .query_map([], parse_memo_row)
     .map_err(|error| error.to_string())?;
 
-  let mut memos = Vec::new();
-  while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-    memos.push(row.map_err(|error| error.to_string())?);
-  }
+  let memos = rows
+    .collect::<Result<Vec<MemoRecord>, rusqlite::Error>>()
+    .map_err(|error| error.to_string())?;
 
   Ok(memos)
 }
@@ -66,6 +65,10 @@ async fn save_memo(app: AppHandle, memo: MemoRecord) -> Result<MemoRecord, Strin
 
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
+  show_main_window_inner(&app)
+}
+
+fn show_main_window_inner(app: &AppHandle) -> Result<(), String> {
   let window = app
     .get_webview_window(WINDOW_LABEL)
     .ok_or_else(|| "main window not found".to_string())?;
@@ -193,12 +196,12 @@ fn build_tray(app: &AppHandle) -> AnyhowResult<()> {
       let id = event.id.as_ref();
       match id {
         SHOW_MEMO_LABEL => {
-          if let Err(error) = show_main_window(app.clone()) {
+          if let Err(error) = show_main_window_inner(app) {
             eprintln!("failed to open main window: {error}");
           }
         }
         NEW_MEMO_LABEL => {
-          if let Err(error) = show_main_window(app.clone()) {
+          if let Err(error) = show_main_window_inner(app) {
             eprintln!("failed to open main window: {error}");
           }
         }
@@ -216,7 +219,7 @@ fn build_tray(app: &AppHandle) -> AnyhowResult<()> {
         ..
       } = event
       {
-        if let Err(error) = show_main_window(app) {
+        if let Err(error) = show_main_window_inner(app) {
           eprintln!("failed to focus main window: {error}");
         }
       }
@@ -227,7 +230,6 @@ fn build_tray(app: &AppHandle) -> AnyhowResult<()> {
   Ok(())
 }
 
-#[cfg_attr(not(debug_assertions), tauri::desktop_entry_point)]
 pub fn run() {
   let _ = tauri::Builder::default()
     .plugin(tauri_plugin_autostart::Builder::new().build())
