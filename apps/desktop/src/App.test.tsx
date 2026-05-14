@@ -277,21 +277,19 @@ beforeEach(() => {
 });
 
 describe("desktop App", () => {
-  it("keeps title text as-is in exported text", async () => {
+  it("exports memo body text without a separate title field", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "윈도우메모" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "tray memo" },
     });
     await user.click(screen.getByRole("button", { name: "TXT 미리보기" }));
     const preview = screen.getByLabelText("TXT 미리보기 결과");
 
-    expect(preview).toHaveTextContent(/제목: 윈도우메모/);
+    expect(screen.queryByLabelText("메모 제목")).not.toBeInTheDocument();
+    expect(preview).not.toHaveTextContent(/제목:/);
     expect(preview).toHaveTextContent(/tray memo/);
   });
 
@@ -300,7 +298,7 @@ describe("desktop App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), { target: { value: "윈도우메모" } });
+    fireEvent.change(screen.getByLabelText("메모 내용"), { target: { value: "윈도우메모" } });
     await user.click(screen.getByRole("button", { name: "메모 숨기기" }));
 
     await waitFor(() => {
@@ -313,26 +311,21 @@ describe("desktop App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "숨김메모" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "숨김 텍스트" },
     });
     await user.click(screen.getByRole("button", { name: "메모 숨기기" }));
 
     await waitFor(() => {
-      expect(screen.queryByDisplayValue("숨김메모")).not.toBeInTheDocument();
+      expect(screen.queryByDisplayValue("숨김 텍스트")).not.toBeInTheDocument();
     });
 
     await user.click(screen.getByRole("button", { name: "TXT 미리보기" }));
     let preview = screen.getByLabelText("TXT 미리보기 결과");
-    expect(preview).toHaveTextContent(/숨김메모/);
     expect(preview).toHaveTextContent(/숨김 텍스트/);
 
     await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
     preview = screen.getByLabelText("TXT 미리보기 결과");
-    expect(preview).toHaveTextContent(/숨김메모/);
     expect(preview).toHaveTextContent(/숨김 텍스트/);
   });
 
@@ -344,16 +337,12 @@ describe("desktop App", () => {
     expect(status).toHaveTextContent("Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.");
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "브라우저메모" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "browser text" },
     });
     await user.click(screen.getByRole("button", { name: "TXT 미리보기" }));
 
     const preview = screen.getByLabelText("TXT 미리보기 결과");
-    expect(preview).toHaveTextContent(/브라우저메모/);
     expect(preview).toHaveTextContent(/browser text/);
     expect(mockExportTextFile).not.toHaveBeenCalled();
   });
@@ -367,9 +356,6 @@ describe("desktop App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "취소테스트" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "cancel text" },
     });
@@ -392,9 +378,6 @@ describe("desktop App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "실패테스트" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "fail text" },
     });
@@ -447,9 +430,6 @@ describe("desktop App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "삭제용메모" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "delete text" },
     });
@@ -458,7 +438,7 @@ describe("desktop App", () => {
 
     const preview = screen.getByLabelText("TXT 미리보기 결과");
     expect(preview).toHaveTextContent("");
-    expect(preview).not.toHaveTextContent(/삭제용메모/);
+    expect(preview).not.toHaveTextContent(/delete text/);
   });
 
   it("toggles startup registration switch", async () => {
@@ -530,9 +510,6 @@ describe("desktop App", () => {
 
     render(<App />);
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "로컬메모" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "로컬 내용" },
     });
@@ -552,7 +529,6 @@ describe("desktop App", () => {
         "user-1",
         expect.arrayContaining([
           expect.objectContaining({
-            title: "로컬메모",
             plainText: "로컬 내용",
           }),
         ])
@@ -601,16 +577,10 @@ describe("desktop App", () => {
 
     render(<App />);
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "초기 제목" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "초기 내용" },
     });
 
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "최종 제목" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "최종 내용" },
     });
@@ -630,7 +600,6 @@ describe("desktop App", () => {
         "user-1",
         expect.arrayContaining([
           expect.objectContaining({
-            title: "최종 제목",
             plainText: "최종 내용",
           }),
         ])
@@ -675,9 +644,6 @@ describe("desktop App", () => {
 
     render(<App />);
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "로컬메모" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "로컬 내용" },
     });
@@ -692,8 +658,8 @@ describe("desktop App", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent("복원 실패:");
-      expect(screen.queryByDisplayValue("서버복원메모")).not.toBeInTheDocument();
-      expect(screen.getByDisplayValue("로컬메모")).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("서버 복원 텍스트")).not.toBeInTheDocument();
+      expect(screen.getByDisplayValue("로컬 내용")).toBeInTheDocument();
     });
   });
 
@@ -736,9 +702,6 @@ describe("desktop App", () => {
 
     render(<App />);
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "로컬메모" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "로컬 내용" },
     });
@@ -753,8 +716,8 @@ describe("desktop App", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent("복원 실패:");
-      expect(screen.queryByDisplayValue("서버복원메모")).not.toBeInTheDocument();
-      expect(screen.getByDisplayValue("로컬메모")).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("서버 복원 텍스트")).not.toBeInTheDocument();
+      expect(screen.getByDisplayValue("로컬 내용")).toBeInTheDocument();
     });
     expect(mockSoftDeleteMemo).not.toHaveBeenCalledWith(localMemoId, expect.any(String));
   });
@@ -790,9 +753,6 @@ describe("desktop App", () => {
 
     render(<App />);
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByLabelText("메모 제목"), {
-      target: { value: "로컬메모" },
-    });
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "로컬 내용" },
     });
@@ -810,7 +770,7 @@ describe("desktop App", () => {
       expect(screen.getByRole("status")).toHaveTextContent("복원 완료: 1개 메모");
     });
 
-    expect(screen.queryByDisplayValue("로컬메모")).not.toBeInTheDocument();
-    expect(screen.getByDisplayValue("서버복원메모")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("로컬 내용")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("서버 복원 텍스트")).toBeInTheDocument();
   });
 });

@@ -61,16 +61,13 @@ describe("WebApp", () => {
     render(<WebApp />);
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "메모 제목" }), {
-      target: { value: "웹 미리보기 메모" },
-    });
     fireEvent.change(screen.getByRole("textbox", { name: "메모 내용" }), {
       target: { value: "브라우저에서 저장되는 메모" },
     });
     await user.click(screen.getByRole("button", { name: "TXT 미리보기" }));
 
     const preview = screen.getByLabelText("TXT 미리보기 결과");
-    expect(preview).toHaveTextContent(/제목: 웹 미리보기 메모/);
+    expect(preview).not.toHaveTextContent(/제목:/);
     expect(preview).toHaveTextContent(/브라우저에서 저장되는 메모/);
   });
 
@@ -79,7 +76,7 @@ describe("WebApp", () => {
     const { unmount } = render(<WebApp />);
 
     await user.click(screen.getByRole("button", { name: "새 메모" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "메모 제목" }), {
+    fireEvent.change(screen.getByRole("textbox", { name: "메모 내용" }), {
       target: { value: "세션 유지 메모" },
     });
 
@@ -89,9 +86,9 @@ describe("WebApp", () => {
     });
 
     const raw = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "[]");
-    expect(raw.some((memo: { title: string }) => memo.title === "세션 유지 메모")).toBe(
-      true
-    );
+    expect(
+      raw.some((memo: { plainText: string }) => memo.plainText === "세션 유지 메모")
+    ).toBe(true);
 
     unmount();
     render(<WebApp />);
@@ -128,7 +125,7 @@ describe("WebApp", () => {
     render(<WebApp />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue("복구된 웹 메모")).toBeInTheDocument();
+      expect(screen.getByDisplayValue("windowState가 없어도 렌더링됩니다.")).toBeInTheDocument();
     });
     expect(screen.queryByDisplayValue("무시될 메모")).not.toBeInTheDocument();
   });

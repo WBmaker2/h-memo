@@ -1,31 +1,31 @@
 import { createMemo } from "@h-memo/memo-core";
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { StickyMemo } from "./StickyMemo";
 import { StrictMode } from "react";
 
 describe("StickyMemo", () => {
-  it("edits title, body, and style", async () => {
+  it("edits body and style from the memo menu", async () => {
     const user = userEvent.setup();
     const memo = createMemo({
       now: "2026-05-13T09:00:00.000Z",
       id: "memo-1",
-      title: "",
     });
     const onChange = vi.fn();
 
     render(<StickyMemo memo={memo} onChange={onChange} onHide={vi.fn()} onDelete={vi.fn()} />);
 
-    await user.type(screen.getByLabelText("메모 제목"), "오늘할일");
+    expect(screen.queryByLabelText("메모 제목")).not.toBeInTheDocument();
+
     await user.type(screen.getByLabelText("메모 내용"), "자료 정리");
     await user.click(screen.getByRole("button", { name: "노란색 배경" }));
     await user.click(screen.getByRole("button", { name: "흰색 배경" }));
     await user.click(screen.getByRole("button", { name: "빨강 글자" }));
 
     expect(onChange).toHaveBeenCalled();
-    expect(screen.getByDisplayValue("오늘할일")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("자료 정리")).toBeInTheDocument();
     expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({
       richContent: {
         type: "doc",
@@ -51,21 +51,27 @@ describe("StickyMemo", () => {
     expect(onDelete).toHaveBeenCalledWith("memo-1");
   });
 
-  it("uses renameMemo on each title change and applies trim fallback", async () => {
-    const user = userEvent.setup();
+  it("requests native window drag and resize from the handles", async () => {
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
-    const onChange = vi.fn();
+    const onRequestWindowDrag = vi.fn();
+    const onRequestWindowResize = vi.fn();
 
-    render(<StickyMemo memo={memo} onChange={onChange} onHide={vi.fn()} onDelete={vi.fn()} />);
+    render(
+      <StickyMemo
+        memo={memo}
+        onChange={vi.fn()}
+        onHide={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowDrag={onRequestWindowDrag}
+        onRequestWindowResize={onRequestWindowResize}
+      />
+    );
 
-    await user.clear(screen.getByLabelText("메모 제목"));
-    await user.type(screen.getByLabelText("메모 제목"), "   ");
+    fireEvent.pointerDown(screen.getByLabelText("창 이동 영역"), { button: 0 });
+    fireEvent.pointerDown(screen.getByLabelText("창 크기 조절"), { button: 0 });
 
-    const latest = onChange.mock.calls.at(-1)?.[0];
-    expect(latest).toMatchObject({
-      title: "새 메모",
-    });
-    expect(screen.getByDisplayValue("새 메모")).toBeInTheDocument();
+    expect(onRequestWindowDrag).toHaveBeenCalledTimes(1);
+    expect(onRequestWindowResize).toHaveBeenCalledWith("SouthEast");
   });
 
   it("does not duplicate onChange in StrictMode per single edit", async () => {
@@ -83,13 +89,13 @@ describe("StickyMemo", () => {
       </StrictMode>
     );
 
-    const titleInput = screen.getByLabelText("메모 제목");
+    const bodyInput = screen.getByLabelText("메모 내용");
     const backgroundButton = screen.getByRole("button", { name: "흰색 배경" });
 
     await user.click(backgroundButton);
     expect(onChange).toHaveBeenCalledTimes(1);
 
-    await user.type(titleInput, "A");
+    await user.type(bodyInput, "A");
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 });

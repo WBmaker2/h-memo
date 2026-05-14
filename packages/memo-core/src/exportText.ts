@@ -2,7 +2,6 @@ import type { Memo } from "./types";
 
 function formatSingleMemo(memo: Memo): string {
   return [
-    `제목: ${memo.title}`,
     `수정: ${memo.updatedAt}`,
     "",
     memo.plainText,

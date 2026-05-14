@@ -17,6 +17,7 @@ import {
   getStartupEnabled,
   setStartupEnabled as setTauriStartupEnabled,
 } from "./adapters/tauriPlatform";
+import { startWindowDrag, startWindowResize } from "./adapters/tauriWindow";
 import {
   FirestoreBackupGateway,
   backupMemos,
@@ -433,6 +434,26 @@ export function App() {
   const isRestoreDisabled = !isServerReady || user === null || isBusy || !syncServicesInitialized;
   const isAuthDisabled = !isServerReady || isBusy;
 
+  const handleRequestWindowDrag = () => {
+    if (!isTauri) {
+      return;
+    }
+
+    void startWindowDrag().catch((error) => {
+      setBackupStatus(`창 이동 실패: ${getErrorMessage(error)}`);
+    });
+  };
+
+  const handleRequestWindowResize = (direction: "SouthEast") => {
+    if (!isTauri) {
+      return;
+    }
+
+    void startWindowResize(direction).catch((error) => {
+      setBackupStatus(`창 크기 조절 실패: ${getErrorMessage(error)}`);
+    });
+  };
+
   return (
     <MemoWorkspace
       appClassName="desktop-app"
@@ -444,6 +465,8 @@ export function App() {
       onMemoChange={handleMemoChange}
       onHideMemo={handleHideMemo}
       onDeleteMemo={handleDeleteMemo}
+      onRequestWindowDrag={handleRequestWindowDrag}
+      onRequestWindowResize={handleRequestWindowResize}
       settingsProps={{
         userName: user ? user.displayName || user.email || "로그인 필요" : null,
         backupStatus,
