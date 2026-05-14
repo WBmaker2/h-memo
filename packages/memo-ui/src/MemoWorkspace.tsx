@@ -44,16 +44,17 @@ export function MemoWorkspace({
 }: MemoWorkspaceShellProps) {
   const hasMemos = memos.length > 0;
   const appMenuContent = (
-    <>
-      {hasMemos ? (
+    <div className="memo-menu__panel-content">
+      <section className="memo-menu__group" aria-label="메모 기능">
+        <h3 className="memo-menu__group-title">메모 기능</h3>
         <button type="button" onClick={onCreateMemo}>
           새 메모
         </button>
-      ) : null}
-      <button type="button" onClick={onExportText}>
-        TXT 미리보기
-      </button>
-      {actions}
+        <button type="button" onClick={onExportText}>
+          TXT 미리보기
+        </button>
+        {actions}
+      </section>
       <SettingsPanel
         userName={settingsProps.userName}
         backupStatus={settingsProps.backupStatus}
@@ -71,10 +72,13 @@ export function MemoWorkspace({
         onSignIn={settingsProps.onSignIn}
         onSignOut={settingsProps.onSignOut}
       />
-      <pre aria-label="TXT 미리보기 결과" className={`${appClassName}__preview`}>
-        {txtPreview}
-      </pre>
-    </>
+      <section className="memo-menu__group" aria-label="TXT 미리보기">
+        <h3 className="memo-menu__group-title">TXT 미리보기</h3>
+        <pre aria-label="TXT 미리보기 결과" className={`${appClassName}__preview`}>
+          {txtPreview}
+        </pre>
+      </section>
+    </div>
   );
 
   return (
@@ -109,9 +113,7 @@ export function MemoWorkspace({
           ))
         ) : (
           <div className={`${appClassName}__empty`}>
-            <button type="button" onClick={onCreateMemo}>
-              새 메모
-            </button>
+            <p>메모가 없습니다. 상단의 메뉴에서 새 메모를 만들어 보세요.</p>
           </div>
         )}
       </section>

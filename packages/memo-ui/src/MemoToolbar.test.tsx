@@ -23,6 +23,11 @@ describe("MemoToolbar", () => {
       />
     );
 
+    expect(screen.getByRole("heading", { name: "배경색" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "폰트" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "글자 색" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "메모 동작" })).toBeInTheDocument();
+
     expect(screen.getByRole("button", { name: "노란색 배경" })).toHaveAttribute(
       "aria-pressed",
       "true"
