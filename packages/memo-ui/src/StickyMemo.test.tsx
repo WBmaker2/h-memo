@@ -36,6 +36,57 @@ describe("StickyMemo", () => {
     });
   });
 
+  it("renders memo menu sections with style and app actions", async () => {
+    const user = userEvent.setup();
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-menu" });
+    const onGenerateText = vi.fn();
+    const onBackup = vi.fn();
+    const onRestore = vi.fn();
+    const onToggleStartup = vi.fn();
+
+    const appMenuContent = (
+      <>
+        <h4>메모 기능</h4>
+        <button type="button" onClick={onGenerateText}>
+          TXT 미리보기
+        </button>
+        <button type="button" onClick={onBackup}>
+          서버 백업
+        </button>
+        <label>
+          시작프로그램 등록
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label="시작프로그램 등록"
+            checked={false}
+            onChange={(event) => onToggleStartup(event.currentTarget.checked)}
+          />
+        </label>
+      </>
+    );
+
+    render(
+      <StickyMemo
+        memo={memo}
+        appMenuContent={appMenuContent}
+        onChange={vi.fn()}
+        onHide={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "메모 스타일" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "메모 기능" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "TXT 미리보기" }));
+    await user.click(screen.getByRole("button", { name: "서버 백업" }));
+    await user.click(screen.getByRole("switch", { name: "시작프로그램 등록" }));
+
+    expect(onGenerateText).toHaveBeenCalled();
+    expect(onBackup).toHaveBeenCalled();
+    expect(onToggleStartup).toHaveBeenCalledWith(true);
+  });
+
   it("requests hide and delete through icon buttons", async () => {
     const user = userEvent.setup();
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });

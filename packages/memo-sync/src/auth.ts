@@ -1,10 +1,12 @@
 import type { FirebaseApp } from "firebase/app";
 import {
   getAuth,
+  onAuthStateChanged,
   GoogleAuthProvider,
   signInWithPopup,
   signOut,
   type Auth,
+  type Unsubscribe,
   type User,
 } from "firebase/auth";
 
@@ -36,4 +38,13 @@ export async function signInWithGoogle(auth: Auth): Promise<HMemoUser> {
 
 export async function signOutUser(auth: Auth): Promise<void> {
   await signOut(auth);
+}
+
+export function subscribeAuthUser(
+  auth: Auth,
+  callback: (user: HMemoUser | null) => void
+): Unsubscribe {
+  return onAuthStateChanged(auth, (user) => {
+    callback(user ? toHMemoUser(user) : null);
+  });
 }

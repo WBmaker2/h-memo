@@ -32,6 +32,9 @@ describe("SettingsPanel", () => {
     await user.click(screen.getByRole("switch", { name: "시작프로그램 등록" }));
 
     expect(screen.getByText("홍길동")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "계정" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "백업/복원" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "시작프로그램" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("마지막 백업: 2026-05-13 18:00");
     expect(onBackup).toHaveBeenCalled();
     expect(onRestore).toHaveBeenCalled();

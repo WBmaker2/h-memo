@@ -49,50 +49,61 @@ export function SettingsPanel({
 
   return (
     <section className="settings-panel">
-      <header>
+      <section className="settings-panel__section">
+        <h4 className="settings-panel__section-title">계정</h4>
         <p>{userName || "로그인 필요"}</p>
-        <button type="button" onClick={handleAuthClick} disabled={isAuthDisabled || !isServerAvailable}>
+        <button
+          type="button"
+          onClick={handleAuthClick}
+          disabled={isAuthDisabled || !isServerAvailable}
+          title={userName ? "로그아웃" : "로그인"}
+        >
           {userName ? "로그아웃" : "로그인"}
         </button>
-      </header>
+      </section>
 
-      <p role="status">{backupStatus}</p>
+      <section className="settings-panel__section">
+        <h4 className="settings-panel__section-title">백업/복원</h4>
+        <p role="status">{backupStatus}</p>
+        <div>
+          <button
+            type="button"
+            onClick={onBackup}
+            disabled={isBackupDisabled || !isServerAvailable}
+          >
+            서버 백업
+          </button>
+          <button
+            type="button"
+            onClick={onRestore}
+            disabled={isRestoreDisabled || !isServerAvailable}
+          >
+            서버 복원
+          </button>
+          <button
+            type="button"
+            onClick={onExportText}
+            disabled={isServerBusy}
+          >
+            TXT 내보내기
+          </button>
+        </div>
+      </section>
 
-      <div>
-        <button
-          type="button"
-          onClick={onBackup}
-          disabled={isBackupDisabled || !isServerAvailable}
-        >
-          서버 백업
-        </button>
-        <button
-          type="button"
-          onClick={onRestore}
-          disabled={isRestoreDisabled || !isServerAvailable}
-        >
-          서버 복원
-        </button>
-        <button
-          type="button"
-          onClick={onExportText}
-          disabled={isServerBusy}
-        >
-          TXT 내보내기
-        </button>
-      </div>
-
-      <label>
-        시작프로그램 등록
-        <input
-          type="checkbox"
-          role="switch"
-          aria-label="시작프로그램 등록"
-          checked={startupEnabled}
-          disabled={!isStartupAvailable}
-          onChange={handleToggleStartup}
-        />
-      </label>
+      <section className="settings-panel__section">
+        <h4 className="settings-panel__section-title">시작프로그램</h4>
+        <label>
+          시작프로그램 등록
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label="시작프로그램 등록"
+            checked={startupEnabled}
+            disabled={!isStartupAvailable}
+            onChange={handleToggleStartup}
+          />
+        </label>
+      </section>
     </section>
   );
 }

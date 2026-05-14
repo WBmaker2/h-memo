@@ -140,13 +140,20 @@ export function StickyMemo({
             ...
           </summary>
           <div className="memo-menu__panel">
-            <MemoToolbar
-              style={editingMemo.style}
-              onStyleChange={handleStyleChange}
-              onHide={() => onHide(editingMemo.id)}
-              onDelete={() => onDelete(editingMemo.id)}
-            />
-            {appMenuContent}
+            <section className="memo-menu__section">
+              <h3 className="memo-menu__section-title">메모 스타일</h3>
+              <MemoToolbar
+                style={editingMemo.style}
+                onStyleChange={handleStyleChange}
+                onHide={() => onHide(editingMemo.id)}
+                onDelete={() => onDelete(editingMemo.id)}
+              />
+            </section>
+            {appMenuContent ? (
+              <section className="memo-menu__section" aria-label="메모 메뉴">
+                {appMenuContent}
+              </section>
+            ) : null}
           </div>
         </details>
         <div className="sticky-memo__titlebar-drag" data-tauri-drag-region>

@@ -23,6 +23,8 @@ const {
   mockGetFirestore,
   mockCreateFirebaseApp,
   mockGetFirebaseAuth,
+  mockSubscribeAuthUser,
+  mockAuthUnsubscribe,
   mockStartWindowDrag,
   mockStartWindowResize,
   mockMinimizeWindow,
@@ -72,6 +74,10 @@ const {
   const mockGetFirebaseAuth = vi.fn((_app: unknown) => ({
     isMockFirebaseAuth: true,
   })) as Mock<(app: unknown) => { isMockFirebaseAuth: true }>;
+  const mockAuthUnsubscribe = vi.fn();
+  const mockSubscribeAuthUser = vi.fn((_auth: unknown, callback: (user: unknown) => void) => {
+    return mockAuthUnsubscribe;
+  }) as Mock<(auth: unknown, callback: (user: unknown) => void) => typeof mockAuthUnsubscribe>;
   const mockGetFirebaseClientEnv = vi.fn(() => ({
     apiKey: "",
     authDomain: "",
@@ -149,6 +155,8 @@ const {
     mockGetFirestore,
     mockCreateFirebaseApp,
     mockGetFirebaseAuth,
+    mockSubscribeAuthUser,
+    mockAuthUnsubscribe,
     mockStartWindowDrag,
     mockStartWindowResize,
     mockMinimizeWindow,
@@ -213,6 +221,8 @@ vi.mock("@h-memo/memo-sync", () => {
       env.appId.trim() !== "",
     restoreLatestBackup: (gateway: unknown, userId: string) =>
       mockRestoreLatestBackup(gateway, userId),
+    subscribeAuthUser: (auth: unknown, callback: (user: unknown) => void) =>
+      mockSubscribeAuthUser(auth, callback),
     signInWithGoogle: (auth: unknown) => mockSignInWithGoogle(auth),
     signOutUser: (auth: unknown) => mockSignOutUser(auth),
   };
@@ -308,6 +318,8 @@ beforeEach(() => {
   mockGetFirestore.mockReset();
   mockCreateFirebaseApp.mockReset();
   mockGetFirebaseAuth.mockReset();
+  mockSubscribeAuthUser.mockReset();
+  mockAuthUnsubscribe.mockReset();
   mockStartWindowDrag.mockReset();
   mockStartWindowResize.mockReset();
   mockMinimizeWindow.mockReset();
@@ -332,6 +344,10 @@ beforeEach(() => {
   mockGetFirestore.mockReturnValue({ isMockFirestore: true });
   mockCreateFirebaseApp.mockReturnValue({ isMockFirebaseApp: true });
   mockGetFirebaseAuth.mockReturnValue({ isMockFirebaseAuth: true });
+  mockSubscribeAuthUser.mockImplementation((_, callback: (user: unknown) => void) => {
+    callback(null);
+    return mockAuthUnsubscribe;
+  });
   mockStartWindowDrag.mockResolvedValue(undefined);
   mockStartWindowResize.mockResolvedValue(undefined);
   mockMinimizeWindow.mockResolvedValue(undefined);
@@ -353,12 +369,17 @@ beforeEach(() => {
   });
 });
 
+async function createMemoFromAppMenu(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByLabelText("앱 메뉴"));
+  await user.click(screen.getByRole("button", { name: "새 메모" }));
+}
+
 describe("desktop App", () => {
   it("exports memo body text without a separate title field", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "tray memo" },
     });
@@ -374,7 +395,7 @@ describe("desktop App", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), { target: { value: "윈도우메모" } });
     await user.click(screen.getByRole("button", { name: "메모 숨기기" }));
 
@@ -387,7 +408,7 @@ describe("desktop App", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "숨김 텍스트" },
     });
@@ -413,7 +434,7 @@ describe("desktop App", () => {
     const status = getStatus();
     expect(status).toHaveTextContent("Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.");
 
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "browser text" },
     });
@@ -432,7 +453,7 @@ describe("desktop App", () => {
 
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "cancel text" },
     });
@@ -454,7 +475,7 @@ describe("desktop App", () => {
 
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "fail text" },
     });
@@ -611,7 +632,7 @@ describe("desktop App", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "delete text" },
     });
@@ -657,11 +678,32 @@ describe("desktop App", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByRole("status")).toHaveTextContent("백업 정보 없음");
+      expect(screen.getByRole("status")).toHaveTextContent("서버 백업/복원은 로그인 후 사용 가능합니다.");
     });
     expect(screen.getByRole("button", { name: "로그인" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "서버 복원" })).toBeDisabled();
+  });
+
+  it("인증 구독 실패 시 인증 상태 복구 실패 메시지를 표시한다", async () => {
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    mockSubscribeAuthUser.mockImplementationOnce(() => {
+      throw new Error("listener registration failed");
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "인증 상태 복구 실패: listener registration failed"
+      );
+    });
   });
 
   it("calls memo-sync backup after login and reports success", async () => {
@@ -691,7 +733,7 @@ describe("desktop App", () => {
     });
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "로컬 내용" },
     });
@@ -758,7 +800,7 @@ describe("desktop App", () => {
     });
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "초기 내용" },
     });
@@ -825,7 +867,7 @@ describe("desktop App", () => {
     });
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "로컬 내용" },
     });
@@ -883,7 +925,7 @@ describe("desktop App", () => {
     });
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "로컬 내용" },
     });
@@ -934,7 +976,7 @@ describe("desktop App", () => {
     });
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "로컬 내용" },
     });
@@ -954,5 +996,81 @@ describe("desktop App", () => {
 
     expect(screen.queryByDisplayValue("로컬 내용")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("서버 복원 텍스트")).toBeInTheDocument();
+  });
+
+  it("복구된 로그인 세션이 있을 때 백업/복원 버튼이 활성화된다", async () => {
+    const user = userEvent.setup();
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    mockSubscribeAuthUser.mockImplementation((_, callback: (user: unknown) => void) => {
+      callback({
+        uid: "restored-user",
+        displayName: "기존 사용자",
+        email: "existing@example.com",
+        photoURL: "https://example.com/photo.png",
+      });
+      return mockAuthUnsubscribe;
+    });
+    mockBackupMemos.mockResolvedValue({
+      path: "users/restored-user/backups/1",
+      payload: {
+        version: 1,
+        userId: "restored-user",
+        createdAt: "2026-05-13T09:00:00.000Z",
+        memos: [],
+      },
+    });
+
+    render(<App />);
+    await createMemoFromAppMenu(user);
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "복구 세션 텍스트" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
+    });
+
+    await user.click(screen.getByRole("button", { name: "서버 백업" }));
+
+    await waitFor(() => {
+      expect(mockBackupMemos).toHaveBeenCalledWith(
+        expect.anything(),
+        "restored-user",
+        expect.arrayContaining([expect.objectContaining({ plainText: "복구 세션 텍스트" })])
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("백업 완료: users/restored-user/backups/1");
+    });
+  });
+
+  it("컴포넌트 unmount 시 auth 구독을 해제한다", () => {
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (user: unknown) => void) => {
+      callback({
+        uid: "restored-user",
+        displayName: "기존 사용자",
+        email: "existing@example.com",
+        photoURL: "",
+      });
+      return mockAuthUnsubscribe;
+    });
+
+    const { unmount } = render(<App />);
+
+    unmount();
+
+    expect(mockAuthUnsubscribe).toHaveBeenCalledTimes(1);
   });
 });

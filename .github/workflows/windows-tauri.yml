@@ -169,10 +169,10 @@ jobs:
             exit 1
           fi
 
-          if gh release view "$RELEASE_TAG" --json tagName -q .tagName > /dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName > /dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists. Uploading installers..."
-            gh release upload "$RELEASE_TAG" "${artifacts[@]}" --clobber
+            gh release upload "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           else
             echo "Creating new release $RELEASE_TAG at $RELEASE_TARGET..."
-            gh release create "$RELEASE_TAG" "${artifacts[@]}" --title "H Memo $RELEASE_TAG" --notes "Release $RELEASE_TAG" --target "$RELEASE_TARGET"
+            gh release create "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --notes "Release $RELEASE_TAG" --target "$RELEASE_TARGET"
           fi

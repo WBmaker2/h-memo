@@ -232,10 +232,50 @@ body {
   gap: 10px;
 }
 
+.memo-toolbar__section {
+  display: grid;
+  gap: 8px;
+}
+
+.memo-toolbar__section-title,
+.settings-panel__section-title,
+.memo-menu__section-title,
+.memo-menu__group-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #334155;
+}
+
 .memo-toolbar label,
 .settings-panel label {
   display: grid;
   gap: 4px;
+}
+
+.memo-menu__panel-content {
+  display: grid;
+  gap: 10px;
+}
+
+.memo-menu__group {
+  display: grid;
+  gap: 8px;
+}
+
+.memo-menu__section {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-panel__section {
+  display: grid;
+  gap: 8px;
 }
 
 .memo-toolbar select,

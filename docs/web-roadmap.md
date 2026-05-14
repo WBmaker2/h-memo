@@ -12,7 +12,11 @@
   - Vite + React + TypeScript 진입점
   - `MemoWorkspace` 공통 쉘 컴포넌트를 사용해 데스크톱 앱과 레이아웃 구조 공유
   - localStorage 기반 저장소(`LocalStorageMemoRepository`) 사용
-  - 서버 백업/시작프로그램 체크박스는 웹 미리보기 상태로 비활성 처리
+  - Firebase 설정이 있을 때 웹에서도 Google 로그인/세션 복구 기반 서버 백업/복원 동작
+  - 시작프로그램 토글은 웹에서 계속 비활성 처리
+- PWA 준비
+  - `manifest.webmanifest`, `sw.js`, `registerServiceWorker` 유틸, 아이콘 목록을 포함해 설치 가능한 첫 PWA 기반 구성 완료
+  - PWA 매니페스트와 서비스워커 경로는 Vite `BASE_URL` 기준으로 상대 경로/루트 독립적으로 계산되도록 정리
 - `packages/memo-ui`
   - `SettingsPanel`에 시작프로그램 토글 비활성화 옵션을 선택적으로 제어할 수 있는 `isStartupAvailable` 추가
   - 공통 뷰 쉘 컴포넌트 `MemoWorkspace` 추가 (`desktop-app`/`web-app` 클래스명으로 렌더링 가능)
@@ -21,8 +25,8 @@
 
 ## 제한 사항
 
-- 웹은 현재 `localStorage` 기반 저장소만 기본 동작합니다.
-- 클라우드 백업/복원, Google 로그인, Tauri 전용 시작프로그램 등록은 지원하지 않습니다.
+- 웹은 기본은 `localStorage` 기반 저장소 동작입니다.
+- Firebase 설정이 유효한 경우 로그인 후 서버 백업/복원이 가능하며, 시작프로그램 등록은 웹에서 지원하지 않습니다.
 - 데스크톱 앱과 동일한 네이티브 파일 다이얼로그/윈도우 영속성은 제공되지 않습니다.
 
 ## 향후 확장 제안 (안전한 순차)
