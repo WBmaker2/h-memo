@@ -113,6 +113,7 @@ export function App() {
 
   const reloadMemos = useCallback(async () => {
     const all = await repository.listMemos();
+    memosRef.current = all;
     setMemos(all);
     setHasLoadedMemos(true);
   }, [repository]);
@@ -233,7 +234,9 @@ export function App() {
         ? previousMemos.map((memo) => (memo.id === nextMemo.id ? nextMemo : memo))
         : [...previousMemos, nextMemo];
 
-      return sortMemos(nextMemos);
+      const sortedMemos = sortMemos(nextMemos);
+      memosRef.current = sortedMemos;
+      return sortedMemos;
     });
   };
 
@@ -397,7 +400,9 @@ export function App() {
       throw error;
     }
 
-    setMemos(sortMemos(nextMemos));
+    const sortedMemos = sortMemos(nextMemos);
+    memosRef.current = sortedMemos;
+    setMemos(sortedMemos);
   };
 
   const handleCreateMemo = async () => {
