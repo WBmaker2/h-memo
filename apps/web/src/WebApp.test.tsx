@@ -16,7 +16,7 @@ import { WebApp } from "./WebApp";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.";
-const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 로그인 후 사용 가능합니다.";
+const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
 const SUCCESS_BACKUP_MESSAGE = "백업 완료:";
 
 const VALID_FIREBASE_ENV = {
@@ -241,7 +241,7 @@ describe("WebApp", () => {
       expect(screen.getByRole("status")).toHaveTextContent(LOGIN_REQUIRED_MESSAGE);
     });
 
-    expect(screen.getByRole("button", { name: "로그인" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "구글 로그인" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
   });
 
@@ -259,7 +259,7 @@ describe("WebApp", () => {
       target: { value: "로그인 동작 테스트 메모" },
     });
 
-    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent("홍길동님이 로그인했습니다.");
     });

@@ -290,6 +290,26 @@ body {
   gap: 8px;
 }
 
+.firebase-config-form {
+  display: grid;
+  gap: 8px;
+}
+
+.firebase-config-form label {
+  font-size: 12px;
+}
+
+.firebase-config-form input {
+  min-width: 0;
+  min-height: 32px;
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: #111827;
+  background: #ffffff;
+}
+
 .memo-toolbar select,
 .memo-toolbar input {
   min-height: 32px;

@@ -21,11 +21,20 @@ import {
   subscribeAuthUser,
   type HMemoUser,
 } from "@h-memo/memo-sync";
+import {
+  clearStoredFirebaseClientConfig,
+  mergeFirebaseClientConfig,
+  readStoredFirebaseClientConfig,
+  saveStoredFirebaseClientConfig,
+  toFirebaseClientConfigInput,
+} from "@h-memo/memo-sync/firebase-client-config";
+import { validateFirebaseClientEnv } from "@h-memo/memo-sync/firebase-env-validation";
+import type { FirebaseConfigFormValue } from "@h-memo/memo-ui";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
 import { LocalStorageMemoRepository } from "./adapters/localStorageMemoRepository";
 
 const FIREBASE_UNAVAILABLE_MESSAGE = "Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.";
-const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 로그인 후 사용 가능합니다.";
+const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
 const STARTUP_UNAVAILABLE_MESSAGE = "웹에서는 시작프로그램 등록을 사용할 수 없습니다.";
 const BROWSER_BACKUP_READY_MESSAGE = "백업 정보 없음";
 const FIREBASE_INIT_FAILED_PREFIX = "서버 백업 초기화 실패:";
@@ -96,13 +105,31 @@ export function WebApp() {
   const persistErrorRef = useRef<unknown | null>(null);
   const syncServicesRef = useRef<SyncServices | null>(null);
 
-  const firebaseClientEnv = useMemo(() => getFirebaseClientEnv(), []);
+  const buildFirebaseClientEnv = useMemo(() => getFirebaseClientEnv(), []);
+  const [storedFirebaseClientEnv, setStoredFirebaseClientEnv] = useState(() =>
+    readStoredFirebaseClientConfig()
+  );
+  const firebaseClientEnv = useMemo(
+    () => mergeFirebaseClientConfig(buildFirebaseClientEnv, storedFirebaseClientEnv),
+    [buildFirebaseClientEnv, storedFirebaseClientEnv]
+  );
+  const firebaseConfigFormValue = useMemo(
+    () => toFirebaseClientConfigInput(firebaseClientEnv),
+    [firebaseClientEnv]
+  );
   const hasFirebaseConfigSet = useMemo(
     () => hasFirebaseConfig(firebaseClientEnv),
     [firebaseClientEnv]
   );
   const [servicesAvailableState, setServicesAvailableState] = useState(hasFirebaseConfigSet);
   const isServerReady = servicesAvailableState && syncServicesInitialized;
+
+  useEffect(() => {
+    syncServicesRef.current = null;
+    setSyncServicesInitialized(false);
+    setServicesAvailableState(hasFirebaseConfigSet);
+    setUser(null);
+  }, [firebaseClientEnv, hasFirebaseConfigSet]);
 
   const reloadMemos = useCallback(async () => {
     const all = await repository.listMemos();
@@ -368,6 +395,47 @@ export function WebApp() {
     }
   };
 
+  const applyFirebaseConfigState = (nextStoredConfig: Partial<typeof storedFirebaseClientEnv>) => {
+    const nextEnv = mergeFirebaseClientConfig(buildFirebaseClientEnv, nextStoredConfig);
+    const validation = validateFirebaseClientEnv(nextEnv);
+
+    syncServicesRef.current = null;
+    setSyncServicesInitialized(false);
+    setServicesAvailableState(validation.isValid);
+    setUser(null);
+
+    if (validation.isValid) {
+      setBackupStatus(LOGIN_REQUIRED_MESSAGE);
+      return;
+    }
+
+    setBackupStatus(
+      validation.missingRequiredKeys.length > 0
+        ? `Firebase 설정에 누락된 값이 있습니다: ${validation.missingRequiredKeys.join(", ")}`
+        : FIREBASE_UNAVAILABLE_MESSAGE
+    );
+  };
+
+  const handleSaveFirebaseConfig = (config: FirebaseConfigFormValue) => {
+    try {
+      const savedConfig = saveStoredFirebaseClientConfig(config);
+      setStoredFirebaseClientEnv(savedConfig);
+      applyFirebaseConfigState(savedConfig);
+    } catch (error) {
+      setBackupStatus(`Firebase 설정 저장 실패: ${getErrorMessage(error)}`);
+    }
+  };
+
+  const handleClearFirebaseConfig = () => {
+    try {
+      clearStoredFirebaseClientConfig();
+      setStoredFirebaseClientEnv({});
+      applyFirebaseConfigState({});
+    } catch (error) {
+      setBackupStatus(`Firebase 설정 삭제 실패: ${getErrorMessage(error)}`);
+    }
+  };
+
   const handleBackup = async () => {
     const services = ensureSyncServices();
     if (!user || !services) {
@@ -454,15 +522,18 @@ export function WebApp() {
       onHideMemo={handleHideMemo}
       onDeleteMemo={handleDeleteMemo}
       settingsProps={{
-        userName: user ? user.displayName || user.email || "로그인 필요" : null,
+        userName: user ? user.displayName || user.email || "구글 계정" : null,
         backupStatus,
         startupEnabled,
+        firebaseConfig: firebaseConfigFormValue,
         onBackup: handleBackup,
         onRestore: handleRestore,
         onExportText: handleGenerateTextPreview,
         onToggleStartup: handleToggleStartup,
         onSignIn: handleSignIn,
         onSignOut: handleSignOut,
+        onSaveFirebaseConfig: handleSaveFirebaseConfig,
+        onClearFirebaseConfig: handleClearFirebaseConfig,
         isServerAvailable: isServerReady,
         isServerBusy: isBusy,
         isBackupDisabled,
