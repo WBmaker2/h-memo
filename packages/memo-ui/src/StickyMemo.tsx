@@ -1,4 +1,11 @@
-import { type ChangeEvent, type PointerEvent, useEffect, useState } from "react";
+import {
+  type ChangeEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  useEffect,
+  useState,
+} from "react";
 import {
   extractPlainText,
   type Memo,
@@ -9,22 +16,36 @@ import { MemoToolbar } from "./MemoToolbar";
 
 type StickyMemoProps = {
   memo: Memo;
+  appMenuContent?: ReactNode;
   onChange: (memo: Memo) => void;
   onHide: (memoId: string) => void;
   onDelete: (memoId: string) => void;
   onRequestWindowDrag?: () => void;
   onRequestWindowResize?: (direction: "SouthEast") => void;
+  onRequestWindowMinimize?: () => void;
+  onRequestWindowMaximize?: () => void;
+  onRequestWindowClose?: () => void;
+  onRequestCollapseChange?: (collapsed: boolean) => void;
 };
 
 export function StickyMemo({
   memo,
+  appMenuContent,
   onChange,
   onHide,
   onDelete,
   onRequestWindowDrag,
   onRequestWindowResize,
+  onRequestWindowMinimize,
+  onRequestWindowMaximize,
+  onRequestWindowClose,
+  onRequestCollapseChange,
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const shouldShowWindowControls = Boolean(
+    onRequestWindowMinimize || onRequestWindowMaximize || onRequestWindowClose
+  );
 
   useEffect(() => {
     setEditingMemo(memo);
@@ -62,11 +83,26 @@ export function StickyMemo({
     commitMemo(nextMemo);
   };
 
-  const handleWindowDrag = (event: PointerEvent<HTMLElement>) => {
+  const handleWindowDrag = (event: MouseEvent<HTMLElement>) => {
     if (event.button > 0) {
       return;
     }
+    if ((event.target as HTMLElement).closest("[data-no-window-drag='true']")) {
+      return;
+    }
+    if (event.detail > 1) {
+      return;
+    }
     onRequestWindowDrag?.();
+  };
+
+  const handleTitlebarDoubleClick = (event: MouseEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest("[data-no-window-drag='true']")) {
+      return;
+    }
+    const nextCollapsed = !isCollapsed;
+    setIsCollapsed(nextCollapsed);
+    onRequestCollapseChange?.(nextCollapsed);
   };
 
   const handleWindowResize = (event: PointerEvent<HTMLElement>) => {
@@ -79,7 +115,7 @@ export function StickyMemo({
 
   return (
     <article
-      className="sticky-memo"
+      className={isCollapsed ? "sticky-memo sticky-memo--collapsed" : "sticky-memo"}
       style={{
         backgroundColor: editingMemo.style.backgroundColor,
         color: editingMemo.style.textColor,
@@ -88,20 +124,21 @@ export function StickyMemo({
       }}
     >
       <div
-        className="sticky-memo__drag-region"
+        className="sticky-memo__titlebar"
         data-tauri-drag-region
-        aria-label="창 이동 영역"
-        title="드래그해서 이동"
-        onPointerDown={handleWindowDrag}
-      />
-      <header className="sticky-memo__header">
-        <div
-          className="sticky-memo__drag-spacer"
-          data-tauri-drag-region
-          onPointerDown={handleWindowDrag}
-        />
-        <details className="memo-menu">
-          <summary aria-label="메모 메뉴" title="메모 메뉴">...</summary>
+        aria-label="상단 메뉴바"
+        title="드래그해서 이동, 더블클릭해서 접기/펼치기"
+        onMouseDown={handleWindowDrag}
+        onDoubleClick={handleTitlebarDoubleClick}
+      >
+        <details className="memo-menu" data-no-window-drag="true">
+          <summary
+            aria-label="메모 메뉴"
+            title="메모 메뉴"
+            data-no-window-drag="true"
+          >
+            ...
+          </summary>
           <div className="memo-menu__panel">
             <MemoToolbar
               style={editingMemo.style}
@@ -109,20 +146,56 @@ export function StickyMemo({
               onHide={() => onHide(editingMemo.id)}
               onDelete={() => onDelete(editingMemo.id)}
             />
+            {appMenuContent}
           </div>
         </details>
-      </header>
-      <textarea
-        aria-label="메모 내용"
-        value={editingMemo.plainText}
-        onChange={handleContentChange}
-      />
-      <div
-        className="sticky-memo__resize-handle"
-        aria-label="창 크기 조절"
-        title="드래그해서 크기 조절"
-        onPointerDown={handleWindowResize}
-      />
+        <div className="sticky-memo__titlebar-drag" data-tauri-drag-region>
+          H Memo
+        </div>
+        {shouldShowWindowControls ? (
+          <div className="sticky-memo__window-controls" data-no-window-drag="true">
+            <button
+              type="button"
+              aria-label="최소화"
+              title="최소화"
+              onClick={onRequestWindowMinimize}
+            >
+              _
+            </button>
+            <button
+              type="button"
+              aria-label="최대화"
+              title="최대화"
+              onClick={onRequestWindowMaximize}
+            >
+              □
+            </button>
+            <button
+              type="button"
+              aria-label="종료"
+              title="종료"
+              onClick={onRequestWindowClose}
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
+      </div>
+      {isCollapsed ? null : (
+        <>
+          <textarea
+            aria-label="메모 내용"
+            value={editingMemo.plainText}
+            onChange={handleContentChange}
+          />
+          <div
+            className="sticky-memo__resize-handle"
+            aria-label="창 크기 조절"
+            title="드래그해서 크기 조절"
+            onPointerDown={handleWindowResize}
+          />
+        </>
+      )}
     </article>
   );
 }

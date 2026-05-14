@@ -17,7 +17,18 @@ import {
   getStartupEnabled,
   setStartupEnabled as setTauriStartupEnabled,
 } from "./adapters/tauriPlatform";
-import { startWindowDrag, startWindowResize } from "./adapters/tauriWindow";
+import {
+  closeWindow,
+  listenWindowBoundsChanged,
+  minimizeWindow,
+  readWindowBounds,
+  restoreWindowBounds,
+  setWindowHeight,
+  startWindowDrag,
+  startWindowResize,
+  toggleMaximizeWindow,
+  type WindowBounds,
+} from "./adapters/tauriWindow";
 import {
   FirestoreBackupGateway,
   backupMemos,
@@ -44,6 +55,8 @@ const FIREBASE_INIT_FAILED_PREFIX = "서버 백업 초기화 실패:";
 const AUTH_LOGIN_FAILED_PREFIX = "Google 로그인 실패:";
 const BACKUP_FAILED_PREFIX = "백업 실패:";
 const RESTORE_FAILED_PREFIX = "복원 실패:";
+const COLLAPSED_WINDOW_HEIGHT = 46;
+const MIN_EXPANDED_WINDOW_HEIGHT = 160;
 
 function isTauriRuntime() {
   return "__TAURI_INTERNALS__" in window;
@@ -86,19 +99,29 @@ export function App() {
   const [user, setUser] = useState<HMemoUser | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [servicesAvailable, setServicesAvailable] = useState(hasFirebaseConfigSet);
+  const [hasLoadedMemos, setHasLoadedMemos] = useState(false);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
+  const memosRef = useRef<Memo[]>([]);
+  const restoredMemoIdRef = useRef<string | null>(null);
+  const boundsPersistTimerRef = useRef<number | null>(null);
+  const expandedWindowBoundsRef = useRef<WindowBounds | null>(null);
 
   const syncServicesRef = useRef<SyncServices | null>(null);
 
   const reloadMemos = useCallback(async () => {
     const all = await repository.listMemos();
     setMemos(all);
+    setHasLoadedMemos(true);
   }, [repository]);
 
   useEffect(() => {
     void reloadMemos();
   }, [reloadMemos]);
+
+  useEffect(() => {
+    memosRef.current = memos;
+  }, [memos]);
 
   const ensureSyncServices = useCallback((): SyncServices | null => {
     if (!hasFirebaseConfigSet) {
@@ -202,6 +225,107 @@ export function App() {
       }
     });
   };
+
+  const persistActiveMemoWindowBounds = useCallback(
+    async (boundsOverride?: WindowBounds) => {
+      if (!isTauri) {
+        return;
+      }
+
+      const target = memosRef.current.find(
+        (memo) => memo.deletedAt === null && memo.windowState.visible
+      );
+      if (!target) {
+        return;
+      }
+
+      const bounds = boundsOverride ?? (await readWindowBounds());
+      const windowState = {
+        x: bounds.x,
+        y: bounds.y,
+        ...(bounds.height >= MIN_EXPANDED_WINDOW_HEIGHT
+          ? { width: bounds.width, height: bounds.height }
+          : {}),
+      };
+      const nextMemo = updateMemoWindowState(target, windowState, new Date().toISOString());
+
+      upsertMemo(nextMemo);
+      await persistMemo(nextMemo, { skipStateUpdate: true });
+    },
+    [isTauri]
+  );
+
+  const scheduleWindowBoundsPersist = useCallback(() => {
+    if (!isTauri) {
+      return;
+    }
+
+    if (boundsPersistTimerRef.current) {
+      window.clearTimeout(boundsPersistTimerRef.current);
+    }
+
+    boundsPersistTimerRef.current = window.setTimeout(() => {
+      boundsPersistTimerRef.current = null;
+      void persistActiveMemoWindowBounds().catch((error) => {
+        setBackupStatus(`창 위치 저장 실패: ${getErrorMessage(error)}`);
+      });
+    }, 250);
+  }, [isTauri, persistActiveMemoWindowBounds]);
+
+  useEffect(() => {
+    if (!isTauri) {
+      return;
+    }
+
+    let isMounted = true;
+    let cleanup: (() => void) | null = null;
+
+    void listenWindowBoundsChanged(() => {
+      scheduleWindowBoundsPersist();
+    })
+      .then((unlisten) => {
+        if (!isMounted) {
+          unlisten();
+          return;
+        }
+        cleanup = unlisten;
+      })
+      .catch((error) => {
+        setBackupStatus(`창 위치 감시 실패: ${getErrorMessage(error)}`);
+      });
+
+    return () => {
+      isMounted = false;
+      cleanup?.();
+      if (boundsPersistTimerRef.current) {
+        window.clearTimeout(boundsPersistTimerRef.current);
+        boundsPersistTimerRef.current = null;
+      }
+    };
+  }, [isTauri, scheduleWindowBoundsPersist]);
+
+  useEffect(() => {
+    if (!isTauri || !hasLoadedMemos || visibleMemos.length === 0) {
+      return;
+    }
+
+    const activeMemo = visibleMemos[0];
+    if (restoredMemoIdRef.current === activeMemo.id) {
+      return;
+    }
+
+    restoredMemoIdRef.current = activeMemo.id;
+    const bounds = activeMemo.windowState;
+
+    void restoreWindowBounds({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+    }).catch((error) => {
+      setBackupStatus(`창 위치 복원 실패: ${getErrorMessage(error)}`);
+    });
+  }, [hasLoadedMemos, isTauri, visibleMemos]);
 
   const rollbackRestoreAttempt = async (currentMemos: Memo[], nextMemos: Memo[]) => {
     const currentIds = new Set(currentMemos.map((memo) => memo.id));
@@ -454,6 +578,71 @@ export function App() {
     });
   };
 
+  const handleRequestWindowMinimize = () => {
+    if (!isTauri) {
+      return;
+    }
+
+    void persistActiveMemoWindowBounds()
+      .then(() => minimizeWindow())
+      .catch((error) => {
+        setBackupStatus(`창 최소화 실패: ${getErrorMessage(error)}`);
+      });
+  };
+
+  const handleRequestWindowMaximize = () => {
+    if (!isTauri) {
+      return;
+    }
+
+    void persistActiveMemoWindowBounds()
+      .then(() => toggleMaximizeWindow())
+      .catch((error) => {
+        setBackupStatus(`창 최대화 실패: ${getErrorMessage(error)}`);
+      });
+  };
+
+  const handleRequestWindowClose = () => {
+    if (!isTauri) {
+      return;
+    }
+
+    void persistActiveMemoWindowBounds()
+      .then(() => closeWindow())
+      .catch((error) => {
+        setBackupStatus(`창 종료 실패: ${getErrorMessage(error)}`);
+      });
+  };
+
+  const handleRequestCollapseChange = (collapsed: boolean) => {
+    if (!isTauri) {
+      return;
+    }
+
+    const resizeTask = async () => {
+      if (collapsed) {
+        const currentBounds = await readWindowBounds();
+        expandedWindowBoundsRef.current = currentBounds;
+        await persistActiveMemoWindowBounds(currentBounds);
+        await setWindowHeight(COLLAPSED_WINDOW_HEIGHT);
+        return;
+      }
+
+      const currentBounds = await readWindowBounds();
+      const expandedBounds = expandedWindowBoundsRef.current;
+      await restoreWindowBounds({
+        x: currentBounds.x,
+        y: currentBounds.y,
+        width: expandedBounds?.width ?? currentBounds.width,
+        height: expandedBounds?.height ?? visibleMemos[0]?.windowState.height ?? 280,
+      });
+    };
+
+    void resizeTask().catch((error) => {
+      setBackupStatus(`메모 접기/펼치기 실패: ${getErrorMessage(error)}`);
+    });
+  };
+
   return (
     <MemoWorkspace
       appClassName="desktop-app"
@@ -467,6 +656,10 @@ export function App() {
       onDeleteMemo={handleDeleteMemo}
       onRequestWindowDrag={handleRequestWindowDrag}
       onRequestWindowResize={handleRequestWindowResize}
+      onRequestWindowMinimize={handleRequestWindowMinimize}
+      onRequestWindowMaximize={handleRequestWindowMaximize}
+      onRequestWindowClose={handleRequestWindowClose}
+      onRequestCollapseChange={handleRequestCollapseChange}
       settingsProps={{
         userName: user ? user.displayName || user.email || "로그인 필요" : null,
         backupStatus,

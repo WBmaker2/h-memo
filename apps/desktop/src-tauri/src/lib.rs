@@ -74,6 +74,12 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn quit_app(app: AppHandle) -> Result<(), String> {
+  app.exit(0);
+  Ok(())
+}
+
+#[tauri::command]
 async fn export_text_file(
   app: AppHandle,
   file_name: String,
@@ -280,6 +286,7 @@ pub fn run() {
       list_memos,
       save_memo,
       show_main_window,
+      quit_app,
       export_text_file
     ])
     .run(tauri::generate_context!())

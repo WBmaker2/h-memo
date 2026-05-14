@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { createMemo } from "@h-memo/memo-core";
@@ -23,7 +23,17 @@ const {
   mockGetFirestore,
   mockCreateFirebaseApp,
   mockGetFirebaseAuth,
+  mockStartWindowDrag,
+  mockStartWindowResize,
+  mockMinimizeWindow,
+  mockToggleMaximizeWindow,
+  mockCloseWindow,
+  mockReadWindowBounds,
+  mockRestoreWindowBounds,
+  mockSetWindowHeight,
+  mockListenWindowBoundsChanged,
   tauriRepositoryState,
+  tauriWindowState,
 } = vi.hoisted(() => {
   const mockExportTextFile = vi.fn();
   const mockGetStartupEnabled = vi.fn();
@@ -35,6 +45,24 @@ const {
   const mockRestoreMemo = vi.fn();
   const mockBackupMemos = vi.fn();
   const mockRestoreLatestBackup = vi.fn();
+  const mockStartWindowDrag = vi.fn();
+  const mockStartWindowResize = vi.fn();
+  const mockMinimizeWindow = vi.fn();
+  const mockToggleMaximizeWindow = vi.fn();
+  const mockCloseWindow = vi.fn();
+  const mockRestoreWindowBounds = vi.fn();
+  const mockSetWindowHeight = vi.fn();
+  const mockListenWindowBoundsChanged = vi.fn();
+  const tauriWindowState: {
+    bounds: { x: number; y: number; width: number; height: number };
+    boundsListener: (() => void) | null;
+    unlisten: ReturnType<typeof vi.fn>;
+  } = {
+    bounds: { x: 20, y: 30, width: 380, height: 420 },
+    boundsListener: null,
+    unlisten: vi.fn(),
+  };
+  const mockReadWindowBounds = vi.fn(async () => tauriWindowState.bounds);
   const mockGetFirestore = vi.fn((_app: unknown) => ({
     isMockFirestore: true,
   })) as Mock<(app: unknown) => { isMockFirestore: true }>;
@@ -121,7 +149,17 @@ const {
     mockGetFirestore,
     mockCreateFirebaseApp,
     mockGetFirebaseAuth,
+    mockStartWindowDrag,
+    mockStartWindowResize,
+    mockMinimizeWindow,
+    mockToggleMaximizeWindow,
+    mockCloseWindow,
+    mockReadWindowBounds,
+    mockRestoreWindowBounds,
+    mockSetWindowHeight,
+    mockListenWindowBoundsChanged,
     tauriRepositoryState,
+    tauriWindowState,
     MockTauriMemoRepository,
   };
 });
@@ -191,6 +229,21 @@ vi.mock("./adapters/tauriMemoRepository", () => ({
   TauriMemoRepository: MockTauriMemoRepository,
 }));
 
+vi.mock("./adapters/tauriWindow", () => ({
+  startWindowDrag: () => mockStartWindowDrag(),
+  startWindowResize: (direction: "SouthEast") => mockStartWindowResize(direction),
+  minimizeWindow: () => mockMinimizeWindow(),
+  toggleMaximizeWindow: () => mockToggleMaximizeWindow(),
+  closeWindow: () => mockCloseWindow(),
+  readWindowBounds: () => mockReadWindowBounds(),
+  restoreWindowBounds: (bounds: unknown) => mockRestoreWindowBounds(bounds),
+  setWindowHeight: (height: number) => mockSetWindowHeight(height),
+  listenWindowBoundsChanged: (listener: () => void) => {
+    tauriWindowState.boundsListener = listener;
+    return mockListenWindowBoundsChanged(listener);
+  },
+}));
+
 import { App } from "./App";
 
 type TestWindow = Window & {
@@ -255,6 +308,18 @@ beforeEach(() => {
   mockGetFirestore.mockReset();
   mockCreateFirebaseApp.mockReset();
   mockGetFirebaseAuth.mockReset();
+  mockStartWindowDrag.mockReset();
+  mockStartWindowResize.mockReset();
+  mockMinimizeWindow.mockReset();
+  mockToggleMaximizeWindow.mockReset();
+  mockCloseWindow.mockReset();
+  mockReadWindowBounds.mockReset();
+  mockRestoreWindowBounds.mockReset();
+  mockSetWindowHeight.mockReset();
+  mockListenWindowBoundsChanged.mockReset();
+  tauriWindowState.bounds = { x: 20, y: 30, width: 380, height: 420 };
+  tauriWindowState.boundsListener = null;
+  tauriWindowState.unlisten.mockReset();
 
   mockSaveMemo.mockImplementation((nextMemo: any) => defaultSaveMemo(nextMemo));
   mockSoftDeleteMemo.mockImplementation((id: string, deletedAt: string) =>
@@ -267,6 +332,18 @@ beforeEach(() => {
   mockGetFirestore.mockReturnValue({ isMockFirestore: true });
   mockCreateFirebaseApp.mockReturnValue({ isMockFirebaseApp: true });
   mockGetFirebaseAuth.mockReturnValue({ isMockFirebaseAuth: true });
+  mockStartWindowDrag.mockResolvedValue(undefined);
+  mockStartWindowResize.mockResolvedValue(undefined);
+  mockMinimizeWindow.mockResolvedValue(undefined);
+  mockToggleMaximizeWindow.mockResolvedValue(undefined);
+  mockCloseWindow.mockResolvedValue(undefined);
+  mockReadWindowBounds.mockImplementation(async () => tauriWindowState.bounds);
+  mockRestoreWindowBounds.mockResolvedValue(undefined);
+  mockSetWindowHeight.mockResolvedValue(undefined);
+  mockListenWindowBoundsChanged.mockImplementation(async (listener: () => void) => {
+    tauriWindowState.boundsListener = listener;
+    return tauriWindowState.unlisten;
+  });
 
   setMockFirebaseClientEnv({
     apiKey: "",
@@ -400,6 +477,111 @@ describe("desktop App", () => {
     await waitFor(() => {
       expect(startupSwitch).not.toBeChecked();
       expect(status).toHaveTextContent("시작프로그램 상태를 확인하지 못했습니다.");
+    });
+  });
+
+  it("restores the saved memo window position and size on launch", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const memo = createMemo({
+      id: "memo-1",
+      now: "2026-05-13T09:00:00.000Z",
+      plainText: "마지막 로컬 메모",
+      windowState: {
+        x: 111,
+        y: 222,
+        width: 430,
+        height: 360,
+      },
+    });
+    tauriRepositoryState.set(memo.id, memo);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("마지막 로컬 메모")).toBeInTheDocument();
+      expect(mockRestoreWindowBounds).toHaveBeenCalledWith({
+        x: 111,
+        y: 222,
+        width: 430,
+        height: 360,
+      });
+    });
+  });
+
+  it("persists native window bounds after move or resize events", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const memo = createMemo({
+      id: "memo-1",
+      now: "2026-05-13T09:00:00.000Z",
+      plainText: "위치 저장 메모",
+    });
+    tauriRepositoryState.set(memo.id, memo);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("위치 저장 메모")).toBeInTheDocument();
+      expect(tauriWindowState.boundsListener).not.toBeNull();
+    });
+
+    vi.useFakeTimers();
+    tauriWindowState.bounds = { x: 333, y: 444, width: 460, height: 390 };
+    tauriWindowState.boundsListener?.();
+
+    await act(async () => {
+      vi.advanceTimersByTime(260);
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+
+    await waitFor(() => {
+      expect(mockSaveMemo).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "memo-1",
+          plainText: "위치 저장 메모",
+          windowState: expect.objectContaining({
+            x: 333,
+            y: 444,
+            width: 460,
+            height: 390,
+          }),
+        })
+      );
+    });
+  });
+
+  it("wires the titlebar to Tauri drag, window controls, and collapse resize", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const memo = createMemo({
+      id: "memo-1",
+      now: "2026-05-13T09:00:00.000Z",
+      plainText: "창 제어 메모",
+    });
+    tauriRepositoryState.set(memo.id, memo);
+    tauriWindowState.bounds = { x: 60, y: 70, width: 420, height: 360 };
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("창 제어 메모")).toBeInTheDocument();
+    });
+
+    fireEvent.mouseDown(screen.getByLabelText("상단 메뉴바"), { button: 0 });
+    await user.click(screen.getByRole("button", { name: "최소화" }));
+    await user.click(screen.getByRole("button", { name: "최대화" }));
+    await user.click(screen.getByRole("button", { name: "종료" }));
+    fireEvent.doubleClick(screen.getByLabelText("상단 메뉴바"));
+
+    await waitFor(() => {
+      expect(mockStartWindowDrag).toHaveBeenCalledTimes(1);
+      expect(mockMinimizeWindow).toHaveBeenCalledTimes(1);
+      expect(mockToggleMaximizeWindow).toHaveBeenCalledTimes(1);
+      expect(mockCloseWindow).toHaveBeenCalledTimes(1);
+      expect(mockSetWindowHeight).toHaveBeenCalledWith(46);
     });
   });
 

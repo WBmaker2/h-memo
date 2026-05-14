@@ -47,15 +47,20 @@ body {
 .memo-menu summary {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border: 0;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-  color: #111827;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
   cursor: pointer;
   font-weight: 700;
   list-style: none;
+}
+
+.workspace-menu summary:hover,
+.memo-menu summary:hover {
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .workspace-menu summary::-webkit-details-marker,
@@ -71,6 +76,8 @@ body {
   display: grid;
   gap: 10px;
   width: min(320px, calc(100vw - 24px));
+  max-height: calc(100vh - 44px);
+  overflow: auto;
   padding: 12px;
   border: 1px solid rgba(17, 24, 39, 0.12);
   border-radius: 8px;
@@ -111,31 +118,70 @@ body {
 .sticky-memo {
   position: relative;
   display: grid;
-  grid-template-rows: auto auto minmax(180px, 1fr);
+  grid-template-rows: 36px minmax(180px, 1fr);
   min-height: 360px;
   border: 1px solid rgba(120, 113, 108, 0.16);
-  border-radius: 8px;
-  padding: 9px 10px 10px;
+  border-radius: 7px;
+  padding: 0 10px 10px;
   box-shadow: 0 14px 30px rgba(15, 23, 42, 0.14);
 }
 
-.sticky-memo__drag-region {
-  height: 16px;
-  margin: -2px 34px 3px 2px;
-  border-radius: 999px;
-  cursor: move;
+.sticky-memo--collapsed {
+  grid-template-rows: 36px;
+  min-height: 36px;
+  padding-bottom: 0;
 }
 
-.sticky-memo__header {
+.sticky-memo__titlebar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: start;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  margin: 0 -10px 8px;
+  padding: 0 6px 0 8px;
+  background: rgba(255, 255, 255, 0.36);
+  cursor: move;
+  user-select: none;
 }
 
-.sticky-memo__drag-spacer {
-  min-height: 30px;
+.sticky-memo__titlebar-drag {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  color: rgba(31, 41, 55, 0.72);
+  font-size: 12px;
+  font-weight: 700;
   cursor: move;
+}
+
+.sticky-memo__window-controls {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.sticky-memo__window-controls button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 30px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: 700 15px/1 "Segoe UI", sans-serif;
+}
+
+.sticky-memo__window-controls button:hover {
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.sticky-memo__window-controls button:last-child:hover {
+  background: #dc2626;
+  color: #ffffff;
 }
 
 .sticky-memo > textarea {
@@ -151,6 +197,7 @@ body {
   min-height: 0;
   resize: vertical;
   line-height: 1.5;
+  padding-top: 2px;
 }
 
 .sticky-memo__resize-handle {
