@@ -60,10 +60,59 @@ describe("SettingsPanel", () => {
       />
     );
 
-    expect(screen.getByText("로그인 필요")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "로그인" }));
+    expect(screen.getByText("구글 로그인 필요")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
     expect(onSignIn).toHaveBeenCalled();
     expect(screen.getByRole("switch", { name: "시작프로그램 등록" })).toBeChecked();
+  });
+
+  it("saves and clears Firebase config values", async () => {
+    const user = userEvent.setup();
+    const onSaveFirebaseConfig = vi.fn();
+    const onClearFirebaseConfig = vi.fn();
+
+    render(
+      <SettingsPanel
+        userName={null}
+        backupStatus="백업 없음"
+        startupEnabled={false}
+        firebaseConfig={{
+          apiKey: "",
+          authDomain: "",
+          projectId: "",
+          appId: "",
+          storageBucket: "",
+          messagingSenderId: "",
+          measurementId: "",
+        }}
+        onBackup={vi.fn()}
+        onRestore={vi.fn()}
+        onExportText={vi.fn()}
+        onToggleStartup={vi.fn()}
+        onSignIn={vi.fn()}
+        onSignOut={vi.fn()}
+        onSaveFirebaseConfig={onSaveFirebaseConfig}
+        onClearFirebaseConfig={onClearFirebaseConfig}
+      />
+    );
+
+    await user.type(screen.getByLabelText("API key"), "api-key");
+    await user.type(screen.getByLabelText("Auth domain"), "project.firebaseapp.com");
+    await user.type(screen.getByLabelText("Project ID"), "project-id");
+    await user.type(screen.getByLabelText("App ID"), "app-id");
+    await user.click(screen.getByRole("button", { name: "설정 저장" }));
+
+    expect(onSaveFirebaseConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: "api-key",
+        authDomain: "project.firebaseapp.com",
+        projectId: "project-id",
+        appId: "app-id",
+      })
+    );
+
+    await user.click(screen.getByRole("button", { name: "설정 지우기" }));
+    expect(onClearFirebaseConfig).toHaveBeenCalled();
   });
 
   it("calls sign-out when user is signed in", async () => {

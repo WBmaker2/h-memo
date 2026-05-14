@@ -13,6 +13,10 @@
     "./firebase-env-validation": {
       "types": "./src/firebaseEnvValidation.ts",
       "import": "./src/firebaseEnvValidation.ts"
+    },
+    "./firebase-client-config": {
+      "types": "./src/firebaseClientConfig.ts",
+      "import": "./src/firebaseClientConfig.ts"
     }
   },
   "dependencies": {

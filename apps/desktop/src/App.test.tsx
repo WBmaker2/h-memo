@@ -304,6 +304,7 @@ function deferred<T = void>() {
 
 beforeEach(() => {
   setTauriRuntime(false);
+  window.localStorage.clear();
   tauriRepositoryState.clear();
   mockExportTextFile.mockReset();
   mockGetStartupEnabled.mockReset();
@@ -678,11 +679,37 @@ describe("desktop App", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByRole("status")).toHaveTextContent("서버 백업/복원은 로그인 후 사용 가능합니다.");
+      expect(screen.getByRole("status")).toHaveTextContent("서버 백업/복원은 구글 로그인 후 사용 가능합니다.");
     });
-    expect(screen.getByRole("button", { name: "로그인" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "구글 로그인" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "서버 복원" })).toBeDisabled();
+  });
+
+  it("enables Google login after saving Firebase config in settings", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.type(screen.getByLabelText("API key"), "api-key");
+    await user.type(screen.getByLabelText("Auth domain"), "project.firebaseapp.com");
+    await user.type(screen.getByLabelText("Project ID"), "project-id");
+    await user.type(screen.getByLabelText("App ID"), "app-id");
+    await user.click(screen.getByRole("button", { name: "설정 저장" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "서버 백업/복원은 구글 로그인 후 사용 가능합니다."
+      );
+      expect(screen.getByRole("button", { name: "구글 로그인" })).not.toBeDisabled();
+      expect(mockCreateFirebaseApp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apiKey: "api-key",
+          authDomain: "project.firebaseapp.com",
+          projectId: "project-id",
+          appId: "app-id",
+        })
+      );
+    });
   });
 
   it("인증 구독 실패 시 인증 상태 복구 실패 메시지를 표시한다", async () => {
@@ -738,7 +765,7 @@ describe("desktop App", () => {
       target: { value: "로컬 내용" },
     });
 
-    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent("로그인했습니다.");
@@ -809,7 +836,7 @@ describe("desktop App", () => {
       target: { value: "최종 내용" },
     });
 
-    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent("로그인했습니다.");
@@ -872,7 +899,7 @@ describe("desktop App", () => {
       target: { value: "로컬 내용" },
     });
 
-    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent("로그인했습니다.");
@@ -931,7 +958,7 @@ describe("desktop App", () => {
     });
     const localMemoId = [...tauriRepositoryState.keys()][0];
 
-    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
     });
@@ -981,7 +1008,7 @@ describe("desktop App", () => {
       target: { value: "로컬 내용" },
     });
 
-    await user.click(screen.getByRole("button", { name: "로그인" }));
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent("로그인했습니다.");

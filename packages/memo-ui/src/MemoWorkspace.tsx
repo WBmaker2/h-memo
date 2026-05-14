@@ -65,12 +65,15 @@ export function MemoWorkspace({
         isBackupDisabled={settingsProps.isBackupDisabled}
         isRestoreDisabled={settingsProps.isRestoreDisabled}
         isAuthDisabled={settingsProps.isAuthDisabled}
+        firebaseConfig={settingsProps.firebaseConfig}
         onBackup={settingsProps.onBackup}
         onRestore={settingsProps.onRestore}
         onExportText={settingsProps.onExportText}
         onToggleStartup={settingsProps.onToggleStartup}
         onSignIn={settingsProps.onSignIn}
         onSignOut={settingsProps.onSignOut}
+        onSaveFirebaseConfig={settingsProps.onSaveFirebaseConfig}
+        onClearFirebaseConfig={settingsProps.onClearFirebaseConfig}
       />
       <section className="memo-menu__group" aria-label="TXT 미리보기">
         <h3 className="memo-menu__group-title">TXT 미리보기</h3>

@@ -1,4 +1,14 @@
-import type { ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+
+export type FirebaseConfigFormValue = {
+  apiKey: string;
+  authDomain: string;
+  projectId: string;
+  appId: string;
+  storageBucket: string;
+  messagingSenderId: string;
+  measurementId: string;
+};
 
 export type SettingsPanelProps = {
   userName: string | null;
@@ -10,12 +20,25 @@ export type SettingsPanelProps = {
   isBackupDisabled?: boolean;
   isRestoreDisabled?: boolean;
   isAuthDisabled?: boolean;
+  firebaseConfig?: FirebaseConfigFormValue;
   onBackup: () => void;
   onRestore: () => void;
   onExportText: () => void;
   onToggleStartup: (enabled: boolean) => void;
   onSignIn: () => void;
   onSignOut: () => void;
+  onSaveFirebaseConfig?: (config: FirebaseConfigFormValue) => void;
+  onClearFirebaseConfig?: () => void;
+};
+
+const EMPTY_FIREBASE_CONFIG: FirebaseConfigFormValue = {
+  apiKey: "",
+  authDomain: "",
+  projectId: "",
+  appId: "",
+  storageBucket: "",
+  messagingSenderId: "",
+  measurementId: "",
 };
 
 export function SettingsPanel({
@@ -28,13 +51,22 @@ export function SettingsPanel({
   isBackupDisabled = false,
   isRestoreDisabled = false,
   isAuthDisabled = false,
+  firebaseConfig = EMPTY_FIREBASE_CONFIG,
   onBackup,
   onRestore,
   onExportText,
   onToggleStartup,
   onSignIn,
   onSignOut,
+  onSaveFirebaseConfig,
+  onClearFirebaseConfig,
 }: SettingsPanelProps) {
+  const [firebaseForm, setFirebaseForm] = useState<FirebaseConfigFormValue>(firebaseConfig);
+
+  useEffect(() => {
+    setFirebaseForm(firebaseConfig);
+  }, [firebaseConfig]);
+
   const handleToggleStartup = (event: ChangeEvent<HTMLInputElement>) => {
     onToggleStartup(event.currentTarget.checked);
   };
@@ -47,20 +79,106 @@ export function SettingsPanel({
     }
   };
 
+  const handleFirebaseConfigChange =
+    (key: keyof FirebaseConfigFormValue) => (event: ChangeEvent<HTMLInputElement>) => {
+      const { value } = event.currentTarget;
+      setFirebaseForm((current) => ({
+        ...current,
+        [key]: value,
+      }));
+    };
+
+  const handleFirebaseConfigSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onSaveFirebaseConfig?.(firebaseForm);
+  };
+
   return (
     <section className="settings-panel">
       <section className="settings-panel__section">
         <h4 className="settings-panel__section-title">계정</h4>
-        <p>{userName || "로그인 필요"}</p>
+        <p>{userName || "구글 로그인 필요"}</p>
         <button
           type="button"
           onClick={handleAuthClick}
           disabled={isAuthDisabled || !isServerAvailable}
-          title={userName ? "로그아웃" : "로그인"}
+          title={userName ? "로그아웃" : "구글 로그인"}
         >
-          {userName ? "로그아웃" : "로그인"}
+          {userName ? "로그아웃" : "구글 로그인"}
         </button>
       </section>
+
+      {onSaveFirebaseConfig ? (
+        <section className="settings-panel__section">
+          <h4 className="settings-panel__section-title">구글 로그인 설정</h4>
+          <form className="firebase-config-form" onSubmit={handleFirebaseConfigSubmit}>
+            <label>
+              API key
+              <input
+                value={firebaseForm.apiKey}
+                onChange={handleFirebaseConfigChange("apiKey")}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              Auth domain
+              <input
+                value={firebaseForm.authDomain}
+                onChange={handleFirebaseConfigChange("authDomain")}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              Project ID
+              <input
+                value={firebaseForm.projectId}
+                onChange={handleFirebaseConfigChange("projectId")}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              App ID
+              <input
+                value={firebaseForm.appId}
+                onChange={handleFirebaseConfigChange("appId")}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              Storage bucket
+              <input
+                value={firebaseForm.storageBucket}
+                onChange={handleFirebaseConfigChange("storageBucket")}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              Messaging sender ID
+              <input
+                value={firebaseForm.messagingSenderId}
+                onChange={handleFirebaseConfigChange("messagingSenderId")}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              Measurement ID
+              <input
+                value={firebaseForm.measurementId}
+                onChange={handleFirebaseConfigChange("measurementId")}
+                autoComplete="off"
+              />
+            </label>
+            <div>
+              <button type="submit" disabled={isServerBusy}>
+                설정 저장
+              </button>
+              <button type="button" onClick={onClearFirebaseConfig} disabled={isServerBusy}>
+                설정 지우기
+              </button>
+            </div>
+          </form>
+        </section>
+      ) : null}
 
       <section className="settings-panel__section">
         <h4 className="settings-panel__section-title">백업/복원</h4>
