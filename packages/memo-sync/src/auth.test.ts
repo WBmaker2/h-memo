@@ -7,7 +7,13 @@ import {
   type NextOrObserver,
   type User,
 } from "firebase/auth";
-import { completeGoogleRedirectSignIn, signInWithGoogle, subscribeAuthUser, toHMemoUser } from "./auth";
+import {
+  completeGoogleRedirectSignIn,
+  signInWithGoogle,
+  subscribeAuthUser,
+  toHMemoUser,
+  waitForSignedInUser,
+} from "./auth";
 
 function createFakeUser(overrides: Partial<User> = {}): User {
   return {
@@ -159,5 +165,21 @@ describe("completeGoogleRedirectSignIn", () => {
     await expect(completeGoogleRedirectSignIn({} as any)).resolves.toEqual(
       toHMemoUser(fakeUser)
     );
+  });
+});
+
+describe("waitForSignedInUser", () => {
+  it("returns the current Firebase auth user when it is already available", async () => {
+    const fakeUser = createFakeUser({ uid: "current-user" });
+
+    await expect(
+      waitForSignedInUser({ currentUser: fakeUser } as any, 10, 1)
+    ).resolves.toEqual(toHMemoUser(fakeUser));
+  });
+
+  it("returns null when the auth user does not become available", async () => {
+    await expect(
+      waitForSignedInUser({ currentUser: null } as any, 1, 1)
+    ).resolves.toBeNull();
   });
 });

@@ -69,6 +69,23 @@ export async function completeGoogleRedirectSignIn(
   return result ? toHMemoUser(result.user) : null;
 }
 
+export async function waitForSignedInUser(
+  auth: Auth,
+  timeoutMs = 8000,
+  intervalMs = 250
+): Promise<HMemoUser | null> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() <= deadline) {
+    if (auth.currentUser) {
+      return toHMemoUser(auth.currentUser);
+    }
+    await new Promise((resolve) => globalThis.setTimeout(resolve, intervalMs));
+  }
+
+  return null;
+}
+
 export async function signOutUser(auth: Auth): Promise<void> {
   await signOut(auth);
 }

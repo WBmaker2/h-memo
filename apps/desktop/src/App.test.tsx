@@ -23,6 +23,7 @@ const {
   mockBackupMemos,
   mockRestoreLatestBackup,
   mockCompleteGoogleRedirectSignIn,
+  mockWaitForSignedInUser,
   mockGetFirestore,
   mockCreateFirebaseApp,
   mockGetFirebaseAuth,
@@ -33,6 +34,7 @@ const {
   mockMinimizeWindow,
   mockToggleMaximizeWindow,
   mockCloseWindow,
+  mockOpenMemoWindow,
   mockReadWindowBounds,
   mockRestoreWindowBounds,
   mockSetWindowHeight,
@@ -53,11 +55,13 @@ const {
   const mockBackupMemos = vi.fn();
   const mockRestoreLatestBackup = vi.fn();
   const mockCompleteGoogleRedirectSignIn = vi.fn();
+  const mockWaitForSignedInUser = vi.fn();
   const mockStartWindowDrag = vi.fn();
   const mockStartWindowResize = vi.fn();
   const mockMinimizeWindow = vi.fn();
   const mockToggleMaximizeWindow = vi.fn();
   const mockCloseWindow = vi.fn();
+  const mockOpenMemoWindow = vi.fn();
   const mockRestoreWindowBounds = vi.fn();
   const mockSetWindowHeight = vi.fn();
   const mockListenWindowBoundsChanged = vi.fn();
@@ -161,6 +165,7 @@ const {
     mockBackupMemos,
     mockRestoreLatestBackup,
     mockCompleteGoogleRedirectSignIn,
+    mockWaitForSignedInUser,
     mockGetFirestore,
     mockCreateFirebaseApp,
     mockGetFirebaseAuth,
@@ -171,6 +176,7 @@ const {
     mockMinimizeWindow,
     mockToggleMaximizeWindow,
     mockCloseWindow,
+    mockOpenMemoWindow,
     mockReadWindowBounds,
     mockRestoreWindowBounds,
     mockSetWindowHeight,
@@ -231,6 +237,8 @@ vi.mock("@h-memo/memo-sync", () => {
     restoreLatestBackup: (gateway: unknown, userId: string) =>
       mockRestoreLatestBackup(gateway, userId),
     completeGoogleRedirectSignIn: (auth: unknown) => mockCompleteGoogleRedirectSignIn(auth),
+    waitForSignedInUser: (auth: unknown, timeoutMs?: number, intervalMs?: number) =>
+      mockWaitForSignedInUser(auth, timeoutMs, intervalMs),
     subscribeAuthUser: (auth: unknown, callback: (user: unknown) => void) =>
       mockSubscribeAuthUser(auth, callback),
     signInWithGoogle: (auth: unknown, options?: unknown) => mockSignInWithGoogle(auth, options),
@@ -258,6 +266,7 @@ vi.mock("./adapters/tauriWindow", () => ({
   minimizeWindow: () => mockMinimizeWindow(),
   toggleMaximizeWindow: () => mockToggleMaximizeWindow(),
   closeWindow: () => mockCloseWindow(),
+  openMemoWindow: (memo: unknown) => mockOpenMemoWindow(memo),
   readWindowBounds: () => mockReadWindowBounds(),
   restoreWindowBounds: (bounds: unknown) => mockRestoreWindowBounds(bounds),
   setWindowHeight: (height: number) => mockSetWindowHeight(height),
@@ -332,6 +341,7 @@ beforeEach(() => {
   mockBackupMemos.mockReset();
   mockRestoreLatestBackup.mockReset();
   mockCompleteGoogleRedirectSignIn.mockReset();
+  mockWaitForSignedInUser.mockReset();
   mockGetFirestore.mockReset();
   mockCreateFirebaseApp.mockReset();
   mockGetFirebaseAuth.mockReset();
@@ -342,6 +352,7 @@ beforeEach(() => {
   mockMinimizeWindow.mockReset();
   mockToggleMaximizeWindow.mockReset();
   mockCloseWindow.mockReset();
+  mockOpenMemoWindow.mockReset();
   mockReadWindowBounds.mockReset();
   mockRestoreWindowBounds.mockReset();
   mockSetWindowHeight.mockReset();
@@ -370,6 +381,7 @@ beforeEach(() => {
   mockMinimizeWindow.mockResolvedValue(undefined);
   mockToggleMaximizeWindow.mockResolvedValue(undefined);
   mockCloseWindow.mockResolvedValue(undefined);
+  mockOpenMemoWindow.mockResolvedValue(undefined);
   mockReadWindowBounds.mockImplementation(async () => tauriWindowState.bounds);
   mockRestoreWindowBounds.mockResolvedValue(undefined);
   mockSetWindowHeight.mockResolvedValue(undefined);
@@ -381,9 +393,18 @@ beforeEach(() => {
   mockExportJsonFile.mockResolvedValue({ status: "saved", path: "/tmp/h-memo-backup.json" });
   mockImportJsonFile.mockResolvedValue({ status: "cancelled" });
   mockCompleteGoogleRedirectSignIn.mockResolvedValue(null);
+  mockWaitForSignedInUser.mockResolvedValue(null);
   Object.defineProperty(window, "confirm", {
     configurable: true,
     value: vi.fn(() => true),
+  });
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => "blob:h-memo-backup"),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
   });
 
   setMockFirebaseClientEnv({
@@ -402,6 +423,8 @@ async function createMemoFromAppMenu(user: ReturnType<typeof userEvent.setup>) {
 describe("desktop App", () => {
   it("exports memo body text without a separate title field", async () => {
     const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
     render(<App />);
 
     await createMemoFromAppMenu(user);
@@ -409,11 +432,15 @@ describe("desktop App", () => {
       target: { value: "tray memo" },
     });
     await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
-    const preview = screen.getByLabelText("TXT 내용 결과");
 
     expect(screen.queryByLabelText("메모 제목")).not.toBeInTheDocument();
-    expect(preview).not.toHaveTextContent(/제목:/);
-    expect(preview).toHaveTextContent(/tray memo/);
+    await waitFor(() => {
+      expect(mockExportTextFile).toHaveBeenCalledWith(
+        "h-memo-backup.txt",
+        expect.stringContaining("tray memo")
+      );
+    });
+    expect(mockExportTextFile.mock.calls[0][1]).not.toMatch(/제목:/);
   });
 
   it("does not expose memo hide when there is no restore action", async () => {
@@ -427,8 +454,10 @@ describe("desktop App", () => {
     expect(screen.getByDisplayValue("윈도우메모")).toBeInTheDocument();
   });
 
-  it("keeps existing memo visible when creating another memo", async () => {
+  it("opens a new desktop memo in an independent window", async () => {
     const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
     render(<App />);
 
     await createMemoFromAppMenu(user);
@@ -438,15 +467,23 @@ describe("desktop App", () => {
     await user.click(screen.getByRole("button", { name: "새 메모" }));
 
     expect(screen.getByDisplayValue("첫 번째 메모")).toBeInTheDocument();
-    expect(screen.getAllByLabelText("메모 내용")).toHaveLength(2);
+    expect(screen.getAllByLabelText("메모 내용")).toHaveLength(1);
+    await waitFor(() => {
+      expect(mockOpenMemoWindow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          plainText: "",
+        })
+      );
+    });
   });
 
-  it("keeps browser fallback behavior for text export preview", async () => {
+  it("keeps browser fallback behavior for text export downloads", async () => {
     const user = userEvent.setup();
+    const appendSpy = vi.spyOn(document.body, "append");
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     render(<App />);
 
-    const status = getStatus();
-    expect(status).toHaveTextContent(
+    expect(getStatus()).toHaveTextContent(
       "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다."
     );
 
@@ -456,9 +493,15 @@ describe("desktop App", () => {
     });
     await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
 
-    const preview = screen.getByLabelText("TXT 내용 결과");
-    expect(preview).toHaveTextContent(/browser text/);
+    await waitFor(() => {
+      expect(clickSpy).toHaveBeenCalled();
+      expect(screen.getByRole("status")).toHaveTextContent("TXT 백업 파일을 만들었습니다.");
+    });
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(appendSpy).toHaveBeenCalled();
     expect(mockExportTextFile).not.toHaveBeenCalled();
+    clickSpy.mockRestore();
+    appendSpy.mockRestore();
   });
 
   it("displays tauri export cancelled message", async () => {
@@ -523,7 +566,9 @@ describe("desktop App", () => {
 
     await waitFor(() => {
       expect(screen.getByDisplayValue("첫 JSON 메모")).toBeInTheDocument();
-      expect(screen.getByDisplayValue("둘째 JSON 메모")).toBeInTheDocument();
+      expect(mockOpenMemoWindow).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "memo-json-2" })
+      );
     });
 
     await user.click(screen.getAllByRole("button", { name: "JSON 백업" })[0]);
@@ -773,9 +818,8 @@ describe("desktop App", () => {
     await user.click(screen.getByLabelText("앱 메뉴"));
     await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
 
-    const preview = screen.getByLabelText("TXT 내용 결과");
-    expect(preview).toHaveTextContent("");
-    expect(preview).not.toHaveTextContent(/delete text/);
+    expect(screen.getByRole("status")).toHaveTextContent("내보낼 메모가 없습니다.");
+    expect(mockExportTextFile).not.toHaveBeenCalled();
   });
 
   it("toggles startup registration switch", async () => {
@@ -952,6 +996,39 @@ describe("desktop App", () => {
       );
       expect(mockBackupMemos).toHaveBeenCalledTimes(1);
       expect(screen.getByRole("status")).toHaveTextContent("백업 완료: users/user-1/backups/1");
+    });
+  });
+
+  it("enables server controls when redirect login settles on the Firebase auth user", async () => {
+    const user = userEvent.setup();
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    const settledUser = {
+      uid: "settled-user",
+      displayName: "리다이렉트 사용자",
+      email: "settled@example.com",
+      photoURL: "",
+    };
+    mockSignInWithGoogle.mockResolvedValue(null);
+    mockWaitForSignedInUser
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(settledUser);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
+
+    await waitFor(() => {
+      expect(mockWaitForSignedInUser).toHaveBeenCalledWith(expect.anything(), 8000, undefined);
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
+      expect(screen.getByRole("status")).toHaveTextContent("리다이렉트 사용자님이 로그인했습니다.");
     });
   });
 

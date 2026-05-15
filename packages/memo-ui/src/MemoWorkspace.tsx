@@ -7,9 +7,10 @@ type MemoWorkspaceShellProps = {
   appClassName: string;
   title: string;
   memos: Memo[];
-  txtPreview: string;
+  managedMemos?: Memo[];
   actions?: ReactNode;
   onCreateMemo: () => void;
+  onOpenMemo?: (memoId: string) => void;
   onMemoChange: (memo: Memo) => void;
   onDeleteMemo: (memoId: string) => void;
   onRequestWindowDrag?: () => void;
@@ -25,8 +26,9 @@ export function MemoWorkspace({
   appClassName,
   title,
   memos,
-  txtPreview,
+  managedMemos,
   onCreateMemo,
+  onOpenMemo,
   onMemoChange,
   onDeleteMemo,
   onRequestWindowDrag,
@@ -39,6 +41,8 @@ export function MemoWorkspace({
   actions,
 }: MemoWorkspaceShellProps) {
   const hasMemos = memos.length > 0;
+  const menuMemos = managedMemos ?? memos;
+  const hasManagedMemos = menuMemos.length > 0;
   const getMemoLabel = (memo: Memo, index: number) => {
     const text = memo.plainText.trim().replace(/\s+/g, " ");
     return text || `빈 메모 ${index + 1}`;
@@ -54,11 +58,20 @@ export function MemoWorkspace({
       </section>
       <section className="memo-menu__group" aria-label="메모 관리">
         <h3 className="memo-menu__group-title">메모 관리</h3>
-        {hasMemos ? (
+        {hasManagedMemos ? (
           <ul className="memo-list">
-            {memos.map((memo, index) => (
+            {menuMemos.map((memo, index) => (
               <li key={memo.id} className="memo-list__item">
                 <span title={memo.plainText}>{getMemoLabel(memo, index)}</span>
+                {onOpenMemo ? (
+                  <button
+                    type="button"
+                    aria-label={`${getMemoLabel(memo, index)} 열기`}
+                    onClick={() => onOpenMemo(memo.id)}
+                  >
+                    열기
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   aria-label={`${getMemoLabel(memo, index)} 삭제`}
@@ -95,12 +108,6 @@ export function MemoWorkspace({
         onSaveFirebaseConfig={settingsProps.onSaveFirebaseConfig}
         onClearFirebaseConfig={settingsProps.onClearFirebaseConfig}
       />
-      <section className="memo-menu__group" aria-label="TXT 내용">
-        <h3 className="memo-menu__group-title">TXT 내용</h3>
-        <pre aria-label="TXT 내용 결과" className={`${appClassName}__preview`}>
-          {txtPreview}
-        </pre>
-      </section>
     </div>
   );
 

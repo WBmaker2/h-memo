@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Auth } from "firebase/auth";
+import type { Auth } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
 import {
   createMemo,
@@ -21,6 +21,7 @@ import {
   signInWithGoogle,
   signOutUser,
   subscribeAuthUser,
+  waitForSignedInUser,
   type HMemoUser,
 } from "@h-memo/memo-sync";
 import {
@@ -112,7 +113,6 @@ function sortMemos(nextMemos: Memo[]): Memo[] {
 export function WebApp() {
   const repository = useMemo<MemoRepository>(() => createRepository(), []);
   const [memos, setMemos] = useState<Memo[]>([]);
-  const [txtPreview, setTxtPreview] = useState("");
   const [startupEnabled, setStartupEnabled] = useState(false);
   const [backupStatus, setBackupStatus] = useState<BackupMessage>(BROWSER_BACKUP_READY_MESSAGE);
   const [user, setUser] = useState<WebPreviewUser | null>(null);
@@ -238,6 +238,16 @@ export function WebApp() {
           setUser(normalizePreviewUser(nextUser));
           setBackupStatus(
             `${nextUser.displayName || nextUser.email || "사용자"}님이 로그인했습니다.`
+          );
+        })
+        .then(async () => {
+          const settledUser = await waitForSignedInUser(services.auth, 4000);
+          if (!isMounted || !settledUser) {
+            return;
+          }
+          setUser(normalizePreviewUser(settledUser));
+          setBackupStatus(
+            `${settledUser.displayName || settledUser.email || "사용자"}님이 로그인했습니다.`
           );
         })
         .catch((error) => {
@@ -373,8 +383,21 @@ export function WebApp() {
 
   const handleGenerateTextPreview = async () => {
     const contents = formatMemosAsCombinedText(memos);
-    setTxtPreview(contents);
-    setBackupStatus(contents === "" ? "내보낼 메모가 없습니다." : "TXT 내용 생성 완료");
+    if (contents === "") {
+      setBackupStatus("내보낼 메모가 없습니다.");
+      return;
+    }
+
+    const blob = new Blob([contents], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "h-memo-backup.txt";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setBackupStatus("TXT 백업 파일을 만들었습니다.");
   };
 
   const createLocalBackupJson = async () => {
@@ -477,7 +500,14 @@ export function WebApp() {
         fallbackToRedirect: true,
       });
       if (!nextUser) {
-        setBackupStatus("구글 로그인 화면으로 이동합니다. 완료 후 앱으로 돌아옵니다.");
+        setBackupStatus("구글 로그인 완료를 확인하는 중입니다...");
+        const settledUser = await waitForSignedInUser(services.auth, 8000);
+        if (settledUser) {
+          setUser(normalizePreviewUser(settledUser));
+          setBackupStatus(`${settledUser.displayName || settledUser.email || "사용자"}님이 로그인했습니다.`);
+          return;
+        }
+        setBackupStatus("구글 로그인 화면을 완료한 뒤 앱으로 돌아와 주세요.");
         return;
       }
       setUser(normalizePreviewUser(nextUser));
@@ -630,7 +660,6 @@ export function WebApp() {
         appClassName="web-app"
         title="H Memo (웹 미리보기)"
         memos={visibleMemos}
-        txtPreview={txtPreview}
         onCreateMemo={handleCreateMemo}
         onMemoChange={handleMemoChange}
         onDeleteMemo={handleDeleteMemo}

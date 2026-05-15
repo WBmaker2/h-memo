@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getFirestore, type Firestore } from "firebase/firestore";
-import { Auth } from "firebase/auth";
+import type { Auth } from "firebase/auth";
 import {
   MemoryMemoRepository,
   createBackupPayload,
@@ -23,6 +23,7 @@ import {
 } from "./adapters/tauriPlatform";
 import {
   closeWindow,
+  openMemoWindow,
   listenWindowBoundsChanged,
   minimizeWindow,
   readWindowBounds,
@@ -44,6 +45,7 @@ import {
   restoreLatestBackup,
   signInWithGoogle,
   signOutUser,
+  waitForSignedInUser,
   type HMemoUser,
 } from "@h-memo/memo-sync";
 import {
@@ -104,9 +106,15 @@ function sortMemos(nextMemos: Memo[]): Memo[] {
 
 export function App() {
   const isTauri = isTauriRuntime();
+  const requestedMemoId = useMemo(() => {
+    if (!isTauri) {
+      return null;
+    }
+    return new URLSearchParams(window.location.search).get("memoId");
+  }, [isTauri]);
   const repository = useMemo(() => createRepository(isTauri), [isTauri]);
   const [memos, setMemos] = useState<Memo[]>([]);
-  const [txtPreview, setTxtPreview] = useState("");
+  const [activeMemoId, setActiveMemoId] = useState<string | null>(requestedMemoId);
   const [startupEnabled, setStartupEnabled] = useState(false);
   const [syncServicesInitialized, setSyncServicesInitialized] = useState(false);
   const buildFirebaseClientEnv = useMemo(() => getFirebaseClientEnv(), []);
@@ -143,6 +151,8 @@ export function App() {
   const restoredMemoIdRef = useRef<string | null>(null);
   const boundsPersistTimerRef = useRef<number | null>(null);
   const expandedWindowBoundsRef = useRef<WindowBounds | null>(null);
+  const activeMemoIdRef = useRef<string | null>(requestedMemoId);
+  const openedRestoredMemoWindowsRef = useRef(false);
 
   const syncServicesRef = useRef<SyncServices | null>(null);
 
@@ -167,6 +177,10 @@ export function App() {
   useEffect(() => {
     memosRef.current = memos;
   }, [memos]);
+
+  useEffect(() => {
+    activeMemoIdRef.current = activeMemoId;
+  }, [activeMemoId]);
 
   const ensureSyncServices = useCallback((): SyncServices | null => {
     if (!hasFirebaseConfigSet) {
@@ -234,6 +248,14 @@ export function App() {
           setUser(nextUser);
           setBackupStatus(`${nextUser.displayName || nextUser.email || "사용자"}님이 로그인했습니다.`);
         })
+        .then(async () => {
+          const settledUser = await waitForSignedInUser(services.auth, 4000);
+          if (!isMounted || !settledUser) {
+            return;
+          }
+          setUser(settledUser);
+          setBackupStatus(`${settledUser.displayName || settledUser.email || "사용자"}님이 로그인했습니다.`);
+        })
         .catch((error) => {
           if (!isMounted) {
             return;
@@ -284,6 +306,48 @@ export function App() {
     () => memos.filter((memo) => memo.deletedAt === null),
     [memos]
   );
+  const displayedMemos = useMemo(() => {
+    if (!isTauri) {
+      return visibleMemos;
+    }
+    if (!activeMemoId) {
+      return [];
+    }
+    return visibleMemos.filter((memo) => memo.id === activeMemoId);
+  }, [activeMemoId, isTauri, visibleMemos]);
+
+  useEffect(() => {
+    if (!isTauri || !hasLoadedMemos) {
+      return;
+    }
+
+    if (activeMemoId && visibleMemos.some((memo) => memo.id === activeMemoId)) {
+      return;
+    }
+
+    setActiveMemoId(visibleMemos[0]?.id ?? null);
+  }, [activeMemoId, hasLoadedMemos, isTauri, visibleMemos]);
+
+  useEffect(() => {
+    if (!isTauri || requestedMemoId || !hasLoadedMemos || openedRestoredMemoWindowsRef.current) {
+      return;
+    }
+
+    const currentMemoId = activeMemoId ?? visibleMemos[0]?.id;
+    if (!currentMemoId) {
+      return;
+    }
+
+    openedRestoredMemoWindowsRef.current = true;
+    for (const memo of visibleMemos) {
+      if (memo.id === currentMemoId) {
+        continue;
+      }
+      void openMemoWindow(memo).catch((error) => {
+        setBackupStatus(`메모 창 열기 실패: ${getErrorMessage(error)}`);
+      });
+    }
+  }, [activeMemoId, hasLoadedMemos, isTauri, requestedMemoId, visibleMemos]);
 
   const upsertMemo = (nextMemo: Memo) => {
     setMemos((previousMemos) => {
@@ -331,7 +395,10 @@ export function App() {
         return;
       }
 
-      const target = memosRef.current.find((memo) => memo.deletedAt === null);
+      const targetMemoId = activeMemoIdRef.current;
+      const target = memosRef.current.find(
+        (memo) => memo.deletedAt === null && memo.id === targetMemoId
+      );
       if (!target) {
         return;
       }
@@ -406,7 +473,11 @@ export function App() {
       return;
     }
 
-    const activeMemo = visibleMemos[0];
+    const activeMemo = displayedMemos[0];
+    if (!activeMemo) {
+      return;
+    }
+
     if (restoredMemoIdRef.current === activeMemo.id) {
       return;
     }
@@ -422,7 +493,7 @@ export function App() {
     }).catch((error) => {
       setBackupStatus(`창 위치 복원 실패: ${getErrorMessage(error)}`);
     });
-  }, [hasLoadedMemos, isTauri, visibleMemos]);
+  }, [displayedMemos, hasLoadedMemos, isTauri, visibleMemos]);
 
   const rollbackRestoreAttempt = async (currentMemos: Memo[], nextMemos: Memo[]) => {
     const currentIds = new Set(currentMemos.map((memo) => memo.id));
@@ -469,6 +540,25 @@ export function App() {
     });
 
     await persistMemo(nextMemo);
+    if (!isTauri) {
+      return;
+    }
+    if (!activeMemoIdRef.current) {
+      setActiveMemoId(nextMemo.id);
+      return;
+    }
+    await openMemoWindow(nextMemo);
+  };
+
+  const handleOpenMemo = async (memoId: string) => {
+    const target = memos.find((memo) => memo.id === memoId && memo.deletedAt === null);
+    if (!target || !isTauri) {
+      return;
+    }
+    if (target.id === activeMemoIdRef.current) {
+      return;
+    }
+    await openMemoWindow(target);
   };
 
   const handleMemoChange = (nextMemo: Memo) => {
@@ -491,9 +581,23 @@ export function App() {
 
   const handleGenerateTextPreview = async () => {
     const contents = formatMemosAsCombinedText(memos);
-    setTxtPreview(contents);
+
+    if (contents === "") {
+      setBackupStatus("내보낼 메모가 없습니다.");
+      return;
+    }
 
     if (!isTauri) {
+      const blob = new Blob([contents], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "h-memo-backup.txt";
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setBackupStatus("TXT 백업 파일을 만들었습니다.");
       return;
     }
 
@@ -612,7 +716,14 @@ export function App() {
         fallbackToRedirect: isTauri,
       });
       if (!nextUser) {
-        setBackupStatus("구글 로그인 화면으로 이동합니다. 완료 후 앱으로 돌아옵니다.");
+        setBackupStatus("구글 로그인 완료를 확인하는 중입니다...");
+        const settledUser = await waitForSignedInUser(services.auth, 8000);
+        if (settledUser) {
+          setUser(settledUser);
+          setBackupStatus(`${settledUser.displayName || settledUser.email || "사용자"}님이 로그인했습니다.`);
+          return;
+        }
+        setBackupStatus("구글 로그인 화면을 완료한 뒤 앱으로 돌아와 주세요.");
         return;
       }
       setUser(nextUser);
@@ -852,7 +963,7 @@ export function App() {
         x: currentBounds.x,
         y: currentBounds.y,
         width: expandedBounds?.width ?? currentBounds.width,
-        height: expandedBounds?.height ?? visibleMemos[0]?.windowState.height ?? 280,
+        height: expandedBounds?.height ?? displayedMemos[0]?.windowState.height ?? 280,
       });
     };
 
@@ -865,9 +976,10 @@ export function App() {
     <MemoWorkspace
       appClassName="desktop-app"
       title="H Memo"
-      memos={visibleMemos}
-      txtPreview={txtPreview}
+      memos={displayedMemos}
+      managedMemos={visibleMemos}
       onCreateMemo={handleCreateMemo}
+      onOpenMemo={isTauri ? handleOpenMemo : undefined}
       onMemoChange={handleMemoChange}
       onDeleteMemo={handleDeleteMemo}
       onRequestWindowDrag={handleRequestWindowDrag}
