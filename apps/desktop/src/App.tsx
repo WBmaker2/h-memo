@@ -1170,7 +1170,7 @@ export function App() {
     }
   };
 
-  const handleDeleteServerMemo = async (memoId: string) => {
+  const handleDeleteServerMemo = async (memoId: string, memoLabel: string) => {
     const services = ensureSyncServices();
     if (!user) {
       setBackupStatus(LOGIN_REQUIRED_MESSAGE);
@@ -1193,6 +1193,7 @@ export function App() {
 
     setIsBusy(true);
     try {
+      const targetMemoLabel = memoLabel || "메모";
       const deletedSnapshotCount = await deleteBackedUpMemo(services.gateway, user.uid, memoId);
       setServerMemoManager((previous) => ({
         ...previous,
@@ -1200,8 +1201,8 @@ export function App() {
       }));
       setBackupStatus(
         deletedSnapshotCount > 0
-          ? "서버 백업에서 메모를 삭제했습니다."
-          : "서버 백업에서 삭제할 메모를 찾지 못했습니다."
+          ? `서버 백업에서 "${targetMemoLabel}" 메모를 삭제했습니다.`
+          : `서버 백업에서 "${targetMemoLabel}" 메모를 찾지 못했습니다.`
       );
     } catch (error) {
       setBackupStatus(`서버 메모 삭제 실패: ${getErrorMessage(error)}`);
@@ -1438,7 +1439,7 @@ export function App() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDeleteServerMemo(item.memo.id)}
+                        onClick={() => handleDeleteServerMemo(item.memo.id, getMemoLabel(item.memo))}
                         disabled={isBusy}
                       >
                         서버 삭제

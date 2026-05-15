@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { createMemo } from "@h-memo/memo-core";
@@ -1686,8 +1686,73 @@ describe("desktop App", () => {
         "server-user",
         "memo-server-deleted"
       );
-      expect(screen.getByRole("status")).toHaveTextContent("서버 백업에서 메모를 삭제했습니다.");
+      const serverDialog = screen.getByRole("dialog", { name: "서버 메모 관리" });
+      expect(screen.getByRole("status")).toHaveTextContent(
+        '서버 백업에서 "서버에 남은 삭제 메모" 메모를 삭제했습니다.'
+      );
+      expect(within(serverDialog).queryByRole("listitem")).not.toBeInTheDocument();
       expect(screen.getByText("서버에 저장된 메모가 없습니다.")).toBeInTheDocument();
+    });
+  });
+
+  it("shows empty-memo label in server delete status even when server delete count is zero", async () => {
+    const user = userEvent.setup();
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({
+        uid: "server-user",
+        displayName: "서버 사용자",
+        email: "server@example.com",
+        photoURL: "",
+      });
+      return mockAuthUnsubscribe;
+    });
+    const blankServerMemo = {
+      ...createMemo({
+        id: "memo-server-empty",
+        now: "2026-05-13T09:00:00.000Z",
+        plainText: "",
+      }),
+      deletedAt: null,
+    };
+    mockListBackedUpMemos.mockResolvedValue([
+      {
+        memo: blankServerMemo,
+        backupCreatedAt: "2026-05-13T09:11:00.000Z",
+      },
+    ]);
+    mockDeleteBackedUpMemo.mockResolvedValue(0);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "서버 메모 관리" })).toBeEnabled();
+    });
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "서버 메모 관리" })).toHaveTextContent("빈 메모");
+      expect(screen.getByRole("status")).toHaveTextContent("서버 메모 1개를 불러왔습니다.");
+    });
+
+    await user.click(screen.getByRole("button", { name: "서버 삭제" }));
+
+    await waitFor(() => {
+      expect(mockDeleteBackedUpMemo).toHaveBeenCalledWith(
+        expect.anything(),
+        "server-user",
+        "memo-server-empty"
+      );
+      const serverDialog = screen.getByRole("dialog", { name: "서버 메모 관리" });
+      expect(screen.getByRole("status")).toHaveTextContent(
+        '서버 백업에서 "빈 메모" 메모를 찾지 못했습니다.'
+      );
+      expect(within(serverDialog).queryByRole("listitem")).not.toBeInTheDocument();
     });
   });
 
