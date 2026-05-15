@@ -19,17 +19,17 @@ on:
 jobs:
   windows-tauri:
     name: Build Windows Tauri Artifacts
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     timeout-minutes: 50
     permissions:
       contents: read
     outputs:
       release_tag: ${{ steps.release_tag.outputs.release_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -98,14 +98,14 @@ jobs:
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET || '' }}
 
       - name: Upload MSI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: h-memo-windows-msi
           path: apps/desktop/src-tauri/target/release/bundle/msi/*.msi
 
       - name: Upload NSIS installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: h-memo-windows-nsis
@@ -133,13 +133,13 @@ jobs:
           echo "Using validated release tag: $RELEASE_TAG"
 
       - name: Download MSI artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: h-memo-windows-msi
           path: release-assets/msi
 
       - name: Download NSIS artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: h-memo-windows-nsis
           path: release-assets/nsis
