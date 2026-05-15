@@ -3,7 +3,8 @@ import {
   PhysicalPosition,
   PhysicalSize,
 } from "@tauri-apps/api/window";
-import { invoke } from "@tauri-apps/api/core";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import type { Memo } from "@h-memo/memo-core";
 
 export type WindowBounds = {
   x: number;
@@ -20,16 +21,46 @@ export function startWindowResize(direction: "SouthEast") {
   return getCurrentWindow().startResizeDragging(direction);
 }
 
-export function minimizeWindow() {
-  return getCurrentWindow().minimize();
-}
-
-export function toggleMaximizeWindow() {
-  return getCurrentWindow().toggleMaximize();
-}
-
 export function closeWindow() {
-  return invoke<void>("quit_app");
+  const currentWindow = getCurrentWindow();
+  return currentWindow.label === "main" ? currentWindow.hide() : currentWindow.close();
+}
+
+export function getMemoWindowLabel(memoId: string) {
+  return `memo_${memoId.replace(/[^a-zA-Z0-9-/:_]/g, "_")}`;
+}
+
+function getMemoWindowUrl(memoId: string) {
+  return `index.html?memoId=${encodeURIComponent(memoId)}`;
+}
+
+export async function openMemoWindow(memo: Memo) {
+  const label = getMemoWindowLabel(memo.id);
+  const existingWindow = await WebviewWindow.getByLabel(label);
+  if (existingWindow) {
+    await existingWindow.unminimize();
+    await existingWindow.show();
+    await existingWindow.setFocus();
+    return;
+  }
+
+  const memoWindow = new WebviewWindow(label, {
+    url: getMemoWindowUrl(memo.id),
+    title: "H Memo",
+    width: memo.windowState.width,
+    height: memo.windowState.height,
+    x: memo.windowState.x ?? undefined,
+    y: memo.windowState.y ?? undefined,
+    resizable: true,
+    decorations: false,
+    visible: true,
+    focus: true,
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    void memoWindow.once("tauri://created", () => resolve());
+    void memoWindow.once("tauri://error", (event) => reject(event.payload));
+  });
 }
 
 export async function readWindowBounds(): Promise<WindowBounds> {

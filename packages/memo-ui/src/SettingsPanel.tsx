@@ -8,6 +8,7 @@ export type FirebaseConfigFormValue = {
   storageBucket: string;
   messagingSenderId: string;
   measurementId: string;
+  googleOAuthClientId: string;
 };
 
 export type SettingsPanelProps = {
@@ -24,6 +25,8 @@ export type SettingsPanelProps = {
   onBackup: () => void;
   onRestore: () => void;
   onExportText: () => void;
+  onExportJsonBackup?: () => void;
+  onImportJsonBackup?: () => void;
   onToggleStartup: (enabled: boolean) => void;
   onSignIn: () => void;
   onSignOut: () => void;
@@ -39,6 +42,7 @@ const EMPTY_FIREBASE_CONFIG: FirebaseConfigFormValue = {
   storageBucket: "",
   messagingSenderId: "",
   measurementId: "",
+  googleOAuthClientId: "",
 };
 
 export function SettingsPanel({
@@ -55,6 +59,8 @@ export function SettingsPanel({
   onBackup,
   onRestore,
   onExportText,
+  onExportJsonBackup = () => {},
+  onImportJsonBackup = () => {},
   onToggleStartup,
   onSignIn,
   onSignOut,
@@ -97,7 +103,7 @@ export function SettingsPanel({
     <section className="settings-panel">
       <section className="settings-panel__section">
         <h4 className="settings-panel__section-title">계정</h4>
-        <p>{userName || "구글 로그인 필요"}</p>
+        <p>{userName || "구글 로그인(선택)"}</p>
         <button
           type="button"
           onClick={handleAuthClick}
@@ -168,6 +174,14 @@ export function SettingsPanel({
                 autoComplete="off"
               />
             </label>
+            <label>
+              Google OAuth Client ID
+              <input
+                value={firebaseForm.googleOAuthClientId}
+                onChange={handleFirebaseConfigChange("googleOAuthClientId")}
+                autoComplete="off"
+              />
+            </label>
             <div>
               <button type="submit" disabled={isServerBusy}>
                 설정 저장
@@ -205,13 +219,27 @@ export function SettingsPanel({
           >
             TXT 내보내기
           </button>
+          <button
+            type="button"
+            onClick={onExportJsonBackup}
+            disabled={isServerBusy}
+          >
+            JSON 백업
+          </button>
+          <button
+            type="button"
+            onClick={onImportJsonBackup}
+            disabled={isServerBusy}
+          >
+            JSON 복원
+          </button>
         </div>
       </section>
 
       <section className="settings-panel__section">
         <h4 className="settings-panel__section-title">시작프로그램</h4>
-        <label>
-          시작프로그램 등록
+        <label className="settings-panel__switch-row">
+          <span>시작프로그램 등록</span>
           <input
             type="checkbox"
             role="switch"

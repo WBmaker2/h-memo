@@ -6,15 +6,15 @@ import { fontFamilies, memoBackgrounds, textColors } from "./theme";
 type MemoToolbarProps = {
   style: MemoStyle;
   onStyleChange: (style: Partial<MemoStyle>) => void;
-  onHide: () => void;
   onDelete: () => void;
+  showDeleteAction?: boolean;
 };
 
 export function MemoToolbar({
   style,
   onStyleChange,
-  onHide,
   onDelete,
+  showDeleteAction = true,
 }: MemoToolbarProps) {
   const handleFontChange = (event: ChangeEvent<HTMLSelectElement>) => {
     onStyleChange({ fontFamily: event.target.value });
@@ -96,17 +96,16 @@ export function MemoToolbar({
           ))}
         </div>
       </section>
-      <section className="memo-toolbar__section">
-        <h4 className="memo-toolbar__section-title">메모 동작</h4>
-        <div className="memo-toolbar__row">
-          <button type="button" aria-label="메모 숨기기" title="메모 숨기기" onClick={onHide}>
-            숨기기
-          </button>
-          <button type="button" aria-label="메모 삭제" title="메모 삭제" onClick={onDelete}>
-            삭제
-          </button>
-        </div>
-      </section>
+      {showDeleteAction ? (
+        <section className="memo-toolbar__section">
+          <h4 className="memo-toolbar__section-title">메모 동작</h4>
+          <div className="memo-toolbar__row">
+            <button type="button" aria-label="메모 삭제" title="메모 삭제" onClick={onDelete}>
+              삭제
+            </button>
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

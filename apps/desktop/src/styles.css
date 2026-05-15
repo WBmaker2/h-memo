@@ -7,7 +7,7 @@ body {
   font-family: "Malgun Gothic", "Segoe UI", sans-serif;
   background: transparent;
   color: #111827;
-  overflow: hidden;
+  overflow: auto;
 }
 
 #root {
@@ -104,6 +104,13 @@ body {
   min-height: 100vh;
 }
 
+.desktop-app__memos--multiple {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 10px;
+  align-items: start;
+  padding: 8px;
+}
+
 .desktop-app__preview {
   margin: 0;
   max-height: 110px;
@@ -136,6 +143,10 @@ body {
   overflow: visible;
   padding: 0 10px 10px;
   box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18);
+}
+
+.desktop-app__memos--multiple .sticky-memo {
+  min-height: min(320px, calc(100vh - 16px));
 }
 
 .sticky-memo--collapsed {
@@ -171,7 +182,47 @@ body {
 .sticky-memo__window-controls {
   display: flex;
   align-items: center;
+  gap: 2px;
   height: 100%;
+}
+
+.sticky-memo__auth-status {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.42);
+  color: rgba(15, 23, 42, 0.66);
+  font: 700 13px/1 "Segoe UI", sans-serif;
+}
+
+.sticky-memo__auth-status::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  transform: translate(9px, 9px);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  background: #9ca3af;
+}
+
+.sticky-memo__auth-status--signed-in::after {
+  background: #16a34a;
+}
+
+.sticky-memo__auth-status--unavailable::after {
+  background: #f59e0b;
+}
+
+.sticky-memo__auth-status img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
 }
 
 .sticky-memo__window-controls button {
@@ -275,6 +326,33 @@ body {
   gap: 8px;
 }
 
+.memo-list {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.memo-list__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 32px;
+}
+
+.memo-list__item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memo-list__empty {
+  margin: 0;
+  color: #64748b;
+}
+
 .memo-menu__section {
   display: grid;
   gap: 8px;
@@ -288,6 +366,13 @@ body {
 .settings-panel__section {
   display: grid;
   gap: 8px;
+}
+
+.settings-panel label.settings-panel__switch-row {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .firebase-config-form {
@@ -313,4 +398,105 @@ body {
 .memo-toolbar select,
 .memo-toolbar input {
   min-height: 32px;
+}
+
+.delete-dialog-backdrop,
+.server-memo-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.22);
+}
+
+.delete-dialog,
+.server-memo-dialog {
+  display: grid;
+  gap: 12px;
+  width: min(460px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  border: 1px solid rgba(17, 24, 39, 0.14);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 22px 44px rgba(15, 23, 42, 0.22);
+  padding: 16px;
+}
+
+.delete-dialog h2,
+.server-memo-dialog h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.delete-dialog p,
+.server-memo-dialog p {
+  margin: 0;
+}
+
+.delete-dialog__memo-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #475569;
+}
+
+.delete-dialog__actions,
+.server-memo-dialog__toolbar,
+.server-memo-list__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.delete-dialog__actions {
+  justify-content: flex-end;
+}
+
+.server-memo-dialog__header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.server-memo-dialog__description,
+.server-memo-list__empty {
+  color: #475569;
+}
+
+.server-memo-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.server-memo-list__item {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #dbe3ef;
+  border-radius: 6px;
+}
+
+.server-memo-list__content {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.server-memo-list__content strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-memo-list__content span {
+  color: #64748b;
+  font-size: 12px;
 }

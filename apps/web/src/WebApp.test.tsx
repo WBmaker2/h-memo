@@ -4,18 +4,20 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   backupMemos,
+  completeGoogleRedirectSignIn,
   createFirebaseApp,
   getFirebaseAuth,
   restoreLatestBackup,
   signInWithGoogle,
   signOutUser,
   subscribeAuthUser,
+  waitForSignedInUser,
 } from "@h-memo/memo-sync";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
 import { WebApp } from "./WebApp";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
-  "Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.";
+  "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
 const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
 const SUCCESS_BACKUP_MESSAGE = "백업 완료:";
 
@@ -49,10 +51,12 @@ vi.mock("@h-memo/memo-sync", async () => {
     createFirebaseApp: vi.fn(),
     getFirebaseAuth: vi.fn(),
     backupMemos: vi.fn(),
+    completeGoogleRedirectSignIn: vi.fn(),
     restoreLatestBackup: vi.fn(),
     signInWithGoogle: vi.fn(),
     signOutUser: vi.fn(),
     subscribeAuthUser: vi.fn(),
+    waitForSignedInUser: vi.fn(),
   };
 });
 
@@ -103,6 +107,18 @@ async function createMemoFromAppMenu(user: ReturnType<typeof userEvent.setup>) {
 beforeEach(() => {
   vi.clearAllMocks();
   installLocalStorageStub();
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => "blob:h-memo-backup"),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
+  });
+  Object.defineProperty(window, "confirm", {
+    configurable: true,
+    value: vi.fn(() => true),
+  });
 
   vi.mocked(getFirebaseClientEnv).mockReturnValue({});
   vi.mocked(createFirebaseApp).mockReturnValue({} as never);
@@ -112,6 +128,8 @@ beforeEach(() => {
     return vi.fn();
   });
   vi.mocked(signInWithGoogle).mockResolvedValue(LOGGED_IN_USER);
+  vi.mocked(completeGoogleRedirectSignIn).mockResolvedValue(null);
+  vi.mocked(waitForSignedInUser).mockResolvedValue(null);
   vi.mocked(signOutUser).mockResolvedValue(undefined);
   vi.mocked(backupMemos).mockResolvedValue({ path: "users/user-1/backupSnapshots/1", payload: {
     version: 1,
@@ -135,25 +153,163 @@ describe("WebApp", () => {
       const memoArea = screen.getByRole("region", { name: "메모 목록" });
       expect(within(memoArea).queryByRole("button", { name: "새 메모" })).not.toBeInTheDocument();
       expect(screen.getByText("메모가 없습니다. 상단의 메뉴에서 새 메모를 만들어 보세요.")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "TXT 미리보기" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "TXT 내보내기" })).toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent(FIREBASE_UNAVAILABLE_MESSAGE);
       expect(screen.getByRole("switch", { name: "시작프로그램 등록" })).toBeDisabled();
     });
   });
 
-  it("generates TXT preview for edited memo", async () => {
+  it("exports TXT backup for edited memo", async () => {
     const user = userEvent.setup();
+    const appendSpy = vi.spyOn(document.body, "append");
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     render(<WebApp />);
 
     await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByRole("textbox", { name: "메모 내용" }), {
       target: { value: "브라우저에서 저장되는 메모" },
     });
-    await user.click(screen.getByRole("button", { name: "TXT 미리보기" }));
+    await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
 
-    const preview = screen.getByLabelText("TXT 미리보기 결과");
-    expect(preview).not.toHaveTextContent(/제목:/);
-    expect(preview).toHaveTextContent(/브라우저에서 저장되는 메모/);
+    await waitFor(() => {
+      expect(clickSpy).toHaveBeenCalled();
+      expect(screen.getByRole("status")).toHaveTextContent("TXT 백업 파일을 만들었습니다.");
+    });
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(appendSpy).toHaveBeenCalled();
+    clickSpy.mockRestore();
+    appendSpy.mockRestore();
+  });
+
+  it("exports local JSON backup for multiple memos", async () => {
+    const user = userEvent.setup();
+    const appendSpy = vi.spyOn(document.body, "append");
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    render(<WebApp />);
+
+    await createMemoFromAppMenu(user);
+    fireEvent.change(screen.getByRole("textbox", { name: "메모 내용" }), {
+      target: { value: "첫 웹 메모" },
+    });
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    expect(screen.getAllByRole("textbox", { name: "메모 내용" })).toHaveLength(2);
+
+    await user.click(screen.getAllByRole("button", { name: "JSON 백업" })[0]);
+
+    await waitFor(() => {
+      expect(clickSpy).toHaveBeenCalled();
+      expect(screen.getByRole("status")).toHaveTextContent("JSON 백업 파일을 만들었습니다.");
+    });
+    expect(appendSpy).toHaveBeenCalled();
+    clickSpy.mockRestore();
+    appendSpy.mockRestore();
+  });
+
+  it("restores local JSON backup from a selected file", async () => {
+    const user = userEvent.setup();
+    const restored = {
+      version: 1,
+      userId: "local",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memos: [
+        {
+          ...JSON.parse(
+            JSON.stringify({
+              id: "web-json-restore",
+              title: "새 메모",
+              plainText: "웹 JSON 복원",
+              richContent: { type: "doc", content: [] },
+              style: {
+                backgroundColor: "#fff7b8",
+                textColor: "#1f2937",
+                fontFamily: "Malgun Gothic, Segoe UI, sans-serif",
+                fontSize: 16,
+              },
+              windowState: {
+                x: null,
+                y: null,
+                width: 320,
+                height: 280,
+                visible: true,
+                alwaysOnTop: false,
+              },
+              createdAt: "2026-05-13T09:00:00.000Z",
+              updatedAt: "2026-05-13T09:00:00.000Z",
+              deletedAt: null,
+              syncState: "queued",
+            })
+          ),
+        },
+      ],
+    };
+    render(<WebApp />);
+
+    const file = new File([JSON.stringify(restored)], "h-memo-backup.json", {
+      type: "application/json",
+    });
+    await user.upload(screen.getByLabelText("JSON 백업 파일 선택"), file);
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining("현재 메모를 대체합니다")
+    );
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("웹 JSON 복원")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("JSON 복원 완료: 1개 메모");
+    });
+  });
+
+  it("cancels local JSON restore from a selected file", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.confirm).mockReturnValue(false);
+    render(<WebApp />);
+
+    await createMemoFromAppMenu(user);
+    fireEvent.change(screen.getByRole("textbox", { name: "메모 내용" }), {
+      target: { value: "현재 웹 메모" },
+    });
+
+    const restored = {
+      version: 1,
+      userId: "local",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memos: [
+        {
+          id: "web-json-cancelled",
+          title: "새 메모",
+          plainText: "취소된 웹 복원",
+          richContent: { type: "doc", content: [] },
+          style: {
+            backgroundColor: "#fff7b8",
+            textColor: "#1f2937",
+            fontFamily: "Malgun Gothic, Segoe UI, sans-serif",
+            fontSize: 16,
+          },
+          windowState: {
+            x: null,
+            y: null,
+            width: 320,
+            height: 280,
+            visible: true,
+            alwaysOnTop: false,
+          },
+          createdAt: "2026-05-13T09:00:00.000Z",
+          updatedAt: "2026-05-13T09:00:00.000Z",
+          deletedAt: null,
+          syncState: "queued",
+        },
+      ],
+    };
+    const file = new File([JSON.stringify(restored)], "h-memo-backup.json", {
+      type: "application/json",
+    });
+
+    await user.upload(screen.getByLabelText("JSON 백업 파일 선택"), file);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("JSON 복원을 취소했습니다.");
+    });
+    expect(screen.getByDisplayValue("현재 웹 메모")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("취소된 웹 복원")).not.toBeInTheDocument();
   });
 
   it("persists memo data to localStorage for browser session preview", async () => {
@@ -245,6 +401,38 @@ describe("WebApp", () => {
     expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
   });
 
+  it("hides manual Firebase settings when build config is available", async () => {
+    installLocalStorageStub({
+      initialEntries: [
+        [
+          "h-memo.firebaseClientConfig.v1",
+          JSON.stringify({
+            apiKey: "stored-api-key",
+            authDomain: "stored.firebaseapp.com",
+            projectId: "stored-project",
+            appId: "stored-app-id",
+          }),
+        ],
+      ],
+    });
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+
+    render(<WebApp />);
+
+    await waitFor(() => {
+      expect(createFirebaseApp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apiKey: VALID_FIREBASE_ENV.apiKey,
+          authDomain: VALID_FIREBASE_ENV.authDomain,
+          projectId: VALID_FIREBASE_ENV.projectId,
+          appId: VALID_FIREBASE_ENV.appId,
+        })
+      );
+    });
+    expect(screen.queryByRole("heading", { name: "구글 로그인 설정" })).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("stored-api-key")).not.toBeInTheDocument();
+  });
+
   it("allows Google login and then performs server backup", async () => {
     const user = userEvent.setup();
     vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
@@ -263,6 +451,10 @@ describe("WebApp", () => {
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent("홍길동님이 로그인했습니다.");
     });
+    expect(signInWithGoogle).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ fallbackToRedirect: true })
+    );
 
     const backupButton = screen.getByRole("button", { name: "서버 백업" });
     await user.click(backupButton);
@@ -273,6 +465,31 @@ describe("WebApp", () => {
     expect(
       memos.some((memo: { plainText: string }) => memo.plainText === "로그인 동작 테스트 메모")
     ).toBe(true);
+  });
+
+  it("enables server controls when Google redirect login settles on the auth user", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(null);
+      return vi.fn();
+    });
+    vi.mocked(signInWithGoogle).mockResolvedValue(null);
+    vi.mocked(waitForSignedInUser)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(LOGGED_IN_USER);
+
+    render(<WebApp />);
+
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
+
+    await waitFor(() => {
+      expect(waitForSignedInUser).toHaveBeenCalledWith(expect.anything(), 8000);
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
+      expect(screen.getByRole("status")).toHaveTextContent("홍길동님이 로그인했습니다.");
+    });
   });
 
   it("restores session from auth state and allows backup after pending changes are flushed", async () => {

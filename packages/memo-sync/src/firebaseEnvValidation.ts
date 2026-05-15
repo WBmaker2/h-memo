@@ -6,6 +6,7 @@ export type FirebaseClientEnv = {
   storageBucket?: string;
   messagingSenderId?: string;
   measurementId?: string;
+  googleOAuthClientId?: string;
 };
 
 export const FIREBASE_REQUIRED_CLIENT_ENV_KEYS = [
@@ -19,6 +20,7 @@ export const FIREBASE_OPTIONAL_CLIENT_ENV_KEYS = [
   "storageBucket",
   "messagingSenderId",
   "measurementId",
+  "googleOAuthClientId",
 ] as const;
 
 export type FirebaseValidationReport = {

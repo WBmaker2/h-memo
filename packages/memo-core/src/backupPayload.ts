@@ -104,6 +104,17 @@ export function validateBackupPayload(
   payload: unknown,
   expectedUserId: string
 ): ValidationResult {
+  return validateBackupPayloadShape(payload, expectedUserId);
+}
+
+export function validateLocalBackupPayload(payload: unknown): ValidationResult {
+  return validateBackupPayloadShape(payload);
+}
+
+function validateBackupPayloadShape(
+  payload: unknown,
+  expectedUserId?: string
+): ValidationResult {
   if (!payload || typeof payload !== "object") {
     return { ok: false, reason: "백업 데이터가 객체가 아닙니다." };
   }
@@ -114,7 +125,11 @@ export function validateBackupPayload(
     return { ok: false, reason: "지원하지 않는 백업 버전입니다." };
   }
 
-  if (candidate.userId !== expectedUserId) {
+  if (typeof candidate.userId !== "string" || candidate.userId.trim() === "") {
+    return { ok: false, reason: INVALID_MEMO_REASON };
+  }
+
+  if (expectedUserId !== undefined && candidate.userId !== expectedUserId) {
     return { ok: false, reason: "다른 사용자의 백업 데이터입니다." };
   }
 

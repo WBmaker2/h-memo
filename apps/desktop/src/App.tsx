@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getFirestore, type Firestore } from "firebase/firestore";
-import { Auth } from "firebase/auth";
+import type { Auth } from "firebase/auth";
 import {
   MemoryMemoRepository,
+  createBackupPayload,
   createMemo,
   formatMemosAsCombinedText,
   updateMemoWindowState,
+  validateLocalBackupPayload,
   type Memo,
   type MemoRepository,
 } from "@h-memo/memo-core";
@@ -13,32 +15,47 @@ import { MemoWorkspace, type FirebaseConfigFormValue } from "@h-memo/memo-ui";
 import { TauriMemoRepository } from "./adapters/tauriMemoRepository";
 import {
   exportTextFile,
+  exportJsonFile,
+  importJsonFile,
   type ExportTextFileResult,
   getStartupEnabled,
   setStartupEnabled as setTauriStartupEnabled,
 } from "./adapters/tauriPlatform";
 import {
   closeWindow,
+  openMemoWindow,
   listenWindowBoundsChanged,
-  minimizeWindow,
   readWindowBounds,
   restoreWindowBounds,
   setWindowHeight,
   startWindowDrag,
   startWindowResize,
-  toggleMaximizeWindow,
   type WindowBounds,
 } from "./adapters/tauriWindow";
 import {
+  listenAuthStateChanged,
+  listenMemoStoreChanged,
+  notifyAuthStateChanged,
+  notifyMemoStoreChanged,
+  type MemoStoreChangedPayload,
+} from "./adapters/tauriEvents";
+import { startGoogleDesktopOAuth } from "./adapters/tauriGoogleOAuth";
+import {
   FirestoreBackupGateway,
   backupMemos,
+  completeGoogleRedirectSignIn,
   createFirebaseApp,
+  deleteBackedUpMemo,
   getFirebaseAuth,
   subscribeAuthUser,
   hasFirebaseConfig,
+  listBackedUpMemos,
   restoreLatestBackup,
   signInWithGoogle,
   signOutUser,
+  waitForSignedInUser,
+  type BackedUpMemo,
+  type GoogleOAuthTokens,
   type HMemoUser,
 } from "@h-memo/memo-sync";
 import {
@@ -58,13 +75,22 @@ type SyncServices = {
   gateway: FirestoreBackupGateway;
 };
 
-const FIREBASE_UNAVAILABLE_MESSAGE = "Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.";
+const FIREBASE_UNAVAILABLE_MESSAGE =
+  "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
+const DESKTOP_GOOGLE_OAUTH_REQUIRED_MESSAGE =
+  "Windows 데스크톱 구글 로그인에는 Desktop OAuth Client ID 설정이 필요합니다. 빌드 환경에 VITE_GOOGLE_OAUTH_CLIENT_ID를 추가한 설치 파일로 다시 실행해 주세요.";
 const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
 const FIREBASE_INIT_FAILED_PREFIX = "서버 백업 초기화 실패:";
 const AUTH_SUBSCRIBE_FAILED_PREFIX = "인증 상태 복구 실패:";
-const AUTH_LOGIN_FAILED_PREFIX = "Google 로그인 실패:";
+const AUTH_LOGIN_FAILED_PREFIX = "구글 로그인 실패:";
 const BACKUP_FAILED_PREFIX = "백업 실패:";
 const RESTORE_FAILED_PREFIX = "복원 실패:";
+const JSON_RESTORE_CONFIRM_MESSAGE =
+  "JSON 백업 파일 내용으로 현재 메모를 대체합니다. 백업에 없는 메모는 삭제됩니다. 계속할까요?";
+const DELETE_MEMO_CONFIRM_MESSAGE =
+  "아직 백업되지 않는 내용이 있습니다. 정말 삭제하겠습니까?";
+const DELETE_SERVER_MEMO_CONFIRM_MESSAGE =
+  "서버 백업에서 이 메모를 삭제합니다. 삭제한 뒤에는 서버에서 복원할 수 없습니다. 계속할까요?";
 const COLLAPSED_WINDOW_HEIGHT = 46;
 const MIN_EXPANDED_WINDOW_HEIGHT = 160;
 
@@ -94,30 +120,65 @@ function sortMemos(nextMemos: Memo[]): Memo[] {
   return [...nextMemos].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+function getMemoLabel(memo: Memo): string {
+  return memo.plainText.trim().replace(/\s+/g, " ") || "빈 메모";
+}
+
 export function App() {
   const isTauri = isTauriRuntime();
+  const requestedMemoId = useMemo(() => {
+    if (!isTauri) {
+      return null;
+    }
+    return new URLSearchParams(window.location.search).get("memoId");
+  }, [isTauri]);
   const repository = useMemo(() => createRepository(isTauri), [isTauri]);
   const [memos, setMemos] = useState<Memo[]>([]);
-  const [txtPreview, setTxtPreview] = useState("");
+  const [activeMemoId, setActiveMemoId] = useState<string | null>(requestedMemoId);
   const [startupEnabled, setStartupEnabled] = useState(false);
   const [syncServicesInitialized, setSyncServicesInitialized] = useState(false);
   const buildFirebaseClientEnv = useMemo(() => getFirebaseClientEnv(), []);
+  const hasBuildFirebaseConfigSet = useMemo(
+    () => hasFirebaseConfig(buildFirebaseClientEnv),
+    [buildFirebaseClientEnv]
+  );
   const [storedFirebaseClientEnv, setStoredFirebaseClientEnv] = useState(() =>
     readStoredFirebaseClientConfig()
   );
+  const allowFirebaseConfigOverride = !hasBuildFirebaseConfigSet;
   const firebaseClientEnv = useMemo(
-    () => mergeFirebaseClientConfig(buildFirebaseClientEnv, storedFirebaseClientEnv),
-    [buildFirebaseClientEnv, storedFirebaseClientEnv]
+    () =>
+      hasBuildFirebaseConfigSet
+        ? buildFirebaseClientEnv
+        : mergeFirebaseClientConfig(buildFirebaseClientEnv, storedFirebaseClientEnv),
+    [buildFirebaseClientEnv, hasBuildFirebaseConfigSet, storedFirebaseClientEnv]
   );
   const firebaseConfigFormValue = useMemo(
     () => toFirebaseClientConfigInput(firebaseClientEnv),
     [firebaseClientEnv]
   );
+  const googleOAuthClientId = firebaseClientEnv.googleOAuthClientId?.trim() ?? "";
+  const needsDesktopGoogleOAuthClient = isTauri && googleOAuthClientId.length === 0;
   const hasFirebaseConfigSet = useMemo(() => hasFirebaseConfig(firebaseClientEnv), [firebaseClientEnv]);
   const [backupStatus, setBackupStatus] = useState<BackupMessage>(
-    hasFirebaseConfigSet ? "백업 정보 없음" : FIREBASE_UNAVAILABLE_MESSAGE
+    hasFirebaseConfigSet
+      ? needsDesktopGoogleOAuthClient
+        ? DESKTOP_GOOGLE_OAUTH_REQUIRED_MESSAGE
+        : "백업 정보 없음"
+      : FIREBASE_UNAVAILABLE_MESSAGE
   );
   const [user, setUser] = useState<HMemoUser | null>(null);
+  const [pendingDeleteMemo, setPendingDeleteMemo] = useState<{
+    id: string;
+    label: string;
+  } | null>(null);
+  const [serverMemoManager, setServerMemoManager] = useState<{
+    isOpen: boolean;
+    memos: BackedUpMemo[];
+  }>({
+    isOpen: false,
+    memos: [],
+  });
   const [isBusy, setIsBusy] = useState(false);
   const [servicesAvailable, setServicesAvailable] = useState(hasFirebaseConfigSet);
   const [hasLoadedMemos, setHasLoadedMemos] = useState(false);
@@ -127,6 +188,9 @@ export function App() {
   const restoredMemoIdRef = useRef<string | null>(null);
   const boundsPersistTimerRef = useRef<number | null>(null);
   const expandedWindowBoundsRef = useRef<WindowBounds | null>(null);
+  const activeMemoIdRef = useRef<string | null>(requestedMemoId);
+  const openedRestoredMemoWindowsRef = useRef(false);
+  const userRef = useRef<HMemoUser | null>(null);
 
   const syncServicesRef = useRef<SyncServices | null>(null);
 
@@ -151,6 +215,77 @@ export function App() {
   useEffect(() => {
     memosRef.current = memos;
   }, [memos]);
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
+  useEffect(() => {
+    activeMemoIdRef.current = activeMemoId;
+  }, [activeMemoId]);
+
+  const setSignedInUser = useCallback(
+    (nextUser: HMemoUser, options?: { broadcast?: boolean }) => {
+      const status = `${nextUser.displayName || nextUser.email || "사용자"}님이 로그인했습니다.`;
+      userRef.current = nextUser;
+      setUser(nextUser);
+      setBackupStatus(status);
+      if (isTauri && options?.broadcast !== false) {
+        void notifyAuthStateChanged({ user: nextUser, status }).catch((error) => {
+          setBackupStatus(`로그인 상태 공유 실패: ${getErrorMessage(error)}`);
+        });
+      }
+    },
+    [isTauri]
+  );
+
+  const setSignedOutUser = useCallback(
+    (status: string, options?: { broadcast?: boolean }) => {
+      userRef.current = null;
+      setUser(null);
+      setBackupStatus(status);
+      if (isTauri && options?.broadcast !== false) {
+        void notifyAuthStateChanged({ user: null, status }).catch((error) => {
+          setBackupStatus(`로그인 상태 공유 실패: ${getErrorMessage(error)}`);
+        });
+      }
+    },
+    [isTauri]
+  );
+
+  const authStatus = useMemo(() => {
+    if (user) {
+      return {
+        state: "signed-in" as const,
+        label: user.displayName || user.email || "사용자",
+        photoUrl: user.photoURL || undefined,
+      };
+    }
+
+    if (!hasFirebaseConfigSet || !servicesAvailable || needsDesktopGoogleOAuthClient) {
+      return {
+        state: "unavailable" as const,
+        label: "구글 로그인 설정 필요",
+      };
+    }
+
+    return {
+      state: "signed-out" as const,
+      label: "구글 로그인 안 됨",
+    };
+  }, [hasFirebaseConfigSet, needsDesktopGoogleOAuthClient, servicesAvailable, user]);
+
+  const broadcastMemoStoreChanged = useCallback(
+    (payload: Omit<MemoStoreChangedPayload, "sourceId"> = {}) => {
+      if (!isTauri) {
+        return;
+      }
+      void notifyMemoStoreChanged(payload).catch((error) => {
+        setBackupStatus(`메모 상태 공유 실패: ${getErrorMessage(error)}`);
+      });
+    },
+    [isTauri]
+  );
 
   const ensureSyncServices = useCallback((): SyncServices | null => {
     if (!hasFirebaseConfigSet) {
@@ -202,13 +337,40 @@ export function App() {
         }
 
         if (nextUser) {
-          setUser(nextUser);
-          setBackupStatus(`${nextUser.displayName || nextUser.email || "사용자"}님이 로그인했습니다.`);
+          setSignedInUser(nextUser);
         } else {
-          setUser(null);
-          setBackupStatus(LOGIN_REQUIRED_MESSAGE);
+          if (userRef.current) {
+            return;
+          }
+          setSignedOutUser(
+            needsDesktopGoogleOAuthClient
+              ? DESKTOP_GOOGLE_OAUTH_REQUIRED_MESSAGE
+              : LOGIN_REQUIRED_MESSAGE,
+            { broadcast: false }
+          );
         }
       });
+
+      void completeGoogleRedirectSignIn(services.auth)
+        .then((nextUser) => {
+          if (!isMounted || !nextUser) {
+            return;
+          }
+          setSignedInUser(nextUser);
+        })
+        .then(async () => {
+          const settledUser = await waitForSignedInUser(services.auth, 4000);
+          if (!isMounted || !settledUser) {
+            return;
+          }
+          setSignedInUser(settledUser);
+        })
+        .catch((error) => {
+          if (!isMounted) {
+            return;
+          }
+          setBackupStatus(`${AUTH_LOGIN_FAILED_PREFIX} ${getErrorMessage(error)}`);
+        });
 
       return () => {
         isMounted = false;
@@ -218,7 +380,13 @@ export function App() {
       setBackupStatus(`${AUTH_SUBSCRIBE_FAILED_PREFIX} ${getErrorMessage(error)}`);
       return;
     }
-  }, [ensureSyncServices, hasFirebaseConfigSet]);
+  }, [
+    ensureSyncServices,
+    hasFirebaseConfigSet,
+    needsDesktopGoogleOAuthClient,
+    setSignedInUser,
+    setSignedOutUser,
+  ]);
 
   useEffect(() => {
     if (!isTauri) {
@@ -249,10 +417,123 @@ export function App() {
     };
   }, [isTauri]);
 
+  useEffect(() => {
+    if (!isTauri) {
+      return;
+    }
+
+    let isMounted = true;
+    let cleanup: (() => void) | null = null;
+
+    void listenMemoStoreChanged((payload) => {
+      const activeMemoId = activeMemoIdRef.current;
+      void reloadMemos().then(() => {
+        if (!isMounted || !payload.deletedMemoId || payload.deletedMemoId !== activeMemoId) {
+          return;
+        }
+        void closeWindow().catch((error) => {
+          setBackupStatus(`삭제된 메모 창 닫기 실패: ${getErrorMessage(error)}`);
+        });
+      });
+    })
+      .then((unlisten) => {
+        if (!isMounted) {
+          unlisten();
+          return;
+        }
+        cleanup = unlisten;
+      })
+      .catch((error) => {
+        setBackupStatus(`메모 상태 공유 수신 실패: ${getErrorMessage(error)}`);
+      });
+
+    return () => {
+      isMounted = false;
+      cleanup?.();
+    };
+  }, [isTauri, reloadMemos]);
+
+  useEffect(() => {
+    if (!isTauri) {
+      return;
+    }
+
+    let isMounted = true;
+    let cleanup: (() => void) | null = null;
+
+    void listenAuthStateChanged((payload) => {
+      if (!isMounted) {
+        return;
+      }
+      if (payload.user) {
+        setSignedInUser(payload.user, { broadcast: false });
+        return;
+      }
+      setSignedOutUser(payload.status, { broadcast: false });
+    })
+      .then((unlisten) => {
+        if (!isMounted) {
+          unlisten();
+          return;
+        }
+        cleanup = unlisten;
+      })
+      .catch((error) => {
+        setBackupStatus(`로그인 상태 공유 수신 실패: ${getErrorMessage(error)}`);
+      });
+
+    return () => {
+      isMounted = false;
+      cleanup?.();
+    };
+  }, [isTauri, setSignedInUser, setSignedOutUser]);
+
   const visibleMemos = useMemo(
-    () => memos.filter((memo) => memo.deletedAt === null && memo.windowState.visible),
+    () => memos.filter((memo) => memo.deletedAt === null),
     [memos]
   );
+  const displayedMemos = useMemo(() => {
+    if (!isTauri) {
+      return visibleMemos;
+    }
+    if (!activeMemoId) {
+      return [];
+    }
+    return visibleMemos.filter((memo) => memo.id === activeMemoId);
+  }, [activeMemoId, isTauri, visibleMemos]);
+
+  useEffect(() => {
+    if (!isTauri || !hasLoadedMemos) {
+      return;
+    }
+
+    if (activeMemoId && visibleMemos.some((memo) => memo.id === activeMemoId)) {
+      return;
+    }
+
+    setActiveMemoId(visibleMemos[0]?.id ?? null);
+  }, [activeMemoId, hasLoadedMemos, isTauri, visibleMemos]);
+
+  useEffect(() => {
+    if (!isTauri || requestedMemoId || !hasLoadedMemos || openedRestoredMemoWindowsRef.current) {
+      return;
+    }
+
+    const currentMemoId = activeMemoId ?? visibleMemos[0]?.id;
+    if (!currentMemoId) {
+      return;
+    }
+
+    openedRestoredMemoWindowsRef.current = true;
+    for (const memo of visibleMemos) {
+      if (memo.id === currentMemoId) {
+        continue;
+      }
+      void openMemoWindow(memo).catch((error) => {
+        setBackupStatus(`메모 창 열기 실패: ${getErrorMessage(error)}`);
+      });
+    }
+  }, [activeMemoId, hasLoadedMemos, isTauri, requestedMemoId, visibleMemos]);
 
   const upsertMemo = (nextMemo: Memo) => {
     setMemos((previousMemos) => {
@@ -291,6 +572,7 @@ export function App() {
       if (!options?.skipStateUpdate) {
         upsertMemo(saved);
       }
+      broadcastMemoStoreChanged({ memoId: saved.id });
     });
   };
 
@@ -300,8 +582,9 @@ export function App() {
         return;
       }
 
+      const targetMemoId = activeMemoIdRef.current;
       const target = memosRef.current.find(
-        (memo) => memo.deletedAt === null && memo.windowState.visible
+        (memo) => memo.deletedAt === null && memo.id === targetMemoId
       );
       if (!target) {
         return;
@@ -377,7 +660,11 @@ export function App() {
       return;
     }
 
-    const activeMemo = visibleMemos[0];
+    const activeMemo = displayedMemos[0];
+    if (!activeMemo) {
+      return;
+    }
+
     if (restoredMemoIdRef.current === activeMemo.id) {
       return;
     }
@@ -393,7 +680,7 @@ export function App() {
     }).catch((error) => {
       setBackupStatus(`창 위치 복원 실패: ${getErrorMessage(error)}`);
     });
-  }, [hasLoadedMemos, isTauri, visibleMemos]);
+  }, [displayedMemos, hasLoadedMemos, isTauri, visibleMemos]);
 
   const rollbackRestoreAttempt = async (currentMemos: Memo[], nextMemos: Memo[]) => {
     const currentIds = new Set(currentMemos.map((memo) => memo.id));
@@ -429,6 +716,7 @@ export function App() {
     const sortedMemos = sortMemos(nextMemos);
     memosRef.current = sortedMemos;
     setMemos(sortedMemos);
+    broadcastMemoStoreChanged();
   };
 
   const handleCreateMemo = async () => {
@@ -440,6 +728,25 @@ export function App() {
     });
 
     await persistMemo(nextMemo);
+    if (!isTauri) {
+      return;
+    }
+    if (!activeMemoIdRef.current) {
+      setActiveMemoId(nextMemo.id);
+      return;
+    }
+    await openMemoWindow(nextMemo);
+  };
+
+  const handleOpenMemo = async (memoId: string) => {
+    const target = memos.find((memo) => memo.id === memoId && memo.deletedAt === null);
+    if (!target || !isTauri) {
+      return;
+    }
+    if (target.id === activeMemoIdRef.current) {
+      return;
+    }
+    await openMemoWindow(target);
   };
 
   const handleMemoChange = (nextMemo: Memo) => {
@@ -449,32 +756,68 @@ export function App() {
     });
   };
 
-  const handleHideMemo = async (memoId: string) => {
-    const target = memos.find((memo) => memo.id === memoId);
-    if (!target) {
-      return;
-    }
-
-    const hidden = updateMemoWindowState(target, { visible: false }, new Date().toISOString());
-    await persistMemo(hidden);
-  };
-
   const handleDeleteMemo = async (memoId: string) => {
     const target = memos.find((memo) => memo.id === memoId);
     if (!target) {
       return;
     }
 
+    if (target.deletedAt === null && visibleMemos.length <= 1) {
+      setBackupStatus("마지막 남은 메모는 삭제할 수 없습니다.");
+      return;
+    }
+
+    setPendingDeleteMemo({
+      id: target.id,
+      label: getMemoLabel(target),
+    });
+  };
+
+  const performDeleteMemo = async (memoId: string, status = "메모를 삭제했습니다.") => {
+    const target = memosRef.current.find((memo) => memo.id === memoId);
+    if (!target) {
+      setPendingDeleteMemo(null);
+      return;
+    }
+
+    const currentVisibleMemos = memosRef.current.filter((memo) => memo.deletedAt === null);
+    if (target.deletedAt === null && currentVisibleMemos.length <= 1) {
+      setPendingDeleteMemo(null);
+      setBackupStatus("마지막 남은 메모는 삭제할 수 없습니다.");
+      return;
+    }
+
     const deletedAt = new Date().toISOString();
     const deleted = await repository.softDeleteMemo(memoId, deletedAt);
     upsertMemo(deleted);
+    setPendingDeleteMemo(null);
+    setBackupStatus(status);
+    broadcastMemoStoreChanged({ deletedMemoId: memoId });
+
+    if (isTauri && activeMemoIdRef.current === memoId) {
+      await closeWindow();
+    }
   };
 
   const handleGenerateTextPreview = async () => {
     const contents = formatMemosAsCombinedText(memos);
-    setTxtPreview(contents);
+
+    if (contents === "") {
+      setBackupStatus("내보낼 메모가 없습니다.");
+      return;
+    }
 
     if (!isTauri) {
+      const blob = new Blob([contents], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "h-memo-backup.txt";
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setBackupStatus("TXT 백업 파일을 만들었습니다.");
       return;
     }
 
@@ -489,12 +832,98 @@ export function App() {
     }
   };
 
+  const createLocalBackupJson = async () => {
+    await waitForPendingPersists();
+    const persistedMemos = await repository.listMemos();
+    const payload = createBackupPayload({
+      userId: user?.uid ?? "local",
+      memos: persistedMemos,
+      createdAt: new Date().toISOString(),
+    });
+    return JSON.stringify(payload, null, 2);
+  };
+
+  const restoreLocalBackupJson = async (contents: string) => {
+    const parsed = validateLocalBackupPayload(JSON.parse(contents));
+    if (!parsed.ok) {
+      throw new Error(parsed.reason);
+    }
+    if (!window.confirm(JSON_RESTORE_CONFIRM_MESSAGE)) {
+      setBackupStatus("JSON 복원을 취소했습니다.");
+      return;
+    }
+
+    await replaceMemosFromBackup(parsed.payload.memos);
+    setBackupStatus(`JSON 복원 완료: ${parsed.payload.memos.length}개 메모`);
+  };
+
+  const handleExportJsonBackup = async () => {
+    if (isBusy) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const contents = await createLocalBackupJson();
+      if (!isTauri) {
+        setBackupStatus("JSON 백업은 설치 앱에서 사용할 수 있습니다.");
+        return;
+      }
+
+      const result = await exportJsonFile("h-memo-backup.json", contents);
+      if (result.status === "saved") {
+        setBackupStatus(`JSON 백업 완료: ${result.path}`);
+      } else if (result.status === "cancelled") {
+        setBackupStatus("JSON 백업을 취소했습니다.");
+      } else {
+        setBackupStatus(`JSON 백업 실패: ${result.message}`);
+      }
+    } catch (error) {
+      setBackupStatus(`JSON 백업 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleImportJsonBackup = async () => {
+    if (isBusy) {
+      return;
+    }
+    if (!isTauri) {
+      setBackupStatus("JSON 복원은 설치 앱에서 사용할 수 있습니다.");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const result = await importJsonFile();
+      if (result.status === "cancelled") {
+        setBackupStatus("JSON 복원을 취소했습니다.");
+        return;
+      }
+      if (result.status === "failed") {
+        setBackupStatus(`JSON 복원 실패: ${result.message}`);
+        return;
+      }
+
+      await restoreLocalBackupJson(result.contents);
+    } catch (error) {
+      setBackupStatus(`JSON 복원 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const handleSignIn = async () => {
     if (!servicesAvailable) {
       setBackupStatus(FIREBASE_UNAVAILABLE_MESSAGE);
       return;
     }
     if (isBusy) {
+      return;
+    }
+    if (needsDesktopGoogleOAuthClient) {
+      setBackupStatus(DESKTOP_GOOGLE_OAUTH_REQUIRED_MESSAGE);
       return;
     }
 
@@ -505,11 +934,26 @@ export function App() {
     }
 
     setIsBusy(true);
-    setBackupStatus("Google 로그인 중...");
+    setBackupStatus("구글 로그인 중...");
     try {
-      const nextUser = await signInWithGoogle(services.auth);
-      setUser(nextUser);
-      setBackupStatus(`${nextUser.displayName || nextUser.email || "사용자"}님이 로그인했습니다.`);
+      const desktopOAuth = isTauri
+        ? (): Promise<GoogleOAuthTokens> => startGoogleDesktopOAuth(googleOAuthClientId)
+        : undefined;
+      const nextUser = await signInWithGoogle(services.auth, {
+        desktopOAuth,
+        fallbackToRedirect: false,
+      });
+      if (!nextUser) {
+        setBackupStatus("구글 로그인 완료를 확인하는 중입니다...");
+        const settledUser = await waitForSignedInUser(services.auth, 8000);
+        if (settledUser) {
+          setSignedInUser(settledUser);
+          return;
+        }
+        setBackupStatus("구글 로그인 화면을 완료한 뒤 앱으로 돌아와 주세요.");
+        return;
+      }
+      setSignedInUser(nextUser);
     } catch (error) {
       setBackupStatus(`${AUTH_LOGIN_FAILED_PREFIX} ${getErrorMessage(error)}`);
     } finally {
@@ -520,16 +964,14 @@ export function App() {
   const handleSignOut = async () => {
     const services = ensureSyncServices();
     if (!services) {
-      setUser(null);
-      setBackupStatus("로그아웃했습니다.");
+      setSignedOutUser("로그아웃했습니다.");
       return;
     }
 
     setIsBusy(true);
     try {
       await signOutUser(services.auth);
-      setUser(null);
-      setBackupStatus("로그아웃했습니다.");
+      setSignedOutUser("로그아웃했습니다.");
     } catch (error) {
       setBackupStatus(`로그아웃 실패: ${getErrorMessage(error)}`);
     } finally {
@@ -578,20 +1020,20 @@ export function App() {
     }
   };
 
-  const handleBackup = async () => {
+  const runServerBackup = async () => {
     const services = ensureSyncServices();
     if (!user) {
       setBackupStatus(LOGIN_REQUIRED_MESSAGE);
-      return;
+      return false;
     }
 
     if (!services || !servicesAvailable) {
       setBackupStatus(`${FIREBASE_INIT_FAILED_PREFIX} 구성 값을 확인해 주세요.`);
-      return;
+      return false;
     }
 
     if (isBusy) {
-      return;
+      return false;
     }
 
     setIsBusy(true);
@@ -601,11 +1043,17 @@ export function App() {
       const persistedMemos = await repository.listMemos();
       const result = await backupMemos(services.gateway, user.uid, persistedMemos);
       setBackupStatus(`백업 완료: ${result.path}`);
+      return true;
     } catch (error) {
       setBackupStatus(`${BACKUP_FAILED_PREFIX} ${getErrorMessage(error)}`);
+      return false;
     } finally {
       setIsBusy(false);
     }
+  };
+
+  const handleBackup = async () => {
+    await runServerBackup();
   };
 
   const handleRestore = async () => {
@@ -644,6 +1092,124 @@ export function App() {
     }
   };
 
+  const refreshServerMemoManager = async () => {
+    const services = ensureSyncServices();
+    if (!user) {
+      setBackupStatus(LOGIN_REQUIRED_MESSAGE);
+      return;
+    }
+
+    if (!services || !servicesAvailable) {
+      setBackupStatus(`${FIREBASE_INIT_FAILED_PREFIX} 구성 값을 확인해 주세요.`);
+      return;
+    }
+
+    if (isBusy) {
+      return;
+    }
+
+    setIsBusy(true);
+    setServerMemoManager((previous) => ({ ...previous, isOpen: true }));
+    setBackupStatus("서버 메모 목록을 불러옵니다.");
+    try {
+      const backedUpMemos = await listBackedUpMemos(services.gateway, user.uid);
+      setServerMemoManager({
+        isOpen: true,
+        memos: backedUpMemos,
+      });
+      setBackupStatus(`서버 메모 ${backedUpMemos.length}개를 불러왔습니다.`);
+    } catch (error) {
+      setBackupStatus(`서버 메모 목록 불러오기 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleCloseServerMemoManager = () => {
+    setServerMemoManager((previous) => ({ ...previous, isOpen: false }));
+  };
+
+  const handleRestoreServerMemo = async (memoId: string) => {
+    const backedUpMemo = serverMemoManager.memos.find((item) => item.memo.id === memoId);
+    if (!backedUpMemo || isBusy) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const now = new Date().toISOString();
+      const restoredMemo: Memo = {
+        ...backedUpMemo.memo,
+        deletedAt: null,
+        updatedAt: now,
+        syncState: "queued",
+        windowState: {
+          ...backedUpMemo.memo.windowState,
+          visible: true,
+        },
+      };
+      const savedMemo = await repository.saveMemo(restoredMemo);
+      upsertMemo(savedMemo);
+      broadcastMemoStoreChanged({ memoId: savedMemo.id });
+      setBackupStatus("서버 백업에서 메모를 복원했습니다.");
+
+      if (!isTauri) {
+        return;
+      }
+      if (!activeMemoIdRef.current) {
+        setActiveMemoId(savedMemo.id);
+        return;
+      }
+      if (activeMemoIdRef.current !== savedMemo.id) {
+        await openMemoWindow(savedMemo);
+      }
+    } catch (error) {
+      setBackupStatus(`서버 메모 복원 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleDeleteServerMemo = async (memoId: string) => {
+    const services = ensureSyncServices();
+    if (!user) {
+      setBackupStatus(LOGIN_REQUIRED_MESSAGE);
+      return;
+    }
+
+    if (!services || !servicesAvailable) {
+      setBackupStatus(`${FIREBASE_INIT_FAILED_PREFIX} 구성 값을 확인해 주세요.`);
+      return;
+    }
+
+    if (isBusy) {
+      return;
+    }
+
+    if (!window.confirm(DELETE_SERVER_MEMO_CONFIRM_MESSAGE)) {
+      setBackupStatus("서버 메모 삭제를 취소했습니다.");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const deletedSnapshotCount = await deleteBackedUpMemo(services.gateway, user.uid, memoId);
+      setServerMemoManager((previous) => ({
+        ...previous,
+        memos: previous.memos.filter((item) => item.memo.id !== memoId),
+      }));
+      setBackupStatus(
+        deletedSnapshotCount > 0
+          ? "서버 백업에서 메모를 삭제했습니다."
+          : "서버 백업에서 삭제할 메모를 찾지 못했습니다."
+      );
+    } catch (error) {
+      setBackupStatus(`서버 메모 삭제 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const handleToggleStartup = async (enabled: boolean) => {
     if (!isTauri) {
       setStartupEnabled(enabled);
@@ -664,10 +1230,35 @@ export function App() {
     }
   };
 
+  const handleCancelDeleteMemo = () => {
+    setPendingDeleteMemo(null);
+    setBackupStatus("메모 삭제를 취소했습니다.");
+  };
+
+  const handleDeleteWithoutBackup = async () => {
+    if (!pendingDeleteMemo) {
+      return;
+    }
+    await performDeleteMemo(pendingDeleteMemo.id);
+  };
+
+  const handleBackupThenDelete = async () => {
+    if (!pendingDeleteMemo) {
+      return;
+    }
+    const didBackup = await runServerBackup();
+    if (!didBackup) {
+      return;
+    }
+    await performDeleteMemo(pendingDeleteMemo.id, "백업 후 메모를 삭제했습니다.");
+  };
+
   const isServerReady = hasFirebaseConfigSet && servicesAvailable;
   const isBackupDisabled = !isServerReady || user === null || isBusy || !syncServicesInitialized;
   const isRestoreDisabled = !isServerReady || user === null || isBusy || !syncServicesInitialized;
-  const isAuthDisabled = !isServerReady || isBusy;
+  const isAuthDisabled = !isServerReady || isBusy || needsDesktopGoogleOAuthClient;
+  const isServerMemoManagerDisabled =
+    !isServerReady || user === null || isBusy || !syncServicesInitialized;
 
   const handleRequestWindowDrag = () => {
     if (!isTauri) {
@@ -687,30 +1278,6 @@ export function App() {
     void startWindowResize(direction).catch((error) => {
       setBackupStatus(`창 크기 조절 실패: ${getErrorMessage(error)}`);
     });
-  };
-
-  const handleRequestWindowMinimize = () => {
-    if (!isTauri) {
-      return;
-    }
-
-    void persistActiveMemoWindowBounds()
-      .then(() => minimizeWindow())
-      .catch((error) => {
-        setBackupStatus(`창 최소화 실패: ${getErrorMessage(error)}`);
-      });
-  };
-
-  const handleRequestWindowMaximize = () => {
-    if (!isTauri) {
-      return;
-    }
-
-    void persistActiveMemoWindowBounds()
-      .then(() => toggleMaximizeWindow())
-      .catch((error) => {
-        setBackupStatus(`창 최대화 실패: ${getErrorMessage(error)}`);
-      });
   };
 
   const handleRequestWindowClose = () => {
@@ -745,7 +1312,7 @@ export function App() {
         x: currentBounds.x,
         y: currentBounds.y,
         width: expandedBounds?.width ?? currentBounds.width,
-        height: expandedBounds?.height ?? visibleMemos[0]?.windowState.height ?? 280,
+        height: expandedBounds?.height ?? displayedMemos[0]?.windowState.height ?? 280,
       });
     };
 
@@ -755,41 +1322,137 @@ export function App() {
   };
 
   return (
-    <MemoWorkspace
-      appClassName="desktop-app"
-      title="H Memo"
-      memos={visibleMemos}
-      txtPreview={txtPreview}
-      onCreateMemo={handleCreateMemo}
-      onExportText={handleGenerateTextPreview}
-      onMemoChange={handleMemoChange}
-      onHideMemo={handleHideMemo}
-      onDeleteMemo={handleDeleteMemo}
-      onRequestWindowDrag={handleRequestWindowDrag}
-      onRequestWindowResize={handleRequestWindowResize}
-      onRequestWindowMinimize={handleRequestWindowMinimize}
-      onRequestWindowMaximize={handleRequestWindowMaximize}
-      onRequestWindowClose={handleRequestWindowClose}
-      onRequestCollapseChange={handleRequestCollapseChange}
-      settingsProps={{
-        userName: user ? user.displayName || user.email || "구글 계정" : null,
-        backupStatus,
-        startupEnabled,
-        firebaseConfig: firebaseConfigFormValue,
-        onBackup: handleBackup,
-        onRestore: handleRestore,
-        onExportText: handleGenerateTextPreview,
-        onToggleStartup: handleToggleStartup,
-        onSignIn: handleSignIn,
-        onSignOut: handleSignOut,
-        onSaveFirebaseConfig: handleSaveFirebaseConfig,
-        onClearFirebaseConfig: handleClearFirebaseConfig,
-        isServerAvailable: servicesAvailable,
-        isServerBusy: isBusy,
-        isBackupDisabled,
-        isRestoreDisabled,
-        isAuthDisabled,
-      }}
-    />
+    <>
+      <MemoWorkspace
+          appClassName="desktop-app"
+          title="H Memo"
+          memos={displayedMemos}
+          managedMemos={visibleMemos}
+          authStatus={authStatus}
+          onCreateMemo={handleCreateMemo}
+        onOpenMemo={isTauri ? handleOpenMemo : undefined}
+        onMemoChange={handleMemoChange}
+        onDeleteMemo={handleDeleteMemo}
+        actions={
+          <button
+            type="button"
+            onClick={refreshServerMemoManager}
+            disabled={isServerMemoManagerDisabled}
+          >
+            서버 메모 관리
+          </button>
+        }
+        onRequestWindowDrag={handleRequestWindowDrag}
+        onRequestWindowResize={handleRequestWindowResize}
+        onRequestWindowClose={handleRequestWindowClose}
+        onRequestCollapseChange={handleRequestCollapseChange}
+        settingsProps={{
+          userName: user ? user.displayName || user.email || "구글 계정" : null,
+          backupStatus,
+          startupEnabled,
+          firebaseConfig: allowFirebaseConfigOverride ? firebaseConfigFormValue : undefined,
+          onBackup: handleBackup,
+          onRestore: handleRestore,
+          onExportText: handleGenerateTextPreview,
+          onExportJsonBackup: handleExportJsonBackup,
+          onImportJsonBackup: handleImportJsonBackup,
+          onToggleStartup: handleToggleStartup,
+          onSignIn: handleSignIn,
+          onSignOut: handleSignOut,
+          onSaveFirebaseConfig: allowFirebaseConfigOverride ? handleSaveFirebaseConfig : undefined,
+          onClearFirebaseConfig: allowFirebaseConfigOverride ? handleClearFirebaseConfig : undefined,
+          isServerAvailable: servicesAvailable,
+          isServerBusy: isBusy,
+          isBackupDisabled,
+          isRestoreDisabled,
+          isAuthDisabled,
+        }}
+      />
+      {pendingDeleteMemo ? (
+        <div className="delete-dialog-backdrop">
+          <section
+            className="delete-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+          >
+            <h2 id="delete-dialog-title">메모 삭제</h2>
+            <p>{DELETE_MEMO_CONFIRM_MESSAGE}</p>
+            <p className="delete-dialog__memo-name">{pendingDeleteMemo.label}</p>
+            <div className="delete-dialog__actions">
+              <button type="button" onClick={handleBackupThenDelete} disabled={isBusy}>
+                지금 백업하기
+              </button>
+              <button type="button" onClick={handleDeleteWithoutBackup} disabled={isBusy}>
+                삭제하기
+              </button>
+              <button type="button" onClick={handleCancelDeleteMemo}>
+                취소하기
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {serverMemoManager.isOpen ? (
+        <div className="server-memo-dialog-backdrop">
+          <section
+            className="server-memo-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="server-memo-dialog-title"
+          >
+            <header className="server-memo-dialog__header">
+              <h2 id="server-memo-dialog-title">서버 메모 관리</h2>
+              <button type="button" onClick={handleCloseServerMemoManager}>
+                닫기
+              </button>
+            </header>
+            <p className="server-memo-dialog__description">
+              DB에 저장된 메모를 확인하고 필요한 메모는 복원할 수 있습니다.
+            </p>
+            <div className="server-memo-dialog__toolbar">
+              <button
+                type="button"
+                onClick={refreshServerMemoManager}
+                disabled={isServerMemoManagerDisabled}
+              >
+                새로고침
+              </button>
+            </div>
+            {serverMemoManager.memos.length > 0 ? (
+              <ul className="server-memo-list">
+                {serverMemoManager.memos.map((item) => (
+                  <li key={item.memo.id} className="server-memo-list__item">
+                    <div className="server-memo-list__content">
+                      <strong>{getMemoLabel(item.memo)}</strong>
+                      <span>백업 시각: {item.backupCreatedAt}</span>
+                      {item.memo.deletedAt ? <span>로컬 삭제 기록 있음</span> : null}
+                    </div>
+                    <div className="server-memo-list__actions">
+                      <button
+                        type="button"
+                        onClick={() => handleRestoreServerMemo(item.memo.id)}
+                        disabled={isBusy}
+                      >
+                        복원
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteServerMemo(item.memo.id)}
+                        disabled={isBusy}
+                      >
+                        서버 삭제
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="server-memo-list__empty">서버에 저장된 메모가 없습니다.</p>
+            )}
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 }

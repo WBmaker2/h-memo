@@ -17,13 +17,15 @@ import { MemoToolbar } from "./MemoToolbar";
 type StickyMemoProps = {
   memo: Memo;
   appMenuContent?: ReactNode;
+  authStatus?: {
+    state: "signed-in" | "signed-out" | "unavailable";
+    label: string;
+    photoUrl?: string;
+  };
   onChange: (memo: Memo) => void;
-  onHide: (memoId: string) => void;
   onDelete: (memoId: string) => void;
   onRequestWindowDrag?: () => void;
   onRequestWindowResize?: (direction: "SouthEast") => void;
-  onRequestWindowMinimize?: () => void;
-  onRequestWindowMaximize?: () => void;
   onRequestWindowClose?: () => void;
   onRequestCollapseChange?: (collapsed: boolean) => void;
 };
@@ -31,21 +33,17 @@ type StickyMemoProps = {
 export function StickyMemo({
   memo,
   appMenuContent,
+  authStatus,
   onChange,
-  onHide,
   onDelete,
   onRequestWindowDrag,
   onRequestWindowResize,
-  onRequestWindowMinimize,
-  onRequestWindowMaximize,
   onRequestWindowClose,
   onRequestCollapseChange,
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const shouldShowWindowControls = Boolean(
-    onRequestWindowMinimize || onRequestWindowMaximize || onRequestWindowClose
-  );
+  const shouldShowWindowControls = Boolean(onRequestWindowClose);
 
   useEffect(() => {
     setEditingMemo(memo);
@@ -145,8 +143,8 @@ export function StickyMemo({
               <MemoToolbar
                 style={editingMemo.style}
                 onStyleChange={handleStyleChange}
-                onHide={() => onHide(editingMemo.id)}
                 onDelete={() => onDelete(editingMemo.id)}
+                showDeleteAction={!appMenuContent}
               />
             </section>
             {appMenuContent ? (
@@ -161,22 +159,31 @@ export function StickyMemo({
         </div>
         {shouldShowWindowControls ? (
           <div className="sticky-memo__window-controls" data-no-window-drag="true">
-            <button
-              type="button"
-              aria-label="최소화"
-              title="최소화"
-              onClick={onRequestWindowMinimize}
-            >
-              _
-            </button>
-            <button
-              type="button"
-              aria-label="최대화"
-              title="최대화"
-              onClick={onRequestWindowMaximize}
-            >
-              □
-            </button>
+            {authStatus ? (
+              <div
+                className={`sticky-memo__auth-status sticky-memo__auth-status--${authStatus.state}`}
+                aria-label={
+                  authStatus.state === "signed-in"
+                    ? `구글 로그인됨: ${authStatus.label}`
+                    : authStatus.state === "unavailable"
+                      ? "구글 로그인 설정 필요"
+                      : "구글 로그인 안 됨"
+                }
+                title={
+                  authStatus.state === "signed-in"
+                    ? `구글 로그인됨: ${authStatus.label}`
+                    : authStatus.state === "unavailable"
+                      ? "구글 로그인 설정 필요"
+                      : "구글 로그인 안 됨"
+                }
+              >
+                {authStatus.photoUrl ? (
+                  <img src={authStatus.photoUrl} alt="" aria-hidden="true" />
+                ) : (
+                  <span aria-hidden="true">G</span>
+                )}
+              </div>
+            ) : null}
             <button
               type="button"
               aria-label="종료"

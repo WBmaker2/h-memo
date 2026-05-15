@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createMemo } from "@h-memo/memo-core";
 import {
   backupMemos,
+  deleteBackedUpMemo,
+  listBackedUpMemos,
   type BackupGateway,
   type MemoBackupPayload,
   restoreLatestBackup,
@@ -24,6 +26,39 @@ class FakeBackupGateway implements BackupGateway {
     );
     const latest = filtered[filtered.length - 1];
     return latest ? latest.payload : null;
+  }
+
+  async loadBackups(userId: string): Promise<unknown[]> {
+    return this.snapshots
+      .filter((snapshot) => snapshot.path.startsWith(`users/${userId}/backupSnapshots/`))
+      .map((snapshot) => snapshot.payload)
+      .reverse();
+  }
+
+  async deleteMemoFromBackups(userId: string, memoId: string): Promise<number> {
+    let updatedSnapshots = 0;
+
+    this.snapshots = this.snapshots.map((snapshot) => {
+      if (!snapshot.path.startsWith(`users/${userId}/backupSnapshots/`)) {
+        return snapshot;
+      }
+
+      const nextMemos = snapshot.payload.memos.filter((memo) => memo.id !== memoId);
+      if (nextMemos.length === snapshot.payload.memos.length) {
+        return snapshot;
+      }
+
+      updatedSnapshots += 1;
+      return {
+        ...snapshot,
+        payload: {
+          ...snapshot.payload,
+          memos: nextMemos,
+        },
+      };
+    });
+
+    return updatedSnapshots;
   }
 }
 
@@ -84,11 +119,92 @@ describe("memo-sync backup", () => {
           memos: [],
         };
       }
+
+      async loadBackups(): Promise<unknown[]> {
+        return [];
+      }
+
+      async deleteMemoFromBackups(): Promise<number> {
+        return 0;
+      }
     }
 
     const gateway = new InvalidPayloadGateway();
     await expect(restoreLatestBackup(gateway, "user-1")).rejects.toThrow(
       "지원하지 않는 백업 버전입니다."
     );
+  });
+
+  it("서버 백업 목록에서 메모별 최신본을 모아 반환한다", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const olderMemo = createMemo({
+      id: "memo-keep",
+      now: "2026-05-13T09:00:00.000Z",
+      plainText: "이전 내용",
+    });
+    const newerMemo = {
+      ...olderMemo,
+      plainText: "최신 내용",
+      updatedAt: "2026-05-13T09:10:00.000Z",
+    };
+    const deletedMemo = createMemo({
+      id: "memo-deleted",
+      now: "2026-05-13T09:05:00.000Z",
+      plainText: "삭제됐지만 백업된 메모",
+    });
+
+    await backupMemos(gateway, userId, [olderMemo], "2026-05-13T09:01:00.000Z");
+    await backupMemos(
+      gateway,
+      userId,
+      [{ ...deletedMemo, deletedAt: "2026-05-13T09:06:00.000Z" }, newerMemo],
+      "2026-05-13T09:11:00.000Z"
+    );
+
+    const backedUpMemos = await listBackedUpMemos(gateway, userId);
+
+    expect(backedUpMemos).toHaveLength(2);
+    expect(backedUpMemos[0]?.memo.id).toBe("memo-keep");
+    expect(backedUpMemos[0]?.memo.plainText).toBe("최신 내용");
+    expect(backedUpMemos[1]?.memo.id).toBe("memo-deleted");
+    expect(backedUpMemos[1]?.backupCreatedAt).toBe("2026-05-13T09:11:00.000Z");
+  });
+
+  it("서버 백업 스냅샷 전체에서 선택한 메모를 제거한다", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const keepMemo = createMemo({ id: "memo-keep", now: "2026-05-13T09:00:00.000Z" });
+    const removeMemo = createMemo({ id: "memo-remove", now: "2026-05-13T09:01:00.000Z" });
+
+    await backupMemos(gateway, userId, [keepMemo, removeMemo], "2026-05-13T09:02:00.000Z");
+    await backupMemos(gateway, userId, [removeMemo], "2026-05-13T09:03:00.000Z");
+
+    const updatedCount = await deleteBackedUpMemo(gateway, userId, "memo-remove");
+    const backedUpMemos = await listBackedUpMemos(gateway, userId);
+
+    expect(updatedCount).toBe(2);
+    expect(backedUpMemos.map((item) => item.memo.id)).toEqual(["memo-keep"]);
+  });
+
+  it("내용이 비어 있고 로컬 삭제 기록이 있는 서버 메모도 id 기준으로 제거한다", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const blankDeletedMemo = {
+      ...createMemo({
+        id: "memo-blank",
+        now: "2026-05-13T09:00:00.000Z",
+        plainText: "",
+      }),
+      deletedAt: "2026-05-13T09:05:00.000Z",
+    };
+
+    await backupMemos(gateway, userId, [blankDeletedMemo], "2026-05-13T09:06:00.000Z");
+
+    const updatedCount = await deleteBackedUpMemo(gateway, userId, "memo-blank");
+    const backedUpMemos = await listBackedUpMemos(gateway, userId);
+
+    expect(updatedCount).toBe(1);
+    expect(backedUpMemos).toEqual([]);
   });
 });

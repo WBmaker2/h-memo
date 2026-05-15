@@ -17,6 +17,10 @@
     "./firebase-client-config": {
       "types": "./src/firebaseClientConfig.ts",
       "import": "./src/firebaseClientConfig.ts"
+    },
+    "./default-firebase-project": {
+      "types": "./src/defaultFirebaseProject.ts",
+      "import": "./src/defaultFirebaseProject.ts"
     }
   },
   "dependencies": {

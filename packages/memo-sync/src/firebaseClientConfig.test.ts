@@ -86,6 +86,7 @@ describe("firebaseClientConfig", () => {
       storageBucket: "",
       messagingSenderId: "",
       measurementId: "",
+      googleOAuthClientId: "",
     });
   });
 });

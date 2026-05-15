@@ -11,12 +11,11 @@
 ## 2) 준비
 
 ```bash
-cp .env.example .env
 npm ci
 ```
 
-환경변수가 없으면 Firebase 관련 기능은 동작하지 않거나, 빌드가 런타임에서 제약을 받습니다.  
-다만 코드 구조상 빌드는 시도되므로, 실행 시점/런타임에서 필요한 값이 빠졌는지 확인해야 합니다.
+운영 배포판에는 H Memo용 Firebase Web Client 설정, `VITE_GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`이 내장되어야 구글 로그인/서버 백업 버튼이 활성화됩니다. Windows 데스크톱 로그인은 WebView 팝업이 아니라 시스템 기본 브라우저와 Desktop OAuth client의 로컬 loopback으로 완료됩니다. `GOOGLE_OAUTH_CLIENT_SECRET`은 GitHub Actions secret으로 주입하고 프론트엔드 `VITE_` 변수로 만들지 않습니다.
+다른 Firebase 프로젝트로 테스트해야 할 때만 `.env.example`를 참고해 Vite 환경 변수를 지정하세요.
 
 ## 3) Windows 패키지 빌드
 
@@ -46,10 +45,12 @@ npm run check:versions
 ## 4) 로컬 확인 체크리스트
 
 - 앱이 정상 실행되는지
+- Windows 시스템 트레이에 노란 메모 모양의 H Memo 아이콘이 보이는지
 - 설치 마법사(NSIS) 또는 MSI가 생성되는지
 - 설치 후 실행/삭제가 되는지
-- Firebase 로그인(선택) 및 백업 버튼이 동작하는지
-- 기본 메모 생성/저장/숨김/복원이 동작하는지
+- 구글 로그인 성공 표시와 여러 메모 서버 백업/복원 버튼 활성화가 동작하는지
+- 기본 메모 생성/저장/삭제와 독립 창 기반 여러 메모 관리가 동작하는지
+- TXT 내보내기와 JSON 백업/복원이 동작하는지
 
 ## 5) GitHub 릴리스
 

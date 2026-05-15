@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,6 +9,7 @@ import {
   getDotEnvFileOrder,
   loadFirebaseEnv,
   parseArgs,
+  readBuiltInFirebaseEnv,
 } from "./lib/check-firebase-env.js";
 
 function createTempEnvDir() {
@@ -82,6 +83,52 @@ describe("check-firebase-env", () => {
       "VITE_FIREBASE_APP_ID",
     ]);
     expect(result.optional.present).toEqual([]);
+  });
+
+  it("loads built-in Firebase defaults before env files and process env", () => {
+    const fixture = createTempEnvDir();
+    try {
+      const configPath = path.join(
+        fixture.root,
+        "packages",
+        "memo-sync",
+        "src",
+        "defaultFirebaseProject.json"
+      );
+      mkdirSync(path.dirname(configPath), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          apiKey: "built-in-api-key",
+          authDomain: "built-in.firebaseapp.com",
+          projectId: "built-in-project",
+          appId: "built-in-app-id",
+          storageBucket: "built-in-bucket",
+        })
+      );
+      fixture.write(".env", "VITE_FIREBASE_PROJECT_ID=env-project\n");
+
+      expect(readBuiltInFirebaseEnv({ cwd: fixture.root })).toMatchObject({
+        VITE_FIREBASE_API_KEY: "built-in-api-key",
+        VITE_FIREBASE_AUTH_DOMAIN: "built-in.firebaseapp.com",
+        VITE_FIREBASE_PROJECT_ID: "built-in-project",
+        VITE_FIREBASE_APP_ID: "built-in-app-id",
+        VITE_FIREBASE_STORAGE_BUCKET: "built-in-bucket",
+      });
+      expect(
+        loadFirebaseEnv({
+          cwd: fixture.root,
+          processEnv: { VITE_FIREBASE_APP_ID: "process-app-id" },
+        })
+      ).toMatchObject({
+        VITE_FIREBASE_API_KEY: "built-in-api-key",
+        VITE_FIREBASE_AUTH_DOMAIN: "built-in.firebaseapp.com",
+        VITE_FIREBASE_PROJECT_ID: "env-project",
+        VITE_FIREBASE_APP_ID: "process-app-id",
+      });
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it("parses --mode and resolves Vite-like env file order", () => {

@@ -13,7 +13,27 @@ export const OPTIONAL_ENV_KEYS = [
   "VITE_FIREBASE_STORAGE_BUCKET",
   "VITE_FIREBASE_MESSAGING_SENDER_ID",
   "VITE_FIREBASE_MEASUREMENT_ID",
+  "VITE_GOOGLE_OAUTH_CLIENT_ID",
+  "GOOGLE_OAUTH_CLIENT_SECRET",
 ];
+
+export const BUILT_IN_FIREBASE_CONFIG_PATH = path.join(
+  "packages",
+  "memo-sync",
+  "src",
+  "defaultFirebaseProject.json"
+);
+
+const FIREBASE_ENV_TO_CONFIG_KEY = {
+  VITE_FIREBASE_API_KEY: "apiKey",
+  VITE_FIREBASE_AUTH_DOMAIN: "authDomain",
+  VITE_FIREBASE_PROJECT_ID: "projectId",
+  VITE_FIREBASE_APP_ID: "appId",
+  VITE_FIREBASE_STORAGE_BUCKET: "storageBucket",
+  VITE_FIREBASE_MESSAGING_SENDER_ID: "messagingSenderId",
+  VITE_FIREBASE_MEASUREMENT_ID: "measurementId",
+  VITE_GOOGLE_OAUTH_CLIENT_ID: "googleOAuthClientId",
+};
 
 function trim(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -102,12 +122,29 @@ export function readDotEnvFiles({ cwd = process.cwd(), mode = "" } = {}) {
   }, {});
 }
 
+export function readBuiltInFirebaseEnv({ cwd = process.cwd() } = {}) {
+  const filePath = path.join(cwd, BUILT_IN_FIREBASE_CONFIG_PATH);
+  if (!existsSync(filePath)) {
+    return {};
+  }
+
+  const rawConfig = JSON.parse(readFileSync(filePath, "utf8"));
+  return Object.entries(FIREBASE_ENV_TO_CONFIG_KEY).reduce((env, [envKey, configKey]) => {
+    const value = trim(rawConfig[configKey]);
+    if (value !== "") {
+      env[envKey] = value;
+    }
+    return env;
+  }, {});
+}
+
 export function loadFirebaseEnv({
   cwd = process.cwd(),
   mode = "",
   processEnv = process.env,
 } = {}) {
   return {
+    ...readBuiltInFirebaseEnv({ cwd }),
     ...readDotEnvFiles({ cwd, mode }),
     ...processEnv,
   };

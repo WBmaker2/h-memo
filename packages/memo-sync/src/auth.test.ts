@@ -1,6 +1,21 @@
-import { describe, expect, it, vi } from "vitest";
-import { onAuthStateChanged, type NextOrObserver, type User } from "firebase/auth";
-import { subscribeAuthUser, toHMemoUser } from "./auth";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  GoogleAuthProvider,
+  getRedirectResult,
+  onAuthStateChanged,
+  signInWithCredential,
+  signInWithPopup,
+  signInWithRedirect,
+  type NextOrObserver,
+  type User,
+} from "firebase/auth";
+import {
+  completeGoogleRedirectSignIn,
+  signInWithGoogle,
+  subscribeAuthUser,
+  toHMemoUser,
+  waitForSignedInUser,
+} from "./auth";
 
 function createFakeUser(overrides: Partial<User> = {}): User {
   return {
@@ -17,6 +32,7 @@ vi.mock("firebase/auth", async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...(actual as object),
+    getRedirectResult: vi.fn(),
     onAuthStateChanged: vi.fn((_, callback: NextOrObserver<User>) => {
       const emitUser = (nextUser: User | null) => {
         if (typeof callback === "function") {
@@ -29,7 +45,14 @@ vi.mock("firebase/auth", async (importOriginal) => {
       setTimeout(() => emitUser(null), 0);
       return unsubscribe;
     }),
+    signInWithPopup: vi.fn(),
+    signInWithCredential: vi.fn(),
+    signInWithRedirect: vi.fn(),
   };
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
 });
 
 describe("subscribeAuthUser", () => {
@@ -82,5 +105,118 @@ describe("subscribeAuthUser", () => {
 
     expect(callback).toHaveBeenCalledWith(null);
     expect(returnedUnsubscribe).toBe(unsubscribe);
+  });
+});
+
+describe("signInWithGoogle", () => {
+  it("uses popup login and maps the signed-in user", async () => {
+    const fakeUser = createFakeUser();
+    vi.mocked(signInWithPopup).mockResolvedValue({ user: fakeUser } as never);
+
+    await expect(signInWithGoogle({} as any)).resolves.toEqual(toHMemoUser(fakeUser));
+
+    expect(signInWithPopup).toHaveBeenCalledTimes(1);
+    expect(signInWithRedirect).not.toHaveBeenCalled();
+  });
+
+  it("uses desktop OAuth tokens when provided", async () => {
+    const fakeUser = createFakeUser({ uid: "desktop-user" });
+    const desktopOAuth = vi.fn().mockResolvedValue({
+      idToken: "google-id-token",
+      accessToken: "google-access-token",
+    });
+    vi.mocked(signInWithCredential).mockResolvedValue({ user: fakeUser } as never);
+
+    await expect(signInWithGoogle({} as any, { desktopOAuth })).resolves.toEqual(
+      toHMemoUser(fakeUser)
+    );
+
+    expect(desktopOAuth).toHaveBeenCalledTimes(1);
+    expect(signInWithCredential).toHaveBeenCalledTimes(1);
+    expect(signInWithPopup).not.toHaveBeenCalled();
+    expect(signInWithRedirect).not.toHaveBeenCalled();
+  });
+
+  it("passes no access token when desktop OAuth only returns an ID token", async () => {
+    const fakeUser = createFakeUser({ uid: "desktop-id-token-user" });
+    const credentialSpy = vi.spyOn(GoogleAuthProvider, "credential");
+    const desktopOAuth = vi.fn().mockResolvedValue({
+      idToken: "google-id-token",
+      accessToken: "",
+    });
+    vi.mocked(signInWithCredential).mockResolvedValue({ user: fakeUser } as never);
+
+    await expect(signInWithGoogle({} as any, { desktopOAuth })).resolves.toEqual(
+      toHMemoUser(fakeUser)
+    );
+
+    expect(credentialSpy).toHaveBeenCalledWith("google-id-token", undefined);
+  });
+
+  it("falls back to redirect when Tauri blocks the popup", async () => {
+    vi.mocked(signInWithPopup).mockRejectedValue({ code: "auth/popup-blocked" });
+    vi.mocked(signInWithRedirect).mockImplementation(async () => undefined as never);
+
+    await expect(
+      signInWithGoogle({} as any, { fallbackToRedirect: true })
+    ).resolves.toBeNull();
+
+    expect(signInWithRedirect).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to redirect when popup auth is not supported in the environment", async () => {
+    vi.mocked(signInWithPopup).mockRejectedValue({
+      code: "auth/operation-not-supported-in-this-environment",
+    });
+    vi.mocked(signInWithRedirect).mockImplementation(async () => undefined as never);
+
+    await expect(
+      signInWithGoogle({} as any, { fallbackToRedirect: true })
+    ).resolves.toBeNull();
+
+    expect(signInWithRedirect).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not redirect for user-cancelled popup closes", async () => {
+    vi.mocked(signInWithPopup).mockRejectedValue({ code: "auth/popup-closed-by-user" });
+
+    await expect(
+      signInWithGoogle({} as any, { fallbackToRedirect: true })
+    ).rejects.toMatchObject({ code: "auth/popup-closed-by-user" });
+
+    expect(signInWithRedirect).not.toHaveBeenCalled();
+  });
+});
+
+describe("completeGoogleRedirectSignIn", () => {
+  it("returns null when there is no redirect result", async () => {
+    vi.mocked(getRedirectResult).mockResolvedValue(null);
+
+    await expect(completeGoogleRedirectSignIn({} as any)).resolves.toBeNull();
+  });
+
+  it("maps redirect result user", async () => {
+    const fakeUser = createFakeUser({ uid: "redirect-user" });
+    vi.mocked(getRedirectResult).mockResolvedValue({ user: fakeUser } as never);
+
+    await expect(completeGoogleRedirectSignIn({} as any)).resolves.toEqual(
+      toHMemoUser(fakeUser)
+    );
+  });
+});
+
+describe("waitForSignedInUser", () => {
+  it("returns the current Firebase auth user when it is already available", async () => {
+    const fakeUser = createFakeUser({ uid: "current-user" });
+
+    await expect(
+      waitForSignedInUser({ currentUser: fakeUser } as any, 10, 1)
+    ).resolves.toEqual(toHMemoUser(fakeUser));
+  });
+
+  it("returns null when the auth user does not become available", async () => {
+    await expect(
+      waitForSignedInUser({ currentUser: null } as any, 1, 1)
+    ).resolves.toBeNull();
   });
 });

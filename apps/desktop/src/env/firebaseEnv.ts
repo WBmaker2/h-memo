@@ -1,4 +1,8 @@
-import type { FirebaseClientEnv } from "@h-memo/memo-sync";
+import {
+  getDefaultFirebaseClientEnv,
+  mergeFirebaseClientConfig,
+  type FirebaseClientEnv,
+} from "@h-memo/memo-sync";
 
 type RawViteEnv = Record<string, string | undefined>;
 
@@ -9,7 +13,7 @@ function trim(value: string | undefined): string {
 }
 
 export function getFirebaseClientEnv(): Partial<FirebaseClientEnv> {
-  return {
+  const viteFirebaseClientEnv = {
     apiKey: trim(viteEnv.VITE_FIREBASE_API_KEY),
     authDomain: trim(viteEnv.VITE_FIREBASE_AUTH_DOMAIN),
     projectId: trim(viteEnv.VITE_FIREBASE_PROJECT_ID),
@@ -17,5 +21,8 @@ export function getFirebaseClientEnv(): Partial<FirebaseClientEnv> {
     storageBucket: trim(viteEnv.VITE_FIREBASE_STORAGE_BUCKET),
     messagingSenderId: trim(viteEnv.VITE_FIREBASE_MESSAGING_SENDER_ID),
     measurementId: trim(viteEnv.VITE_FIREBASE_MEASUREMENT_ID),
+    googleOAuthClientId: trim(viteEnv.VITE_GOOGLE_OAUTH_CLIENT_ID),
   };
+
+  return mergeFirebaseClientConfig(getDefaultFirebaseClientEnv(), viteFirebaseClientEnv);
 }

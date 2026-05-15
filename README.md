@@ -28,15 +28,15 @@ npm run tauri:build          # Tauri Windows/MSI/NSIS 빌드 시도
 ## 로컬 개발 가이드
 
 ```bash
-cp .env.example .env
 npm ci
 npm run dev
 ```
 
 ### Firebase 환경 변수
 
-필수/선택 변수는 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고하세요.
-빌드에 환경 변수가 포함되지 않은 설치본도 앱 메뉴의 `구글 로그인 설정`에서 Firebase Web Client 값을 저장하면 Google 로그인을 사용할 수 있습니다.
+기본 배포판은 H Memo용 Firebase Web Client 설정을 내장합니다. Windows 데스크톱 Google 로그인은 시스템 기본 브라우저와 로컬 loopback을 사용하는 **Desktop app** OAuth client가 필요하므로, 운영 빌드에는 `VITE_GOOGLE_OAUTH_CLIENT_ID`와 `GOOGLE_OAUTH_CLIENT_SECRET`을 함께 주입해야 합니다. 다른 Firebase 프로젝트로 개발/스테이징 테스트를 할 때는 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고해 환경 변수를 지정하세요.
+운영 배포판은 H Memo용 Firebase Web Client 설정과 Desktop OAuth client ID/secret을 내장해 사용자가 `구글 로그인`만으로 백업/복원을 시작할 수 있게 합니다. `GOOGLE_OAUTH_CLIENT_SECRET`은 프론트엔드 `VITE_` 변수로 노출하지 않고 Tauri 빌드 환경에서만 전달합니다.
+내장/빌드 설정이 모두 비어 있는 개발 빌드에서만 앱 메뉴의 `구글 로그인 설정` 입력 폼이 나타납니다.
 
 ## 테스트/타입체크/빌드
 
@@ -48,13 +48,22 @@ npm run build -w apps/web
 npm run check:versions
 ```
 
+## 현재 지원 기능
+
+- Windows 앱에서는 여러 개의 포스트잇 메모를 각각 독립 창으로 만들고, 앱을 다시 실행해도 마지막 내용과 위치/크기를 유지합니다.
+- 메모별 메뉴에서 색상, 글꼴, 글자 크기, 글자색을 조절하고 필요 없는 메모를 삭제할 수 있습니다.
+- 앱 메뉴의 `메모 관리`에서 여러 메모를 한꺼번에 확인하고, 독립 창으로 열거나 삭제할 수 있습니다.
+- `TXT 내보내기`로 현재 메모 내용을 로컬 텍스트 파일로 저장할 수 있습니다.
+- `JSON 백업` / `JSON 복원`으로 여러 메모 전체를 로컬 파일로 백업하고, 복원 전 확인 후 되돌릴 수 있습니다.
+- Firebase 설정이 유효하면 `구글 로그인` 후 여러 메모 전체를 서버에 백업/복원할 수 있습니다.
+
 ## 웹 미리보기 확장 경로
 
 - [`docs/web-roadmap.md`](./docs/web-roadmap.md)
 
 ### 웹 앱 동기화 상태
 
-- Firebase 환경 변수 또는 앱 안의 `구글 로그인 설정`이 완료되면 웹 앱에서 Google 로그인 후 서버 백업/복원이 동작합니다.
+- Firebase 설정이 내장되었거나 환경 변수로 제공되면 웹 앱에서 구글 로그인 후 서버 백업/복원이 동작합니다.
 - 시작프로그램 등록은 웹에서 계속 비활성 상태로 유지됩니다.
 
 ### Tauri 빌드
