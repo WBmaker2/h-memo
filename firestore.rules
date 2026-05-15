@@ -36,6 +36,22 @@ service cloud.firestore {
         && request.resource.data.memos.size() <= resource.data.memos.size();
     }
 
+    function hasValidServerMemoDeleteShape(uid, memoId) {
+      return request.resource.data.keys().hasOnly([
+          "userId",
+          "memoId",
+          "deletedAt"
+        ])
+        && request.resource.data.keys().hasAll([
+          "userId",
+          "memoId",
+          "deletedAt"
+        ])
+        && request.resource.data.userId == uid
+        && request.resource.data.memoId == memoId
+        && request.resource.data.deletedAt is timestamp;
+    }
+
     match /users/{uid}/backupSnapshots/{snapshotId} {
       allow read: if isOwner(uid);
       allow create: if isOwner(uid) && hasValidBackupSnapshotShape(uid);
@@ -43,6 +59,12 @@ service cloud.firestore {
         && hasValidBackupSnapshotShape(uid)
         && onlyReducesSnapshotMemos();
       allow delete: if false;
+    }
+
+    match /users/{uid}/serverMemoDeletes/{memoId} {
+      allow read: if isOwner(uid);
+      allow create, update: if isOwner(uid) && hasValidServerMemoDeleteShape(uid, memoId);
+      allow delete: if isOwner(uid);
     }
   }
 }

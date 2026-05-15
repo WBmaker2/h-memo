@@ -1194,15 +1194,18 @@ export function App() {
     setIsBusy(true);
     try {
       const targetMemoLabel = memoLabel || "메모";
-      const deletedSnapshotCount = await deleteBackedUpMemo(services.gateway, user.uid, memoId);
-      setServerMemoManager((previous) => ({
-        ...previous,
-        memos: previous.memos.filter((item) => item.memo.id !== memoId),
-      }));
+      const deletedServerRecordCount = await deleteBackedUpMemo(services.gateway, user.uid, memoId);
+      if (deletedServerRecordCount > 0) {
+        setServerMemoManager((previous) => ({
+          ...previous,
+          memos: previous.memos.filter((item) => item.memo.id !== memoId),
+        }));
+        setBackupStatus(`서버 백업에서 "${targetMemoLabel}" 메모를 삭제했습니다.`);
+        return;
+      }
+
       setBackupStatus(
-        deletedSnapshotCount > 0
-          ? `서버 백업에서 "${targetMemoLabel}" 메모를 삭제했습니다.`
-          : `서버 백업에서 "${targetMemoLabel}" 메모를 찾지 못했습니다.`
+        `서버 백업에서 "${targetMemoLabel}" 메모를 찾지 못했습니다. 목록을 새로고침해 주세요.`
       );
     } catch (error) {
       setBackupStatus(`서버 메모 삭제 실패: ${getErrorMessage(error)}`);

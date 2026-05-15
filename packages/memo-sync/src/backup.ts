@@ -7,11 +7,14 @@ import {
 import {
   addDoc,
   collection,
+  deleteDoc,
+  doc,
   getDocs,
   limit,
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
   type Firestore,
 } from "firebase/firestore";
@@ -26,10 +29,12 @@ export interface BackupGateway {
   saveBackup(userId: string, payload: MemoBackupPayload): Promise<string>;
   loadLatestBackup(userId: string): Promise<unknown | null>;
   loadBackups(userId: string): Promise<unknown[]>;
+  loadDeletedMemoIds(userId: string): Promise<string[]>;
   deleteMemoFromBackups(userId: string, memoId: string): Promise<number>;
 }
 
 const backupCollection = "backupSnapshots";
+const serverMemoDeletesCollection = "serverMemoDeletes";
 
 export class FirestoreBackupGateway implements BackupGateway {
   constructor(private readonly firestore: Firestore) {}
@@ -38,11 +43,26 @@ export class FirestoreBackupGateway implements BackupGateway {
     return collection(this.firestore, "users", userId, backupCollection);
   }
 
+  private deletedMemoCollection(userId: string) {
+    return collection(this.firestore, "users", userId, serverMemoDeletesCollection);
+  }
+
+  private deletedMemoDoc(userId: string, memoId: string) {
+    return doc(this.firestore, "users", userId, serverMemoDeletesCollection, memoId);
+  }
+
   async saveBackup(userId: string, payload: MemoBackupPayload): Promise<string> {
     const ref = await addDoc(this.collection(userId), {
       ...payload,
       savedAt: serverTimestamp(),
     });
+
+    await Promise.all(
+      payload.memos
+        .filter((memo) => memo.deletedAt === null)
+        .map((memo) => deleteDoc(this.deletedMemoDoc(userId, memo.id)))
+    );
+
     return ref.path;
   }
 
@@ -70,7 +90,23 @@ export class FirestoreBackupGateway implements BackupGateway {
     return querySnapshot.docs.map((snapshot) => snapshot.data());
   }
 
+  async loadDeletedMemoIds(userId: string): Promise<string[]> {
+    const querySnapshot = await getDocs(this.deletedMemoCollection(userId));
+    return querySnapshot.docs
+      .map((snapshot) => {
+        const data = snapshot.data();
+        return typeof data.memoId === "string" ? data.memoId : snapshot.id;
+      })
+      .filter((memoId) => memoId.trim() !== "");
+  }
+
   async deleteMemoFromBackups(userId: string, memoId: string): Promise<number> {
+    await setDoc(this.deletedMemoDoc(userId, memoId), {
+      userId,
+      memoId,
+      deletedAt: serverTimestamp(),
+    });
+
     const snapshotQuery = query(
       this.collection(userId),
       orderBy("savedAt", "desc")
@@ -95,8 +131,26 @@ export class FirestoreBackupGateway implements BackupGateway {
       })
     );
 
-    return updatedSnapshots;
+    return Math.max(updatedSnapshots, 1);
   }
+}
+
+async function loadDeletedMemoIdSet(
+  gateway: BackupGateway,
+  userId: string
+): Promise<Set<string>> {
+  return new Set(await gateway.loadDeletedMemoIds(userId));
+}
+
+function filterDeletedServerMemos(payload: MemoBackupPayload, deletedMemoIds: Set<string>) {
+  if (deletedMemoIds.size === 0) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    memos: payload.memos.filter((memo) => !deletedMemoIds.has(memo.id)),
+  };
 }
 
 export async function backupMemos(
@@ -134,7 +188,8 @@ export async function restoreLatestBackup(
     throw new Error(parsed.reason);
   }
 
-  return parsed.payload;
+  const deletedMemoIds = await loadDeletedMemoIdSet(gateway, userId);
+  return filterDeletedServerMemos(parsed.payload, deletedMemoIds);
 }
 
 export async function listBackedUpMemos(
@@ -142,6 +197,7 @@ export async function listBackedUpMemos(
   userId: string
 ): Promise<BackedUpMemo[]> {
   const backups = await gateway.loadBackups(userId);
+  const deletedMemoIds = await loadDeletedMemoIdSet(gateway, userId);
   const newestMemoById = new Map<string, BackedUpMemo>();
 
   for (const backup of backups) {
@@ -151,6 +207,9 @@ export async function listBackedUpMemos(
     }
 
     for (const memo of parsed.payload.memos) {
+      if (deletedMemoIds.has(memo.id)) {
+        continue;
+      }
       if (newestMemoById.has(memo.id)) {
         continue;
       }

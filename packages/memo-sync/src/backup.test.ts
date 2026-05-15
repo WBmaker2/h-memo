@@ -11,12 +11,18 @@ import {
 
 class FakeBackupGateway implements BackupGateway {
   private snapshots: Array<{ path: string; payload: MemoBackupPayload }> = [];
+  private deletedMemoIdsByUser = new Map<string, Set<string>>();
   private counter = 1;
 
   async saveBackup(userId: string, payload: MemoBackupPayload): Promise<string> {
     const path = `users/${userId}/backupSnapshots/${this.counter}`;
     this.snapshots.push({ path, payload });
     this.counter += 1;
+    for (const memo of payload.memos) {
+      if (memo.deletedAt === null) {
+        this.deletedMemoIdsByUser.get(userId)?.delete(memo.id);
+      }
+    }
     return path;
   }
 
@@ -35,30 +41,15 @@ class FakeBackupGateway implements BackupGateway {
       .reverse();
   }
 
+  async loadDeletedMemoIds(userId: string): Promise<string[]> {
+    return [...(this.deletedMemoIdsByUser.get(userId) ?? new Set<string>())];
+  }
+
   async deleteMemoFromBackups(userId: string, memoId: string): Promise<number> {
-    let updatedSnapshots = 0;
-
-    this.snapshots = this.snapshots.map((snapshot) => {
-      if (!snapshot.path.startsWith(`users/${userId}/backupSnapshots/`)) {
-        return snapshot;
-      }
-
-      const nextMemos = snapshot.payload.memos.filter((memo) => memo.id !== memoId);
-      if (nextMemos.length === snapshot.payload.memos.length) {
-        return snapshot;
-      }
-
-      updatedSnapshots += 1;
-      return {
-        ...snapshot,
-        payload: {
-          ...snapshot.payload,
-          memos: nextMemos,
-        },
-      };
-    });
-
-    return updatedSnapshots;
+    const deletedMemoIds = this.deletedMemoIdsByUser.get(userId) ?? new Set<string>();
+    deletedMemoIds.add(memoId);
+    this.deletedMemoIdsByUser.set(userId, deletedMemoIds);
+    return 1;
   }
 }
 
@@ -124,6 +115,10 @@ describe("memo-sync backup", () => {
         return [];
       }
 
+      async loadDeletedMemoIds(): Promise<string[]> {
+        return [];
+      }
+
       async deleteMemoFromBackups(): Promise<number> {
         return 0;
       }
@@ -171,7 +166,7 @@ describe("memo-sync backup", () => {
     expect(backedUpMemos[1]?.backupCreatedAt).toBe("2026-05-13T09:11:00.000Z");
   });
 
-  it("서버 백업 스냅샷 전체에서 선택한 메모를 제거한다", async () => {
+  it("서버 삭제한 메모를 서버 백업 목록에서 제외한다", async () => {
     const gateway = new FakeBackupGateway();
     const userId = "user-1";
     const keepMemo = createMemo({ id: "memo-keep", now: "2026-05-13T09:00:00.000Z" });
@@ -183,8 +178,42 @@ describe("memo-sync backup", () => {
     const updatedCount = await deleteBackedUpMemo(gateway, userId, "memo-remove");
     const backedUpMemos = await listBackedUpMemos(gateway, userId);
 
-    expect(updatedCount).toBe(2);
+    expect(updatedCount).toBe(1);
     expect(backedUpMemos.map((item) => item.memo.id)).toEqual(["memo-keep"]);
+  });
+
+  it("서버 삭제한 메모는 최신 전체 복원에서도 제외한다", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const keepMemo = createMemo({ id: "memo-keep", now: "2026-05-13T09:00:00.000Z" });
+    const removeMemo = createMemo({ id: "memo-remove", now: "2026-05-13T09:01:00.000Z" });
+
+    await backupMemos(gateway, userId, [keepMemo, removeMemo], "2026-05-13T09:02:00.000Z");
+
+    await deleteBackedUpMemo(gateway, userId, "memo-remove");
+    const restored = await restoreLatestBackup(gateway, userId);
+
+    expect(restored?.memos.map((memo) => memo.id)).toEqual(["memo-keep"]);
+  });
+
+  it("보이는 로컬 메모를 다시 백업하면 서버 삭제 표시를 해제한다", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const memo = createMemo({ id: "memo-restore", now: "2026-05-13T09:00:00.000Z" });
+
+    await backupMemos(gateway, userId, [memo], "2026-05-13T09:01:00.000Z");
+    await deleteBackedUpMemo(gateway, userId, "memo-restore");
+    expect(await listBackedUpMemos(gateway, userId)).toEqual([]);
+
+    await backupMemos(
+      gateway,
+      userId,
+      [{ ...memo, plainText: "다시 백업", updatedAt: "2026-05-13T09:02:00.000Z" }],
+      "2026-05-13T09:03:00.000Z"
+    );
+
+    const backedUpMemos = await listBackedUpMemos(gateway, userId);
+    expect(backedUpMemos.map((item) => item.memo.id)).toEqual(["memo-restore"]);
   });
 
   it("내용이 비어 있고 로컬 삭제 기록이 있는 서버 메모도 id 기준으로 제거한다", async () => {

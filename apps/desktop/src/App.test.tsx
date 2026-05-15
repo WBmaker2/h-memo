@@ -1695,7 +1695,7 @@ describe("desktop App", () => {
     });
   });
 
-  it("shows empty-memo label in server delete status even when server delete count is zero", async () => {
+  it("keeps server memo visible when server delete reports no stored record", async () => {
     const user = userEvent.setup();
     setMockFirebaseClientEnv({
       apiKey: "api-key",
@@ -1750,9 +1750,9 @@ describe("desktop App", () => {
       );
       const serverDialog = screen.getByRole("dialog", { name: "서버 메모 관리" });
       expect(screen.getByRole("status")).toHaveTextContent(
-        '서버 백업에서 "빈 메모" 메모를 찾지 못했습니다.'
+        '서버 백업에서 "빈 메모" 메모를 찾지 못했습니다. 목록을 새로고침해 주세요.'
       );
-      expect(within(serverDialog).queryByRole("listitem")).not.toBeInTheDocument();
+      expect(within(serverDialog).getByRole("listitem")).toHaveTextContent("빈 메모");
     });
   });
 
