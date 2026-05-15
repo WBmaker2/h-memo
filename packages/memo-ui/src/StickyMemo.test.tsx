@@ -104,8 +104,6 @@ describe("StickyMemo", () => {
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
     const onRequestWindowDrag = vi.fn();
     const onRequestWindowResize = vi.fn();
-    const onRequestWindowMinimize = vi.fn();
-    const onRequestWindowMaximize = vi.fn();
     const onRequestWindowClose = vi.fn();
 
     render(
@@ -115,22 +113,18 @@ describe("StickyMemo", () => {
         onDelete={vi.fn()}
         onRequestWindowDrag={onRequestWindowDrag}
         onRequestWindowResize={onRequestWindowResize}
-        onRequestWindowMinimize={onRequestWindowMinimize}
-        onRequestWindowMaximize={onRequestWindowMaximize}
         onRequestWindowClose={onRequestWindowClose}
       />
     );
 
     fireEvent.mouseDown(screen.getByLabelText("상단 메뉴바"), { button: 0 });
     fireEvent.pointerDown(screen.getByLabelText("창 크기 조절"), { button: 0 });
-    await userEvent.click(screen.getByRole("button", { name: "최소화" }));
-    await userEvent.click(screen.getByRole("button", { name: "최대화" }));
+    expect(screen.queryByRole("button", { name: "최소화" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "최대화" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "종료" }));
 
     expect(onRequestWindowDrag).toHaveBeenCalledTimes(1);
     expect(onRequestWindowResize).toHaveBeenCalledWith("SouthEast");
-    expect(onRequestWindowMinimize).toHaveBeenCalledTimes(1);
-    expect(onRequestWindowMaximize).toHaveBeenCalledTimes(1);
     expect(onRequestWindowClose).toHaveBeenCalledTimes(1);
   });
 

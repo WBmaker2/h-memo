@@ -31,8 +31,6 @@ const {
   mockAuthUnsubscribe,
   mockStartWindowDrag,
   mockStartWindowResize,
-  mockMinimizeWindow,
-  mockToggleMaximizeWindow,
   mockCloseWindow,
   mockOpenMemoWindow,
   mockReadWindowBounds,
@@ -58,8 +56,6 @@ const {
   const mockWaitForSignedInUser = vi.fn();
   const mockStartWindowDrag = vi.fn();
   const mockStartWindowResize = vi.fn();
-  const mockMinimizeWindow = vi.fn();
-  const mockToggleMaximizeWindow = vi.fn();
   const mockCloseWindow = vi.fn();
   const mockOpenMemoWindow = vi.fn();
   const mockRestoreWindowBounds = vi.fn();
@@ -173,8 +169,6 @@ const {
     mockAuthUnsubscribe,
     mockStartWindowDrag,
     mockStartWindowResize,
-    mockMinimizeWindow,
-    mockToggleMaximizeWindow,
     mockCloseWindow,
     mockOpenMemoWindow,
     mockReadWindowBounds,
@@ -263,8 +257,6 @@ vi.mock("./adapters/tauriMemoRepository", () => ({
 vi.mock("./adapters/tauriWindow", () => ({
   startWindowDrag: () => mockStartWindowDrag(),
   startWindowResize: (direction: "SouthEast") => mockStartWindowResize(direction),
-  minimizeWindow: () => mockMinimizeWindow(),
-  toggleMaximizeWindow: () => mockToggleMaximizeWindow(),
   closeWindow: () => mockCloseWindow(),
   openMemoWindow: (memo: unknown) => mockOpenMemoWindow(memo),
   readWindowBounds: () => mockReadWindowBounds(),
@@ -349,8 +341,6 @@ beforeEach(() => {
   mockAuthUnsubscribe.mockReset();
   mockStartWindowDrag.mockReset();
   mockStartWindowResize.mockReset();
-  mockMinimizeWindow.mockReset();
-  mockToggleMaximizeWindow.mockReset();
   mockCloseWindow.mockReset();
   mockOpenMemoWindow.mockReset();
   mockReadWindowBounds.mockReset();
@@ -378,8 +368,6 @@ beforeEach(() => {
   });
   mockStartWindowDrag.mockResolvedValue(undefined);
   mockStartWindowResize.mockResolvedValue(undefined);
-  mockMinimizeWindow.mockResolvedValue(undefined);
-  mockToggleMaximizeWindow.mockResolvedValue(undefined);
   mockCloseWindow.mockResolvedValue(undefined);
   mockOpenMemoWindow.mockResolvedValue(undefined);
   mockReadWindowBounds.mockImplementation(async () => tauriWindowState.bounds);
@@ -748,7 +736,7 @@ describe("desktop App", () => {
     });
   });
 
-  it("wires the titlebar to Tauri drag, window controls, and collapse resize", async () => {
+  it("wires the titlebar to Tauri drag, close control, and collapse resize", async () => {
     const user = userEvent.setup();
     setTauriRuntime(true);
     mockGetStartupEnabled.mockResolvedValue(false);
@@ -767,15 +755,13 @@ describe("desktop App", () => {
     });
 
     fireEvent.mouseDown(screen.getByLabelText("상단 메뉴바"), { button: 0 });
-    await user.click(screen.getByRole("button", { name: "최소화" }));
-    await user.click(screen.getByRole("button", { name: "최대화" }));
+    expect(screen.queryByRole("button", { name: "최소화" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "최대화" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "종료" }));
     fireEvent.doubleClick(screen.getByLabelText("상단 메뉴바"));
 
     await waitFor(() => {
       expect(mockStartWindowDrag).toHaveBeenCalledTimes(1);
-      expect(mockMinimizeWindow).toHaveBeenCalledTimes(1);
-      expect(mockToggleMaximizeWindow).toHaveBeenCalledTimes(1);
       expect(mockCloseWindow).toHaveBeenCalledTimes(1);
       expect(mockSetWindowHeight).toHaveBeenCalledWith(46);
     });

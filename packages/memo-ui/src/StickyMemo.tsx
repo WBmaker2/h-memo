@@ -21,8 +21,6 @@ type StickyMemoProps = {
   onDelete: (memoId: string) => void;
   onRequestWindowDrag?: () => void;
   onRequestWindowResize?: (direction: "SouthEast") => void;
-  onRequestWindowMinimize?: () => void;
-  onRequestWindowMaximize?: () => void;
   onRequestWindowClose?: () => void;
   onRequestCollapseChange?: (collapsed: boolean) => void;
 };
@@ -34,16 +32,12 @@ export function StickyMemo({
   onDelete,
   onRequestWindowDrag,
   onRequestWindowResize,
-  onRequestWindowMinimize,
-  onRequestWindowMaximize,
   onRequestWindowClose,
   onRequestCollapseChange,
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const shouldShowWindowControls = Boolean(
-    onRequestWindowMinimize || onRequestWindowMaximize || onRequestWindowClose
-  );
+  const shouldShowWindowControls = Boolean(onRequestWindowClose);
 
   useEffect(() => {
     setEditingMemo(memo);
@@ -159,22 +153,6 @@ export function StickyMemo({
         </div>
         {shouldShowWindowControls ? (
           <div className="sticky-memo__window-controls" data-no-window-drag="true">
-            <button
-              type="button"
-              aria-label="최소화"
-              title="최소화"
-              onClick={onRequestWindowMinimize}
-            >
-              _
-            </button>
-            <button
-              type="button"
-              aria-label="최대화"
-              title="최대화"
-              onClick={onRequestWindowMaximize}
-            >
-              □
-            </button>
             <button
               type="button"
               aria-label="종료"

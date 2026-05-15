@@ -21,14 +21,6 @@ export function startWindowResize(direction: "SouthEast") {
   return getCurrentWindow().startResizeDragging(direction);
 }
 
-export function minimizeWindow() {
-  return getCurrentWindow().minimize();
-}
-
-export function toggleMaximizeWindow() {
-  return getCurrentWindow().toggleMaximize();
-}
-
 export function closeWindow() {
   const currentWindow = getCurrentWindow();
   return currentWindow.label === "main" ? currentWindow.hide() : currentWindow.close();

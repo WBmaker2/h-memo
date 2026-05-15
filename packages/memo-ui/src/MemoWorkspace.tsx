@@ -15,8 +15,6 @@ type MemoWorkspaceShellProps = {
   onDeleteMemo: (memoId: string) => void;
   onRequestWindowDrag?: () => void;
   onRequestWindowResize?: (direction: "SouthEast") => void;
-  onRequestWindowMinimize?: () => void;
-  onRequestWindowMaximize?: () => void;
   onRequestWindowClose?: () => void;
   onRequestCollapseChange?: (collapsed: boolean) => void;
   settingsProps: SettingsPanelProps;
@@ -33,8 +31,6 @@ export function MemoWorkspace({
   onDeleteMemo,
   onRequestWindowDrag,
   onRequestWindowResize,
-  onRequestWindowMinimize,
-  onRequestWindowMaximize,
   onRequestWindowClose,
   onRequestCollapseChange,
   settingsProps,
@@ -139,8 +135,6 @@ export function MemoWorkspace({
               onDelete={onDeleteMemo}
               onRequestWindowDrag={onRequestWindowDrag}
               onRequestWindowResize={onRequestWindowResize}
-              onRequestWindowMinimize={onRequestWindowMinimize}
-              onRequestWindowMaximize={onRequestWindowMaximize}
               onRequestWindowClose={onRequestWindowClose}
               onRequestCollapseChange={onRequestCollapseChange}
             />

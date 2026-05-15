@@ -25,13 +25,11 @@ import {
   closeWindow,
   openMemoWindow,
   listenWindowBoundsChanged,
-  minimizeWindow,
   readWindowBounds,
   restoreWindowBounds,
   setWindowHeight,
   startWindowDrag,
   startWindowResize,
-  toggleMaximizeWindow,
   type WindowBounds,
 } from "./adapters/tauriWindow";
 import {
@@ -907,30 +905,6 @@ export function App() {
     });
   };
 
-  const handleRequestWindowMinimize = () => {
-    if (!isTauri) {
-      return;
-    }
-
-    void persistActiveMemoWindowBounds()
-      .then(() => minimizeWindow())
-      .catch((error) => {
-        setBackupStatus(`창 최소화 실패: ${getErrorMessage(error)}`);
-      });
-  };
-
-  const handleRequestWindowMaximize = () => {
-    if (!isTauri) {
-      return;
-    }
-
-    void persistActiveMemoWindowBounds()
-      .then(() => toggleMaximizeWindow())
-      .catch((error) => {
-        setBackupStatus(`창 최대화 실패: ${getErrorMessage(error)}`);
-      });
-  };
-
   const handleRequestWindowClose = () => {
     if (!isTauri) {
       return;
@@ -984,8 +958,6 @@ export function App() {
       onDeleteMemo={handleDeleteMemo}
       onRequestWindowDrag={handleRequestWindowDrag}
       onRequestWindowResize={handleRequestWindowResize}
-      onRequestWindowMinimize={handleRequestWindowMinimize}
-      onRequestWindowMaximize={handleRequestWindowMaximize}
       onRequestWindowClose={handleRequestWindowClose}
       onRequestCollapseChange={handleRequestCollapseChange}
       settingsProps={{
