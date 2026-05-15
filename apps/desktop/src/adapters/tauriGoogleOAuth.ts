@@ -4,7 +4,3 @@ import type { GoogleOAuthTokens } from "@h-memo/memo-sync";
 export function startGoogleDesktopOAuth(clientId: string): Promise<GoogleOAuthTokens> {
   return invoke<GoogleOAuthTokens>("start_google_desktop_oauth", { clientId });
 }
-
-export function startFirebaseGoogleDesktopAuth(apiKey: string): Promise<GoogleOAuthTokens> {
-  return invoke<GoogleOAuthTokens>("start_firebase_google_desktop_auth", { apiKey });
-}

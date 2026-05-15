@@ -39,10 +39,7 @@ import {
   notifyMemoStoreChanged,
   type MemoStoreChangedPayload,
 } from "./adapters/tauriEvents";
-import {
-  startFirebaseGoogleDesktopAuth,
-  startGoogleDesktopOAuth,
-} from "./adapters/tauriGoogleOAuth";
+import { startGoogleDesktopOAuth } from "./adapters/tauriGoogleOAuth";
 import {
   FirestoreBackupGateway,
   backupMemos,
@@ -80,6 +77,8 @@ type SyncServices = {
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
+const DESKTOP_GOOGLE_OAUTH_REQUIRED_MESSAGE =
+  "Windows 데스크톱 구글 로그인에는 Desktop OAuth Client ID 설정이 필요합니다. 빌드 환경에 VITE_GOOGLE_OAUTH_CLIENT_ID를 추가한 설치 파일로 다시 실행해 주세요.";
 const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
 const FIREBASE_INIT_FAILED_PREFIX = "서버 백업 초기화 실패:";
 const AUTH_SUBSCRIBE_FAILED_PREFIX = "인증 상태 복구 실패:";
@@ -158,11 +157,15 @@ export function App() {
     () => toFirebaseClientConfigInput(firebaseClientEnv),
     [firebaseClientEnv]
   );
-  const firebaseApiKey = firebaseClientEnv.apiKey?.trim() ?? "";
   const googleOAuthClientId = firebaseClientEnv.googleOAuthClientId?.trim() ?? "";
+  const needsDesktopGoogleOAuthClient = isTauri && googleOAuthClientId.length === 0;
   const hasFirebaseConfigSet = useMemo(() => hasFirebaseConfig(firebaseClientEnv), [firebaseClientEnv]);
   const [backupStatus, setBackupStatus] = useState<BackupMessage>(
-    hasFirebaseConfigSet ? "백업 정보 없음" : FIREBASE_UNAVAILABLE_MESSAGE
+    hasFirebaseConfigSet
+      ? needsDesktopGoogleOAuthClient
+        ? DESKTOP_GOOGLE_OAUTH_REQUIRED_MESSAGE
+        : "백업 정보 없음"
+      : FIREBASE_UNAVAILABLE_MESSAGE
   );
   const [user, setUser] = useState<HMemoUser | null>(null);
   const [pendingDeleteMemo, setPendingDeleteMemo] = useState<{
@@ -251,26 +254,26 @@ export function App() {
   );
 
   const authStatus = useMemo(() => {
-    if (!hasFirebaseConfigSet || !servicesAvailable) {
+    if (user) {
+      return {
+        state: "signed-in" as const,
+        label: user.displayName || user.email || "사용자",
+        photoUrl: user.photoURL || undefined,
+      };
+    }
+
+    if (!hasFirebaseConfigSet || !servicesAvailable || needsDesktopGoogleOAuthClient) {
       return {
         state: "unavailable" as const,
         label: "구글 로그인 설정 필요",
       };
     }
 
-    if (!user) {
-      return {
-        state: "signed-out" as const,
-        label: "구글 로그인 안 됨",
-      };
-    }
-
     return {
-      state: "signed-in" as const,
-      label: user.displayName || user.email || "사용자",
-      photoUrl: user.photoURL || undefined,
+      state: "signed-out" as const,
+      label: "구글 로그인 안 됨",
     };
-  }, [hasFirebaseConfigSet, servicesAvailable, user]);
+  }, [hasFirebaseConfigSet, needsDesktopGoogleOAuthClient, servicesAvailable, user]);
 
   const broadcastMemoStoreChanged = useCallback(
     (payload: Omit<MemoStoreChangedPayload, "sourceId"> = {}) => {
@@ -339,7 +342,12 @@ export function App() {
           if (userRef.current) {
             return;
           }
-          setSignedOutUser(LOGIN_REQUIRED_MESSAGE, { broadcast: false });
+          setSignedOutUser(
+            needsDesktopGoogleOAuthClient
+              ? DESKTOP_GOOGLE_OAUTH_REQUIRED_MESSAGE
+              : LOGIN_REQUIRED_MESSAGE,
+            { broadcast: false }
+          );
         }
       });
 
@@ -372,7 +380,13 @@ export function App() {
       setBackupStatus(`${AUTH_SUBSCRIBE_FAILED_PREFIX} ${getErrorMessage(error)}`);
       return;
     }
-  }, [ensureSyncServices, hasFirebaseConfigSet, setSignedInUser, setSignedOutUser]);
+  }, [
+    ensureSyncServices,
+    hasFirebaseConfigSet,
+    needsDesktopGoogleOAuthClient,
+    setSignedInUser,
+    setSignedOutUser,
+  ]);
 
   useEffect(() => {
     if (!isTauri) {
@@ -908,6 +922,10 @@ export function App() {
     if (isBusy) {
       return;
     }
+    if (needsDesktopGoogleOAuthClient) {
+      setBackupStatus(DESKTOP_GOOGLE_OAUTH_REQUIRED_MESSAGE);
+      return;
+    }
 
     const services = ensureSyncServices();
     if (!services) {
@@ -919,10 +937,7 @@ export function App() {
     setBackupStatus("구글 로그인 중...");
     try {
       const desktopOAuth = isTauri
-        ? (): Promise<GoogleOAuthTokens> =>
-            googleOAuthClientId
-              ? startGoogleDesktopOAuth(googleOAuthClientId)
-              : startFirebaseGoogleDesktopAuth(firebaseApiKey)
+        ? (): Promise<GoogleOAuthTokens> => startGoogleDesktopOAuth(googleOAuthClientId)
         : undefined;
       const nextUser = await signInWithGoogle(services.auth, {
         desktopOAuth,
@@ -1241,7 +1256,7 @@ export function App() {
   const isServerReady = hasFirebaseConfigSet && servicesAvailable;
   const isBackupDisabled = !isServerReady || user === null || isBusy || !syncServicesInitialized;
   const isRestoreDisabled = !isServerReady || user === null || isBusy || !syncServicesInitialized;
-  const isAuthDisabled = !isServerReady || isBusy;
+  const isAuthDisabled = !isServerReady || isBusy || needsDesktopGoogleOAuthClient;
   const isServerMemoManagerDisabled =
     !isServerReady || user === null || isBusy || !syncServicesInitialized;
 
