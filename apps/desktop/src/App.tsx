@@ -3,9 +3,11 @@ import { getFirestore, type Firestore } from "firebase/firestore";
 import { Auth } from "firebase/auth";
 import {
   MemoryMemoRepository,
+  createBackupPayload,
   createMemo,
   formatMemosAsCombinedText,
   updateMemoWindowState,
+  validateLocalBackupPayload,
   type Memo,
   type MemoRepository,
 } from "@h-memo/memo-core";
@@ -13,6 +15,8 @@ import { MemoWorkspace, type FirebaseConfigFormValue } from "@h-memo/memo-ui";
 import { TauriMemoRepository } from "./adapters/tauriMemoRepository";
 import {
   exportTextFile,
+  exportJsonFile,
+  importJsonFile,
   type ExportTextFileResult,
   getStartupEnabled,
   setStartupEnabled as setTauriStartupEnabled,
@@ -32,6 +36,7 @@ import {
 import {
   FirestoreBackupGateway,
   backupMemos,
+  completeGoogleRedirectSignIn,
   createFirebaseApp,
   getFirebaseAuth,
   subscribeAuthUser,
@@ -66,6 +71,8 @@ const AUTH_SUBSCRIBE_FAILED_PREFIX = "인증 상태 복구 실패:";
 const AUTH_LOGIN_FAILED_PREFIX = "구글 로그인 실패:";
 const BACKUP_FAILED_PREFIX = "백업 실패:";
 const RESTORE_FAILED_PREFIX = "복원 실패:";
+const JSON_RESTORE_CONFIRM_MESSAGE =
+  "JSON 백업 파일 내용으로 현재 메모를 대체합니다. 백업에 없는 메모는 삭제됩니다. 계속할까요?";
 const COLLAPSED_WINDOW_HEIGHT = 46;
 const MIN_EXPANDED_WINDOW_HEIGHT = 160;
 
@@ -219,6 +226,21 @@ export function App() {
         }
       });
 
+      void completeGoogleRedirectSignIn(services.auth)
+        .then((nextUser) => {
+          if (!isMounted || !nextUser) {
+            return;
+          }
+          setUser(nextUser);
+          setBackupStatus(`${nextUser.displayName || nextUser.email || "사용자"}님이 로그인했습니다.`);
+        })
+        .catch((error) => {
+          if (!isMounted) {
+            return;
+          }
+          setBackupStatus(`${AUTH_LOGIN_FAILED_PREFIX} ${getErrorMessage(error)}`);
+        });
+
       return () => {
         isMounted = false;
         unsubscribe();
@@ -259,7 +281,7 @@ export function App() {
   }, [isTauri]);
 
   const visibleMemos = useMemo(
-    () => memos.filter((memo) => memo.deletedAt === null && memo.windowState.visible),
+    () => memos.filter((memo) => memo.deletedAt === null),
     [memos]
   );
 
@@ -309,9 +331,7 @@ export function App() {
         return;
       }
 
-      const target = memosRef.current.find(
-        (memo) => memo.deletedAt === null && memo.windowState.visible
-      );
+      const target = memosRef.current.find((memo) => memo.deletedAt === null);
       if (!target) {
         return;
       }
@@ -458,16 +478,6 @@ export function App() {
     });
   };
 
-  const handleHideMemo = async (memoId: string) => {
-    const target = memos.find((memo) => memo.id === memoId);
-    if (!target) {
-      return;
-    }
-
-    const hidden = updateMemoWindowState(target, { visible: false }, new Date().toISOString());
-    await persistMemo(hidden);
-  };
-
   const handleDeleteMemo = async (memoId: string) => {
     const target = memos.find((memo) => memo.id === memoId);
     if (!target) {
@@ -498,6 +508,88 @@ export function App() {
     }
   };
 
+  const createLocalBackupJson = async () => {
+    await waitForPendingPersists();
+    const persistedMemos = await repository.listMemos();
+    const payload = createBackupPayload({
+      userId: user?.uid ?? "local",
+      memos: persistedMemos,
+      createdAt: new Date().toISOString(),
+    });
+    return JSON.stringify(payload, null, 2);
+  };
+
+  const restoreLocalBackupJson = async (contents: string) => {
+    const parsed = validateLocalBackupPayload(JSON.parse(contents));
+    if (!parsed.ok) {
+      throw new Error(parsed.reason);
+    }
+    if (!window.confirm(JSON_RESTORE_CONFIRM_MESSAGE)) {
+      setBackupStatus("JSON 복원을 취소했습니다.");
+      return;
+    }
+
+    await replaceMemosFromBackup(parsed.payload.memos);
+    setBackupStatus(`JSON 복원 완료: ${parsed.payload.memos.length}개 메모`);
+  };
+
+  const handleExportJsonBackup = async () => {
+    if (isBusy) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const contents = await createLocalBackupJson();
+      if (!isTauri) {
+        setBackupStatus("JSON 백업은 설치 앱에서 사용할 수 있습니다.");
+        return;
+      }
+
+      const result = await exportJsonFile("h-memo-backup.json", contents);
+      if (result.status === "saved") {
+        setBackupStatus(`JSON 백업 완료: ${result.path}`);
+      } else if (result.status === "cancelled") {
+        setBackupStatus("JSON 백업을 취소했습니다.");
+      } else {
+        setBackupStatus(`JSON 백업 실패: ${result.message}`);
+      }
+    } catch (error) {
+      setBackupStatus(`JSON 백업 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleImportJsonBackup = async () => {
+    if (isBusy) {
+      return;
+    }
+    if (!isTauri) {
+      setBackupStatus("JSON 복원은 설치 앱에서 사용할 수 있습니다.");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const result = await importJsonFile();
+      if (result.status === "cancelled") {
+        setBackupStatus("JSON 복원을 취소했습니다.");
+        return;
+      }
+      if (result.status === "failed") {
+        setBackupStatus(`JSON 복원 실패: ${result.message}`);
+        return;
+      }
+
+      await restoreLocalBackupJson(result.contents);
+    } catch (error) {
+      setBackupStatus(`JSON 복원 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const handleSignIn = async () => {
     if (!servicesAvailable) {
       setBackupStatus(FIREBASE_UNAVAILABLE_MESSAGE);
@@ -516,7 +608,13 @@ export function App() {
     setIsBusy(true);
     setBackupStatus("구글 로그인 중...");
     try {
-      const nextUser = await signInWithGoogle(services.auth);
+      const nextUser = await signInWithGoogle(services.auth, {
+        fallbackToRedirect: isTauri,
+      });
+      if (!nextUser) {
+        setBackupStatus("구글 로그인 화면으로 이동합니다. 완료 후 앱으로 돌아옵니다.");
+        return;
+      }
       setUser(nextUser);
       setBackupStatus(`${nextUser.displayName || nextUser.email || "사용자"}님이 로그인했습니다.`);
     } catch (error) {
@@ -770,9 +868,7 @@ export function App() {
       memos={visibleMemos}
       txtPreview={txtPreview}
       onCreateMemo={handleCreateMemo}
-      onExportText={handleGenerateTextPreview}
       onMemoChange={handleMemoChange}
-      onHideMemo={handleHideMemo}
       onDeleteMemo={handleDeleteMemo}
       onRequestWindowDrag={handleRequestWindowDrag}
       onRequestWindowResize={handleRequestWindowResize}
@@ -788,6 +884,8 @@ export function App() {
         onBackup: handleBackup,
         onRestore: handleRestore,
         onExportText: handleGenerateTextPreview,
+        onExportJsonBackup: handleExportJsonBackup,
+        onImportJsonBackup: handleImportJsonBackup,
         onToggleStartup: handleToggleStartup,
         onSignIn: handleSignIn,
         onSignOut: handleSignOut,

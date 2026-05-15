@@ -15,7 +15,7 @@ describe("StickyMemo", () => {
     });
     const onChange = vi.fn();
 
-    render(<StickyMemo memo={memo} onChange={onChange} onHide={vi.fn()} onDelete={vi.fn()} />);
+    render(<StickyMemo memo={memo} onChange={onChange} onDelete={vi.fn()} />);
 
     expect(screen.queryByLabelText("메모 제목")).not.toBeInTheDocument();
 
@@ -48,7 +48,7 @@ describe("StickyMemo", () => {
       <>
         <h4>메모 기능</h4>
         <button type="button" onClick={onGenerateText}>
-          TXT 미리보기
+          TXT 내보내기
         </button>
         <button type="button" onClick={onBackup}>
           서버 백업
@@ -71,14 +71,14 @@ describe("StickyMemo", () => {
         memo={memo}
         appMenuContent={appMenuContent}
         onChange={vi.fn()}
-        onHide={vi.fn()}
         onDelete={vi.fn()}
       />
     );
 
     expect(screen.getByRole("heading", { name: "메모 스타일" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "메모 기능" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "TXT 미리보기" }));
+    expect(screen.queryByRole("button", { name: "메모 삭제" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
     await user.click(screen.getByRole("button", { name: "서버 백업" }));
     await user.click(screen.getByRole("switch", { name: "시작프로그램 등록" }));
 
@@ -87,18 +87,16 @@ describe("StickyMemo", () => {
     expect(onToggleStartup).toHaveBeenCalledWith(true);
   });
 
-  it("requests hide and delete through icon buttons", async () => {
+  it("requests delete through the memo action button", async () => {
     const user = userEvent.setup();
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
-    const onHide = vi.fn();
     const onDelete = vi.fn();
 
-    render(<StickyMemo memo={memo} onChange={vi.fn()} onHide={onHide} onDelete={onDelete} />);
+    render(<StickyMemo memo={memo} onChange={vi.fn()} onDelete={onDelete} />);
 
-    await user.click(screen.getByRole("button", { name: "메모 숨기기" }));
+    expect(screen.queryByRole("button", { name: "메모 숨기기" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "메모 삭제" }));
 
-    expect(onHide).toHaveBeenCalledWith("memo-1");
     expect(onDelete).toHaveBeenCalledWith("memo-1");
   });
 
@@ -114,7 +112,6 @@ describe("StickyMemo", () => {
       <StickyMemo
         memo={memo}
         onChange={vi.fn()}
-        onHide={vi.fn()}
         onDelete={vi.fn()}
         onRequestWindowDrag={onRequestWindowDrag}
         onRequestWindowResize={onRequestWindowResize}
@@ -149,7 +146,6 @@ describe("StickyMemo", () => {
       <StickyMemo
         memo={memo}
         onChange={vi.fn()}
-        onHide={vi.fn()}
         onDelete={vi.fn()}
         onRequestCollapseChange={onRequestCollapseChange}
       />
@@ -175,7 +171,6 @@ describe("StickyMemo", () => {
         <StickyMemo
           memo={createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" })}
           onChange={onChange}
-          onHide={vi.fn()}
           onDelete={vi.fn()}
         />
       </StrictMode>

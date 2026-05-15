@@ -105,6 +105,52 @@ async fn export_text_file(
   Ok(Some(file_system_path.to_string_lossy().to_string()))
 }
 
+#[tauri::command]
+async fn export_json_file(
+  app: AppHandle,
+  file_name: String,
+  contents: String,
+) -> Result<Option<String>, String> {
+  let selected = app
+    .dialog()
+    .file()
+    .add_filter("JSON 파일", &["json"])
+    .set_file_name(&file_name)
+    .blocking_save_file();
+
+  let file_path = match selected {
+    Some(path) => path,
+    None => return Ok(None),
+  };
+
+  let file_system_path = file_path
+    .into_path()
+    .map_err(|error| format!("선택한 경로는 로컬 파일 경로로 해석할 수 없습니다: {error}"))?;
+
+  fs::write(&file_system_path, contents).map_err(|error| error.to_string())?;
+  Ok(Some(file_system_path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+async fn import_json_file(app: AppHandle) -> Result<Option<String>, String> {
+  let selected = app
+    .dialog()
+    .file()
+    .add_filter("JSON 파일", &["json"])
+    .blocking_pick_file();
+
+  let file_path = match selected {
+    Some(path) => path,
+    None => return Ok(None),
+  };
+
+  let file_system_path = file_path
+    .into_path()
+    .map_err(|error| format!("선택한 경로는 로컬 파일 경로로 해석할 수 없습니다: {error}"))?;
+
+  fs::read_to_string(&file_system_path).map(Some).map_err(|error| error.to_string())
+}
+
 fn show_main_window_inner(app: &AppHandle) -> Result<(), String> {
   let window = app
     .get_webview_window(WINDOW_LABEL)
@@ -287,7 +333,9 @@ pub fn run() {
       save_memo,
       show_main_window,
       quit_app,
-      export_text_file
+      export_text_file,
+      export_json_file,
+      import_json_file
     ])
     .run(tauri::generate_context!())
     .expect("failed to run H Memo");

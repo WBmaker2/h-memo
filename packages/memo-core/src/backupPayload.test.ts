@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createMemo } from "./memoFactory";
-import { createBackupPayload, validateBackupPayload } from "./backupPayload";
+import {
+  createBackupPayload,
+  validateBackupPayload,
+  validateLocalBackupPayload,
+} from "./backupPayload";
 
 describe("backupPayload", () => {
   it("creates a versioned backup payload", () => {
@@ -26,6 +30,19 @@ describe("backupPayload", () => {
     expect(validateBackupPayload(payload, "user-2")).toEqual({
       ok: false,
       reason: "다른 사용자의 백업 데이터입니다.",
+    });
+  });
+
+  it("accepts local JSON backups without checking the current user id", () => {
+    const payload = createBackupPayload({
+      userId: "someone-else",
+      memos: [createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" })],
+      createdAt: "2026-05-13T09:05:00.000Z",
+    });
+
+    expect(validateLocalBackupPayload(payload)).toEqual({
+      ok: true,
+      payload,
     });
   });
 

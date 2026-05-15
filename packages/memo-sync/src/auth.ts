@@ -1,9 +1,11 @@
 import type { FirebaseApp } from "firebase/app";
 import {
   getAuth,
+  getRedirectResult,
   onAuthStateChanged,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   type Auth,
   type Unsubscribe,
@@ -30,10 +32,41 @@ export function getFirebaseAuth(app: FirebaseApp): Auth {
   return getAuth(app);
 }
 
-export async function signInWithGoogle(auth: Auth): Promise<HMemoUser> {
+function shouldFallbackToRedirect(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const code = "code" in error ? String((error as { code?: unknown }).code) : "";
+  return (
+    code === "auth/popup-blocked" ||
+    code === "auth/operation-not-supported-in-this-environment"
+  );
+}
+
+export async function signInWithGoogle(
+  auth: Auth,
+  options: { fallbackToRedirect?: boolean } = {}
+): Promise<HMemoUser | null> {
   const provider = new GoogleAuthProvider();
-  const result = await signInWithPopup(auth, provider);
-  return toHMemoUser(result.user);
+  try {
+    const result = await signInWithPopup(auth, provider);
+    return toHMemoUser(result.user);
+  } catch (error) {
+    if (!options.fallbackToRedirect || !shouldFallbackToRedirect(error)) {
+      throw error;
+    }
+
+    await signInWithRedirect(auth, provider);
+    return null;
+  }
+}
+
+export async function completeGoogleRedirectSignIn(
+  auth: Auth
+): Promise<HMemoUser | null> {
+  const result = await getRedirectResult(auth);
+  return result ? toHMemoUser(result.user) : null;
 }
 
 export async function signOutUser(auth: Auth): Promise<void> {

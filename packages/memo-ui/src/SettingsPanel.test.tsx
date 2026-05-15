@@ -10,6 +10,8 @@ describe("SettingsPanel", () => {
     const onBackup = vi.fn();
     const onRestore = vi.fn();
     const onExportText = vi.fn();
+    const onExportJsonBackup = vi.fn();
+    const onImportJsonBackup = vi.fn();
     const onToggleStartup = vi.fn();
 
     render(
@@ -20,6 +22,8 @@ describe("SettingsPanel", () => {
         onBackup={onBackup}
         onRestore={onRestore}
         onExportText={onExportText}
+        onExportJsonBackup={onExportJsonBackup}
+        onImportJsonBackup={onImportJsonBackup}
         onToggleStartup={onToggleStartup}
         onSignIn={vi.fn()}
         onSignOut={vi.fn()}
@@ -29,6 +33,8 @@ describe("SettingsPanel", () => {
     await user.click(screen.getByRole("button", { name: "서버 백업" }));
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
     await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
+    await user.click(screen.getByRole("button", { name: "JSON 백업" }));
+    await user.click(screen.getByRole("button", { name: "JSON 복원" }));
     await user.click(screen.getByRole("switch", { name: "시작프로그램 등록" }));
 
     expect(screen.getByText("홍길동")).toBeInTheDocument();
@@ -39,6 +45,8 @@ describe("SettingsPanel", () => {
     expect(onBackup).toHaveBeenCalled();
     expect(onRestore).toHaveBeenCalled();
     expect(onExportText).toHaveBeenCalled();
+    expect(onExportJsonBackup).toHaveBeenCalled();
+    expect(onImportJsonBackup).toHaveBeenCalled();
     expect(onToggleStartup).toHaveBeenCalledWith(true);
   });
 
@@ -60,7 +68,7 @@ describe("SettingsPanel", () => {
       />
     );
 
-    expect(screen.getByText("구글 로그인 필요")).toBeInTheDocument();
+    expect(screen.getByText("구글 로그인(선택)")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "구글 로그인" }));
     expect(onSignIn).toHaveBeenCalled();
     expect(screen.getByRole("switch", { name: "시작프로그램 등록" })).toBeChecked();

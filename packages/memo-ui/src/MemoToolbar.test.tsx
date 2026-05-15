@@ -18,7 +18,6 @@ describe("MemoToolbar", () => {
       <MemoToolbar
         style={defaultStyle}
         onStyleChange={vi.fn()}
-        onHide={vi.fn()}
         onDelete={vi.fn()}
       />
     );
@@ -53,7 +52,6 @@ describe("MemoToolbar", () => {
       <MemoToolbar
         style={defaultStyle}
         onStyleChange={onStyleChange}
-        onHide={vi.fn()}
         onDelete={vi.fn()}
       />
     );
@@ -65,7 +63,6 @@ describe("MemoToolbar", () => {
       <MemoToolbar
         style={{ ...defaultStyle, backgroundColor: "#ffffff", textColor: "#b91c1c" }}
         onStyleChange={onStyleChange}
-        onHide={vi.fn()}
         onDelete={vi.fn()}
       />
     );
@@ -78,5 +75,19 @@ describe("MemoToolbar", () => {
       "aria-pressed",
       "true"
     );
+  });
+
+  it("can hide the delete action when memo management already owns deletion", () => {
+    render(
+      <MemoToolbar
+        style={defaultStyle}
+        onStyleChange={vi.fn()}
+        onDelete={vi.fn()}
+        showDeleteAction={false}
+      />
+    );
+
+    expect(screen.queryByRole("heading", { name: "메모 동작" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "메모 삭제" })).not.toBeInTheDocument();
   });
 });

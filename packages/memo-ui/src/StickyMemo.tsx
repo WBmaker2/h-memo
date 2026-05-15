@@ -18,7 +18,6 @@ type StickyMemoProps = {
   memo: Memo;
   appMenuContent?: ReactNode;
   onChange: (memo: Memo) => void;
-  onHide: (memoId: string) => void;
   onDelete: (memoId: string) => void;
   onRequestWindowDrag?: () => void;
   onRequestWindowResize?: (direction: "SouthEast") => void;
@@ -32,7 +31,6 @@ export function StickyMemo({
   memo,
   appMenuContent,
   onChange,
-  onHide,
   onDelete,
   onRequestWindowDrag,
   onRequestWindowResize,
@@ -145,8 +143,8 @@ export function StickyMemo({
               <MemoToolbar
                 style={editingMemo.style}
                 onStyleChange={handleStyleChange}
-                onHide={() => onHide(editingMemo.id)}
                 onDelete={() => onDelete(editingMemo.id)}
+                showDeleteAction={!appMenuContent}
               />
             </section>
             {appMenuContent ? (
