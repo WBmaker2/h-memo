@@ -1,6 +1,6 @@
 # GitHub Release 자동화 가이드 (Windows)
 
-`windows-tauri.yml` 워크플로우는 기존처럼 PR/브랜치 빌드에서는 MSI/NSIS 아티팩트를 업로드하고, 태그 기반 또는 수동 실행 시 GitHub Release까지 자동 업로드합니다. 일반 빌드 job은 `contents: read` 권한만 사용하고, 릴리스 업로드 job에서만 `contents: write` 권한을 사용합니다.
+`windows-tauri.yml` 워크플로우는 PR/브랜치 빌드에서는 MSI/NSIS 아티팩트를 업로드하고, 태그 기반 또는 수동 실행 시 GitHub Release까지 자동 업로드합니다. Azure Artifact Signing 구성이 준비된 빌드에서는 업로드 전에 Windows 설치 파일(`*.msi`, NSIS `*.exe`)을 서명합니다. 릴리스 빌드에서 서명 구성이 빠져 있으면 워크플로가 실패하도록 막아 둡니다.
 
 ## 1) 태그 기반 릴리스
 
@@ -27,11 +27,15 @@
   - `workflow_dispatch` 입력 `release_tag`에서도 릴리스 업로드 수행
   - 일반 `main` push / `pull_request`에서는 GitHub Release 업로드 job을 건너뜀
 - 권한:
-  - 빌드/테스트/아티팩트 업로드 job: `contents: read`
+  - 빌드/테스트/아티팩트 업로드 job: `contents: read`, Azure OIDC 로그인을 위한 `id-token: write`
   - GitHub Release 업로드 job: `contents: write`
 - 아티팩트:
   - `apps/desktop/src-tauri/target/release/bundle/msi/*.msi`
   - `apps/desktop/src-tauri/target/release/bundle/nsis/*.exe`
+- Azure Artifact Signing:
+  - `pull_request`: 항상 건너뜀
+  - 일반 `main` push: 구성이 있으면 서명, 없으면 경고 후 unsigned artifact 업로드
+  - 태그/수동 릴리스: 구성이 없으면 실패
 
 ## 4) 버전 동기화 및 릴리스 태그
 
@@ -69,8 +73,37 @@ git push origin v0.2.0
 - `app.windows[0].title`: `H Memo`
 - `identifier`: `com.hmemo.desktop`
 
-Windows 코드 서명은 현재 미적용 상태이므로, 추후 배포 하드닝 항목으로 `codesign` 인증서 연동과 서명된 설치 파일 배포를 추가하는 것이 권장됩니다.
+## 5) Azure Artifact Signing 설정
 
-## 5) 참고
+GitHub Actions에서 Azure Artifact Signing을 사용하려면 Azure 쪽 준비와 GitHub repository secrets/variables 설정이 모두 필요합니다.
+
+Azure 준비:
+
+- Artifact Signing account
+- Certificate profile
+- GitHub Actions OIDC federated credential이 연결된 Microsoft Entra app registration 또는 service principal
+- 해당 identity에 `Artifact Signing Certificate Profile Signer` 역할 부여
+
+GitHub Actions 값:
+
+| 이름 | 권장 위치 | 설명 |
+| --- | --- | --- |
+| `AZURE_CLIENT_ID` | secret 또는 variable | Azure login에 사용할 app registration/client ID |
+| `AZURE_TENANT_ID` | secret 또는 variable | Microsoft Entra tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | secret 또는 variable | Azure subscription ID |
+| `AZURE_ARTIFACT_SIGNING_ENDPOINT` | variable | 예: `https://krc.codesigning.azure.net/` |
+| `AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME` | variable | Artifact Signing account 이름 |
+| `AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME` | variable | Certificate profile 이름 |
+
+서명은 `Build Windows installer (MSI + NSIS)` 이후, `Upload MSI artifact` / `Upload NSIS installer artifact` 이전에 실행됩니다. 따라서 GitHub Release에 올라가는 설치 파일은 서명된 파일이어야 합니다.
+
+서명 여부 확인 예:
+
+```powershell
+Get-AuthenticodeSignature ".\H Memo_0.1.0_x64-setup.exe"
+Get-AuthenticodeSignature ".\H Memo_0.1.0_x64_en-US.msi"
+```
+
+## 6) 참고
 
 - 이 워크플로는 `gh` CLI로 release upload를 처리합니다. 별도 써드파티 릴리스 액션은 사용하지 않습니다.
