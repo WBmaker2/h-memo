@@ -14,7 +14,7 @@
 npm ci
 ```
 
-운영 배포판에는 H Memo용 Firebase Web Client 설정이 내장되어 있어 별도 `.env` 없이 구글 로그인/서버 백업 버튼이 활성화됩니다.
+운영 배포판에는 H Memo용 Firebase Web Client 설정이 내장되어 있어 별도 `.env` 없이 구글 로그인/서버 백업 버튼이 활성화됩니다. Windows 데스크톱 로그인은 WebView 팝업이 아니라 시스템 기본 브라우저와 로컬 loopback으로 완료됩니다.
 다른 Firebase 프로젝트로 테스트해야 할 때만 `.env.example`를 참고해 Vite 환경 변수를 지정하세요.
 
 ## 3) Windows 패키지 빌드

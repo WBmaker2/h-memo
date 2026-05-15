@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  GoogleAuthProvider,
   getRedirectResult,
   onAuthStateChanged,
   signInWithCredential,
@@ -134,6 +135,22 @@ describe("signInWithGoogle", () => {
     expect(signInWithCredential).toHaveBeenCalledTimes(1);
     expect(signInWithPopup).not.toHaveBeenCalled();
     expect(signInWithRedirect).not.toHaveBeenCalled();
+  });
+
+  it("passes no access token when desktop OAuth only returns an ID token", async () => {
+    const fakeUser = createFakeUser({ uid: "desktop-id-token-user" });
+    const credentialSpy = vi.spyOn(GoogleAuthProvider, "credential");
+    const desktopOAuth = vi.fn().mockResolvedValue({
+      idToken: "google-id-token",
+      accessToken: "",
+    });
+    vi.mocked(signInWithCredential).mockResolvedValue({ user: fakeUser } as never);
+
+    await expect(signInWithGoogle({} as any, { desktopOAuth })).resolves.toEqual(
+      toHMemoUser(fakeUser)
+    );
+
+    expect(credentialSpy).toHaveBeenCalledWith("google-id-token", undefined);
   });
 
   it("falls back to redirect when Tauri blocks the popup", async () => {

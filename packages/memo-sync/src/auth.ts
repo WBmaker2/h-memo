@@ -63,7 +63,10 @@ export async function signInWithGoogle(
 
   if (options.desktopOAuth) {
     const tokens = await options.desktopOAuth();
-    const credential = GoogleAuthProvider.credential(tokens.idToken, tokens.accessToken);
+    const credential = GoogleAuthProvider.credential(
+      tokens.idToken,
+      tokens.accessToken || undefined
+    );
     const result = await signInWithCredential(auth, credential);
     return toHMemoUser(result.user);
   }

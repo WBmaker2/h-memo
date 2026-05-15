@@ -42,6 +42,7 @@ const {
   mockNotifyMemoStoreChanged,
   mockNotifyAuthStateChanged,
   mockStartGoogleDesktopOAuth,
+  mockStartFirebaseGoogleDesktopAuth,
   tauriRepositoryState,
   tauriWindowState,
   tauriEventState,
@@ -72,6 +73,7 @@ const {
   const mockNotifyMemoStoreChanged = vi.fn();
   const mockNotifyAuthStateChanged = vi.fn();
   const mockStartGoogleDesktopOAuth = vi.fn();
+  const mockStartFirebaseGoogleDesktopAuth = vi.fn();
   const tauriEventState: {
     memoStoreListener: ((payload: { memoId?: string; deletedMemoId?: string }) => void) | null;
     authStateListener:
@@ -208,6 +210,7 @@ const {
     mockNotifyMemoStoreChanged,
     mockNotifyAuthStateChanged,
     mockStartGoogleDesktopOAuth,
+    mockStartFirebaseGoogleDesktopAuth,
     tauriRepositoryState,
     tauriWindowState,
     tauriEventState,
@@ -332,6 +335,7 @@ vi.mock("./adapters/tauriEvents", () => ({
 
 vi.mock("./adapters/tauriGoogleOAuth", () => ({
   startGoogleDesktopOAuth: (clientId: string) => mockStartGoogleDesktopOAuth(clientId),
+  startFirebaseGoogleDesktopAuth: (apiKey: string) => mockStartFirebaseGoogleDesktopAuth(apiKey),
 }));
 
 import { App } from "./App";
@@ -418,6 +422,7 @@ beforeEach(() => {
   mockNotifyMemoStoreChanged.mockReset();
   mockNotifyAuthStateChanged.mockReset();
   mockStartGoogleDesktopOAuth.mockReset();
+  mockStartFirebaseGoogleDesktopAuth.mockReset();
   tauriWindowState.bounds = { x: 20, y: 30, width: 380, height: 420 };
   tauriWindowState.boundsListener = null;
   tauriWindowState.unlisten.mockReset();
@@ -1225,6 +1230,50 @@ describe("desktop App", () => {
         "desktop-client.apps.googleusercontent.com"
       );
       expect(screen.getByLabelText("구글 로그인됨: 데스크톱 사용자")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
+    });
+  });
+
+  it("uses Firebase Auth URI desktop login when no explicit Google OAuth client ID is bundled", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+      googleOAuthClientId: "",
+    });
+
+    mockStartFirebaseGoogleDesktopAuth.mockResolvedValue({
+      idToken: "firebase-auth-uri-id-token",
+      accessToken: "",
+    });
+    mockSignInWithGoogle.mockImplementation(async (_auth: unknown, options: any) => {
+      expect(options.fallbackToRedirect).toBe(false);
+      expect(await options.desktopOAuth()).toEqual({
+        idToken: "firebase-auth-uri-id-token",
+        accessToken: "",
+      });
+      return {
+        uid: "firebase-desktop-user",
+        displayName: "파이어베이스 사용자",
+        email: "firebase-desktop@example.com",
+        photoURL: "",
+      };
+    });
+
+    render(<App />);
+    await createMemoFromAppMenu(user);
+
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
+
+    await waitFor(() => {
+      expect(mockStartFirebaseGoogleDesktopAuth).toHaveBeenCalledWith("api-key");
+      expect(mockStartGoogleDesktopOAuth).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("구글 로그인됨: 파이어베이스 사용자")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
       expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
     });

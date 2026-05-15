@@ -39,7 +39,10 @@ import {
   notifyMemoStoreChanged,
   type MemoStoreChangedPayload,
 } from "./adapters/tauriEvents";
-import { startGoogleDesktopOAuth } from "./adapters/tauriGoogleOAuth";
+import {
+  startFirebaseGoogleDesktopAuth,
+  startGoogleDesktopOAuth,
+} from "./adapters/tauriGoogleOAuth";
 import {
   FirestoreBackupGateway,
   backupMemos,
@@ -155,6 +158,7 @@ export function App() {
     () => toFirebaseClientConfigInput(firebaseClientEnv),
     [firebaseClientEnv]
   );
+  const firebaseApiKey = firebaseClientEnv.apiKey?.trim() ?? "";
   const googleOAuthClientId = firebaseClientEnv.googleOAuthClientId?.trim() ?? "";
   const hasFirebaseConfigSet = useMemo(() => hasFirebaseConfig(firebaseClientEnv), [firebaseClientEnv]);
   const [backupStatus, setBackupStatus] = useState<BackupMessage>(
@@ -914,13 +918,15 @@ export function App() {
     setIsBusy(true);
     setBackupStatus("구글 로그인 중...");
     try {
-      const desktopOAuth =
-        isTauri && googleOAuthClientId
-          ? (): Promise<GoogleOAuthTokens> => startGoogleDesktopOAuth(googleOAuthClientId)
-          : undefined;
+      const desktopOAuth = isTauri
+        ? (): Promise<GoogleOAuthTokens> =>
+            googleOAuthClientId
+              ? startGoogleDesktopOAuth(googleOAuthClientId)
+              : startFirebaseGoogleDesktopAuth(firebaseApiKey)
+        : undefined;
       const nextUser = await signInWithGoogle(services.auth, {
         desktopOAuth,
-        fallbackToRedirect: isTauri && !desktopOAuth,
+        fallbackToRedirect: false,
       });
       if (!nextUser) {
         setBackupStatus("구글 로그인 완료를 확인하는 중입니다...");
