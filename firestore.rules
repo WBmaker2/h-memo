@@ -30,10 +30,19 @@ service cloud.firestore {
         );
     }
 
+    function onlyReducesSnapshotMemos() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(["memos"])
+        && request.resource.data.memos is list
+        && request.resource.data.memos.size() <= resource.data.memos.size();
+    }
+
     match /users/{uid}/backupSnapshots/{snapshotId} {
       allow read: if isOwner(uid);
       allow create: if isOwner(uid) && hasValidBackupSnapshotShape(uid);
-      allow update, delete: if false;
+      allow update: if isOwner(uid)
+        && hasValidBackupSnapshotShape(uid)
+        && onlyReducesSnapshotMemos();
+      allow delete: if false;
     }
   }
 }

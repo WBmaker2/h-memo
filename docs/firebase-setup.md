@@ -103,16 +103,25 @@ service cloud.firestore {
         );
     }
 
+    function onlyReducesSnapshotMemos() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(["memos"])
+        && request.resource.data.memos is list
+        && request.resource.data.memos.size() <= resource.data.memos.size();
+    }
+
     match /users/{uid}/backupSnapshots/{snapshotId} {
       allow read: if isOwner(uid);
       allow create: if isOwner(uid) && hasValidBackupSnapshotShape(uid);
-      allow update, delete: if false;
+      allow update: if isOwner(uid)
+        && hasValidBackupSnapshotShape(uid)
+        && onlyReducesSnapshotMemos();
+      allow delete: if false;
     }
   }
 }
 ```
 
-현재 앱은 백업 스냅샷을 새 문서로 추가하고 최신 문서를 읽기만 하므로 update/delete는 허용하지 않습니다. 실서비스에서 백업 정리 기능을 추가할 때만 별도 검증 규칙과 함께 delete 범위를 다시 설계합니다.
+현재 앱은 백업 스냅샷을 새 문서로 추가하고, `서버 메모 관리`에서 특정 메모를 삭제할 때만 기존 스냅샷의 `memos` 배열을 줄입니다. 문서 자체 삭제는 허용하지 않습니다.
 
 ### 규칙 적용
 

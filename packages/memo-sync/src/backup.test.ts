@@ -186,4 +186,25 @@ describe("memo-sync backup", () => {
     expect(updatedCount).toBe(2);
     expect(backedUpMemos.map((item) => item.memo.id)).toEqual(["memo-keep"]);
   });
+
+  it("내용이 비어 있고 로컬 삭제 기록이 있는 서버 메모도 id 기준으로 제거한다", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const blankDeletedMemo = {
+      ...createMemo({
+        id: "memo-blank",
+        now: "2026-05-13T09:00:00.000Z",
+        plainText: "",
+      }),
+      deletedAt: "2026-05-13T09:05:00.000Z",
+    };
+
+    await backupMemos(gateway, userId, [blankDeletedMemo], "2026-05-13T09:06:00.000Z");
+
+    const updatedCount = await deleteBackedUpMemo(gateway, userId, "memo-blank");
+    const backedUpMemos = await listBackedUpMemos(gateway, userId);
+
+    expect(updatedCount).toBe(1);
+    expect(backedUpMemos).toEqual([]);
+  });
 });
