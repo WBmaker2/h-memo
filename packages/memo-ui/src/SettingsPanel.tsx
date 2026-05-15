@@ -8,6 +8,7 @@ export type FirebaseConfigFormValue = {
   storageBucket: string;
   messagingSenderId: string;
   measurementId: string;
+  googleOAuthClientId: string;
 };
 
 export type SettingsPanelProps = {
@@ -41,6 +42,7 @@ const EMPTY_FIREBASE_CONFIG: FirebaseConfigFormValue = {
   storageBucket: "",
   messagingSenderId: "",
   measurementId: "",
+  googleOAuthClientId: "",
 };
 
 export function SettingsPanel({
@@ -169,6 +171,14 @@ export function SettingsPanel({
               <input
                 value={firebaseForm.measurementId}
                 onChange={handleFirebaseConfigChange("measurementId")}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              Google OAuth Client ID
+              <input
+                value={firebaseForm.googleOAuthClientId}
+                onChange={handleFirebaseConfigChange("googleOAuthClientId")}
                 autoComplete="off"
               />
             </label>

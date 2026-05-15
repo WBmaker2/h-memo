@@ -182,7 +182,47 @@ body {
 .sticky-memo__window-controls {
   display: flex;
   align-items: center;
+  gap: 2px;
   height: 100%;
+}
+
+.sticky-memo__auth-status {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.42);
+  color: rgba(15, 23, 42, 0.66);
+  font: 700 13px/1 "Segoe UI", sans-serif;
+}
+
+.sticky-memo__auth-status::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  transform: translate(9px, 9px);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  background: #9ca3af;
+}
+
+.sticky-memo__auth-status--signed-in::after {
+  background: #16a34a;
+}
+
+.sticky-memo__auth-status--unavailable::after {
+  background: #f59e0b;
+}
+
+.sticky-memo__auth-status img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
 }
 
 .sticky-memo__window-controls button {

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getRedirectResult,
   onAuthStateChanged,
+  signInWithCredential,
   signInWithPopup,
   signInWithRedirect,
   type NextOrObserver,
@@ -44,6 +45,7 @@ vi.mock("firebase/auth", async (importOriginal) => {
       return unsubscribe;
     }),
     signInWithPopup: vi.fn(),
+    signInWithCredential: vi.fn(),
     signInWithRedirect: vi.fn(),
   };
 });
@@ -113,6 +115,24 @@ describe("signInWithGoogle", () => {
     await expect(signInWithGoogle({} as any)).resolves.toEqual(toHMemoUser(fakeUser));
 
     expect(signInWithPopup).toHaveBeenCalledTimes(1);
+    expect(signInWithRedirect).not.toHaveBeenCalled();
+  });
+
+  it("uses desktop OAuth tokens when provided", async () => {
+    const fakeUser = createFakeUser({ uid: "desktop-user" });
+    const desktopOAuth = vi.fn().mockResolvedValue({
+      idToken: "google-id-token",
+      accessToken: "google-access-token",
+    });
+    vi.mocked(signInWithCredential).mockResolvedValue({ user: fakeUser } as never);
+
+    await expect(signInWithGoogle({} as any, { desktopOAuth })).resolves.toEqual(
+      toHMemoUser(fakeUser)
+    );
+
+    expect(desktopOAuth).toHaveBeenCalledTimes(1);
+    expect(signInWithCredential).toHaveBeenCalledTimes(1);
+    expect(signInWithPopup).not.toHaveBeenCalled();
     expect(signInWithRedirect).not.toHaveBeenCalled();
   });
 

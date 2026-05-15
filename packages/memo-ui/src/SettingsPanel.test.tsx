@@ -92,6 +92,7 @@ describe("SettingsPanel", () => {
           storageBucket: "",
           messagingSenderId: "",
           measurementId: "",
+          googleOAuthClientId: "",
         }}
         onBackup={vi.fn()}
         onRestore={vi.fn()}

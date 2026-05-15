@@ -10,6 +10,7 @@ export type FirebaseClientConfigInput = {
   storageBucket?: string;
   messagingSenderId?: string;
   measurementId?: string;
+  googleOAuthClientId?: string;
 };
 
 const FIREBASE_CLIENT_CONFIG_KEYS = [
@@ -20,6 +21,7 @@ const FIREBASE_CLIENT_CONFIG_KEYS = [
   "storageBucket",
   "messagingSenderId",
   "measurementId",
+  "googleOAuthClientId",
 ] as const;
 
 type FirebaseClientConfigKey = (typeof FIREBASE_CLIENT_CONFIG_KEYS)[number];
@@ -75,6 +77,7 @@ export function toFirebaseClientConfigInput(
       storageBucket: "",
       messagingSenderId: "",
       measurementId: "",
+      googleOAuthClientId: "",
     }
   );
 }

@@ -21,6 +21,7 @@ export function getFirebaseClientEnv(): Partial<FirebaseClientEnv> {
     storageBucket: trim(viteEnv.VITE_FIREBASE_STORAGE_BUCKET),
     messagingSenderId: trim(viteEnv.VITE_FIREBASE_MESSAGING_SENDER_ID),
     measurementId: trim(viteEnv.VITE_FIREBASE_MEASUREMENT_ID),
+    googleOAuthClientId: trim(viteEnv.VITE_GOOGLE_OAUTH_CLIENT_ID),
   };
 
   return mergeFirebaseClientConfig(getDefaultFirebaseClientEnv(), viteFirebaseClientEnv);

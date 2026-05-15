@@ -41,6 +41,7 @@ const {
   mockListenWindowBoundsChanged,
   mockNotifyMemoStoreChanged,
   mockNotifyAuthStateChanged,
+  mockStartGoogleDesktopOAuth,
   tauriRepositoryState,
   tauriWindowState,
   tauriEventState,
@@ -70,6 +71,7 @@ const {
   const mockListenWindowBoundsChanged = vi.fn();
   const mockNotifyMemoStoreChanged = vi.fn();
   const mockNotifyAuthStateChanged = vi.fn();
+  const mockStartGoogleDesktopOAuth = vi.fn();
   const tauriEventState: {
     memoStoreListener: ((payload: { memoId?: string; deletedMemoId?: string }) => void) | null;
     authStateListener:
@@ -117,6 +119,7 @@ const {
     storageBucket: "",
     messagingSenderId: "",
     measurementId: "",
+    googleOAuthClientId: "",
   }));
 
   const tauriRepositoryState = new Map<string, any>();
@@ -204,6 +207,7 @@ const {
     mockListenWindowBoundsChanged,
     mockNotifyMemoStoreChanged,
     mockNotifyAuthStateChanged,
+    mockStartGoogleDesktopOAuth,
     tauriRepositoryState,
     tauriWindowState,
     tauriEventState,
@@ -219,6 +223,7 @@ function setMockFirebaseClientEnv(value: {
   storageBucket?: string;
   messagingSenderId?: string;
   measurementId?: string;
+  googleOAuthClientId?: string;
 }) {
   mockGetFirebaseClientEnv.mockReturnValue({
     apiKey: value.apiKey,
@@ -228,6 +233,7 @@ function setMockFirebaseClientEnv(value: {
     storageBucket: value.storageBucket ?? "",
     messagingSenderId: value.messagingSenderId ?? "",
     measurementId: value.measurementId ?? "",
+    googleOAuthClientId: value.googleOAuthClientId ?? "",
   });
 }
 
@@ -324,6 +330,10 @@ vi.mock("./adapters/tauriEvents", () => ({
   },
 }));
 
+vi.mock("./adapters/tauriGoogleOAuth", () => ({
+  startGoogleDesktopOAuth: (clientId: string) => mockStartGoogleDesktopOAuth(clientId),
+}));
+
 import { App } from "./App";
 
 type TestWindow = Window & {
@@ -407,6 +417,7 @@ beforeEach(() => {
   mockListenWindowBoundsChanged.mockReset();
   mockNotifyMemoStoreChanged.mockReset();
   mockNotifyAuthStateChanged.mockReset();
+  mockStartGoogleDesktopOAuth.mockReset();
   tauriWindowState.bounds = { x: 20, y: 30, width: 380, height: 420 };
   tauriWindowState.boundsListener = null;
   tauriWindowState.unlisten.mockReset();
@@ -1169,6 +1180,53 @@ describe("desktop App", () => {
       expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
       expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
       expect(screen.getByRole("status")).toHaveTextContent("리다이렉트 사용자님이 로그인했습니다.");
+    });
+  });
+
+  it("uses desktop browser OAuth and shows the Google login state in the titlebar", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+      googleOAuthClientId: "desktop-client.apps.googleusercontent.com",
+    });
+
+    mockStartGoogleDesktopOAuth.mockResolvedValue({
+      idToken: "google-id-token",
+      accessToken: "google-access-token",
+    });
+    mockSignInWithGoogle.mockImplementation(async (_auth: unknown, options: any) => {
+      expect(options.fallbackToRedirect).toBe(false);
+      expect(await options.desktopOAuth()).toEqual({
+        idToken: "google-id-token",
+        accessToken: "google-access-token",
+      });
+      return {
+        uid: "desktop-user",
+        displayName: "데스크톱 사용자",
+        email: "desktop@example.com",
+        photoURL: "",
+      };
+    });
+
+    render(<App />);
+    await createMemoFromAppMenu(user);
+
+    expect(screen.getByLabelText("구글 로그인 안 됨")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
+
+    await waitFor(() => {
+      expect(mockStartGoogleDesktopOAuth).toHaveBeenCalledWith(
+        "desktop-client.apps.googleusercontent.com"
+      );
+      expect(screen.getByLabelText("구글 로그인됨: 데스크톱 사용자")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
     });
   });
 

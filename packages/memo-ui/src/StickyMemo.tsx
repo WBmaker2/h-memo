@@ -17,6 +17,11 @@ import { MemoToolbar } from "./MemoToolbar";
 type StickyMemoProps = {
   memo: Memo;
   appMenuContent?: ReactNode;
+  authStatus?: {
+    state: "signed-in" | "signed-out" | "unavailable";
+    label: string;
+    photoUrl?: string;
+  };
   onChange: (memo: Memo) => void;
   onDelete: (memoId: string) => void;
   onRequestWindowDrag?: () => void;
@@ -28,6 +33,7 @@ type StickyMemoProps = {
 export function StickyMemo({
   memo,
   appMenuContent,
+  authStatus,
   onChange,
   onDelete,
   onRequestWindowDrag,
@@ -153,6 +159,31 @@ export function StickyMemo({
         </div>
         {shouldShowWindowControls ? (
           <div className="sticky-memo__window-controls" data-no-window-drag="true">
+            {authStatus ? (
+              <div
+                className={`sticky-memo__auth-status sticky-memo__auth-status--${authStatus.state}`}
+                aria-label={
+                  authStatus.state === "signed-in"
+                    ? `구글 로그인됨: ${authStatus.label}`
+                    : authStatus.state === "unavailable"
+                      ? "구글 로그인 설정 필요"
+                      : "구글 로그인 안 됨"
+                }
+                title={
+                  authStatus.state === "signed-in"
+                    ? `구글 로그인됨: ${authStatus.label}`
+                    : authStatus.state === "unavailable"
+                      ? "구글 로그인 설정 필요"
+                      : "구글 로그인 안 됨"
+                }
+              >
+                {authStatus.photoUrl ? (
+                  <img src={authStatus.photoUrl} alt="" aria-hidden="true" />
+                ) : (
+                  <span aria-hidden="true">G</span>
+                )}
+              </div>
+            ) : null}
             <button
               type="button"
               aria-label="종료"

@@ -9,6 +9,11 @@ type MemoWorkspaceShellProps = {
   memos: Memo[];
   managedMemos?: Memo[];
   actions?: ReactNode;
+  authStatus?: {
+    state: "signed-in" | "signed-out" | "unavailable";
+    label: string;
+    photoUrl?: string;
+  };
   onCreateMemo: () => void;
   onOpenMemo?: (memoId: string) => void;
   onMemoChange: (memo: Memo) => void;
@@ -35,6 +40,7 @@ export function MemoWorkspace({
   onRequestCollapseChange,
   settingsProps,
   actions,
+  authStatus,
 }: MemoWorkspaceShellProps) {
   const hasMemos = memos.length > 0;
   const menuMemos = managedMemos ?? memos;
@@ -131,6 +137,7 @@ export function MemoWorkspace({
               key={memo.id}
               memo={memo}
               appMenuContent={index === 0 ? appMenuContent : undefined}
+              authStatus={authStatus}
               onChange={onMemoChange}
               onDelete={onDeleteMemo}
               onRequestWindowDrag={onRequestWindowDrag}

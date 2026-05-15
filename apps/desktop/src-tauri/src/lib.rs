@@ -1,25 +1,37 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result as AnyhowResult};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::Utc;
+use rand::RngCore;
 use rusqlite::{
   types::Type,
   params, Connection, Row,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::{
   menu::{Menu, MenuItem},
   tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
   AppHandle, Manager,
 };
 use tauri_plugin_dialog::DialogExt;
+use url::{form_urlencoded, Url};
 
 const WINDOW_LABEL: &str = "main";
 const SHOW_MEMO_LABEL: &str = "show_memo";
 const NEW_MEMO_LABEL: &str = "new_memo";
 const QUIT_LABEL: &str = "quit";
+const GOOGLE_OAUTH_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const GOOGLE_OAUTH_SCOPE: &str = "openid email profile";
+const GOOGLE_OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +46,24 @@ struct MemoRecord {
   updated_at: String,
   deleted_at: Option<String>,
   sync_state: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleOAuthTokens {
+  id_token: String,
+  access_token: String,
+  expires_in: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleTokenResponse {
+  id_token: Option<String>,
+  access_token: Option<String>,
+  expires_in: Option<u64>,
+  error: Option<String>,
+  error_description: Option<String>,
 }
 
 #[tauri::command]
@@ -149,6 +179,229 @@ async fn import_json_file(app: AppHandle) -> Result<Option<String>, String> {
     .map_err(|error| format!("선택한 경로는 로컬 파일 경로로 해석할 수 없습니다: {error}"))?;
 
   fs::read_to_string(&file_system_path).map(Some).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn start_google_desktop_oauth(client_id: String) -> Result<GoogleOAuthTokens, String> {
+  let client_id = client_id.trim().to_string();
+  if client_id.is_empty() {
+    return Err("Google OAuth Client ID가 비어 있습니다.".to_string());
+  }
+
+  tauri::async_runtime::spawn_blocking(move || run_google_desktop_oauth(client_id))
+    .await
+    .map_err(|error| format!("Google 로그인 작업을 완료하지 못했습니다: {error}"))?
+    .map_err(|error| error.to_string())
+}
+
+fn run_google_desktop_oauth(client_id: String) -> AnyhowResult<GoogleOAuthTokens> {
+  let listener = TcpListener::bind("127.0.0.1:0").context("failed to start loopback listener")?;
+  listener
+    .set_nonblocking(true)
+    .context("failed to configure loopback listener")?;
+  let port = listener.local_addr()?.port();
+  let redirect_uri = format!("http://127.0.0.1:{port}");
+  let state = random_urlsafe(16);
+  let code_verifier = random_urlsafe(32);
+  let code_challenge = pkce_challenge(&code_verifier);
+  let auth_url = build_google_auth_url(
+    &client_id,
+    &redirect_uri,
+    &state,
+    &code_challenge,
+  );
+
+  open_system_browser(&auth_url)?;
+
+  let (mut stream, _) = accept_loopback_connection(&listener)?;
+  let callback_path = read_callback_path(&mut stream)?;
+  let callback_url = Url::parse(&format!("{redirect_uri}{callback_path}"))
+    .context("failed to parse Google OAuth callback")?;
+  let query = callback_url.query_pairs().collect::<Vec<_>>();
+
+  if let Some((_, error)) = query.iter().find(|(key, _)| key == "error") {
+    respond_to_browser(&mut stream, false)?;
+    return Err(anyhow::anyhow!("Google 로그인이 취소되었거나 실패했습니다: {error}"));
+  }
+
+  let returned_state = query
+    .iter()
+    .find(|(key, _)| key == "state")
+    .map(|(_, value)| value.to_string())
+    .unwrap_or_default();
+  if returned_state != state {
+    respond_to_browser(&mut stream, false)?;
+    return Err(anyhow::anyhow!("Google 로그인 보안 확인 값이 일치하지 않습니다."));
+  }
+
+  let code = query
+    .iter()
+    .find(|(key, _)| key == "code")
+    .map(|(_, value)| value.to_string())
+    .filter(|value| !value.is_empty())
+    .context("Google 로그인 응답에 인증 코드가 없습니다.")?;
+
+  respond_to_browser(&mut stream, true)?;
+  exchange_google_code(&client_id, &redirect_uri, &code, &code_verifier)
+}
+
+fn random_urlsafe(byte_count: usize) -> String {
+  let mut bytes = vec![0_u8; byte_count];
+  rand::thread_rng().fill_bytes(&mut bytes);
+  URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn pkce_challenge(code_verifier: &str) -> String {
+  let digest = Sha256::digest(code_verifier.as_bytes());
+  URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn build_google_auth_url(
+  client_id: &str,
+  redirect_uri: &str,
+  state: &str,
+  code_challenge: &str,
+) -> String {
+  let mut serializer = form_urlencoded::Serializer::new(String::new());
+  serializer.append_pair("client_id", client_id);
+  serializer.append_pair("redirect_uri", redirect_uri);
+  serializer.append_pair("response_type", "code");
+  serializer.append_pair("scope", GOOGLE_OAUTH_SCOPE);
+  serializer.append_pair("state", state);
+  serializer.append_pair("code_challenge", code_challenge);
+  serializer.append_pair("code_challenge_method", "S256");
+  serializer.append_pair("prompt", "select_account");
+  let query = serializer.finish();
+
+  format!("{GOOGLE_OAUTH_AUTH_URL}?{query}")
+}
+
+fn open_system_browser(url: &str) -> AnyhowResult<()> {
+  #[cfg(target_os = "windows")]
+  let status = Command::new("rundll32")
+    .args(["url.dll,FileProtocolHandler", url])
+    .status()
+    .context("failed to open system browser")?;
+
+  #[cfg(target_os = "macos")]
+  let status = Command::new("open")
+    .arg(url)
+    .status()
+    .context("failed to open system browser")?;
+
+  #[cfg(all(unix, not(target_os = "macos")))]
+  let status = Command::new("xdg-open")
+    .arg(url)
+    .status()
+    .context("failed to open system browser")?;
+
+  if status.success() {
+    Ok(())
+  } else {
+    Err(anyhow::anyhow!("system browser command failed"))
+  }
+}
+
+fn accept_loopback_connection(listener: &TcpListener) -> AnyhowResult<(TcpStream, std::net::SocketAddr)> {
+  let deadline = Instant::now() + GOOGLE_OAUTH_TIMEOUT;
+
+  loop {
+    match listener.accept() {
+      Ok(connection) => return Ok(connection),
+      Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        if Instant::now() >= deadline {
+          return Err(anyhow::anyhow!("Google 로그인 시간이 초과되었습니다."));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+      }
+      Err(error) => return Err(error).context("failed to receive Google OAuth callback"),
+    }
+  }
+}
+
+fn read_callback_path(stream: &mut TcpStream) -> AnyhowResult<String> {
+  stream
+    .set_read_timeout(Some(Duration::from_secs(10)))
+    .context("failed to configure callback reader")?;
+
+  let mut buffer = [0_u8; 8192];
+  let size = stream
+    .read(&mut buffer)
+    .context("failed to read Google OAuth callback")?;
+  let request = String::from_utf8_lossy(&buffer[..size]);
+  let request_line = request
+    .lines()
+    .next()
+    .context("Google OAuth callback request is empty")?;
+  let path = request_line
+    .split_whitespace()
+    .nth(1)
+    .context("Google OAuth callback path is missing")?;
+
+  Ok(path.to_string())
+}
+
+fn respond_to_browser(stream: &mut TcpStream, success: bool) -> AnyhowResult<()> {
+  let message = if success {
+    "H Memo 구글 로그인이 완료되었습니다. 이 창을 닫고 앱으로 돌아가세요."
+  } else {
+    "H Memo 구글 로그인을 완료하지 못했습니다. 이 창을 닫고 앱으로 돌아가세요."
+  };
+  let body = format!(
+    "<!doctype html><html lang=\"ko\"><meta charset=\"utf-8\"><title>H Memo</title><body style=\"font-family:system-ui,sans-serif;padding:32px\"><h1>{message}</h1></body></html>"
+  );
+  let response = format!(
+    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+    body.as_bytes().len(),
+    body
+  );
+  stream
+    .write_all(response.as_bytes())
+    .context("failed to write Google OAuth browser response")
+}
+
+fn exchange_google_code(
+  client_id: &str,
+  redirect_uri: &str,
+  code: &str,
+  code_verifier: &str,
+) -> AnyhowResult<GoogleOAuthTokens> {
+  let client = reqwest::blocking::Client::new();
+  let response = client
+    .post(GOOGLE_OAUTH_TOKEN_URL)
+    .form(&[
+      ("client_id", client_id),
+      ("redirect_uri", redirect_uri),
+      ("grant_type", "authorization_code"),
+      ("code", code),
+      ("code_verifier", code_verifier),
+    ])
+    .send()
+    .context("failed to exchange Google OAuth code")?;
+
+  let status = response.status();
+  let token_response: GoogleTokenResponse = response
+    .json()
+    .context("failed to parse Google OAuth token response")?;
+
+  if !status.is_success() || token_response.error.is_some() {
+    let error = token_response
+      .error_description
+      .or(token_response.error)
+      .unwrap_or_else(|| format!("HTTP {status}"));
+    return Err(anyhow::anyhow!("Google 토큰 교환 실패: {error}"));
+  }
+
+  let id_token = token_response
+    .id_token
+    .filter(|value| !value.is_empty())
+    .context("Google 토큰 응답에 ID 토큰이 없습니다.")?;
+
+  Ok(GoogleOAuthTokens {
+    id_token,
+    access_token: token_response.access_token.unwrap_or_default(),
+    expires_in: token_response.expires_in,
+  })
 }
 
 fn show_main_window_inner(app: &AppHandle) -> Result<(), String> {
@@ -335,7 +588,8 @@ pub fn run() {
       quit_app,
       export_text_file,
       export_json_file,
-      import_json_file
+      import_json_file,
+      start_google_desktop_oauth
     ])
     .run(tauri::generate_context!())
     .expect("failed to run H Memo");

@@ -25,6 +25,7 @@ describe("validateFirebaseClientEnv", () => {
     expect(validation.missingOptionalKeys).toEqual([
       "storageBucket",
       "messagingSenderId",
+      "googleOAuthClientId",
     ]);
   });
 

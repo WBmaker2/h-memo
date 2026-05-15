@@ -39,6 +39,7 @@ import {
   notifyMemoStoreChanged,
   type MemoStoreChangedPayload,
 } from "./adapters/tauriEvents";
+import { startGoogleDesktopOAuth } from "./adapters/tauriGoogleOAuth";
 import {
   FirestoreBackupGateway,
   backupMemos,
@@ -54,6 +55,7 @@ import {
   signOutUser,
   waitForSignedInUser,
   type BackedUpMemo,
+  type GoogleOAuthTokens,
   type HMemoUser,
 } from "@h-memo/memo-sync";
 import {
@@ -153,6 +155,7 @@ export function App() {
     () => toFirebaseClientConfigInput(firebaseClientEnv),
     [firebaseClientEnv]
   );
+  const googleOAuthClientId = firebaseClientEnv.googleOAuthClientId?.trim() ?? "";
   const hasFirebaseConfigSet = useMemo(() => hasFirebaseConfig(firebaseClientEnv), [firebaseClientEnv]);
   const [backupStatus, setBackupStatus] = useState<BackupMessage>(
     hasFirebaseConfigSet ? "백업 정보 없음" : FIREBASE_UNAVAILABLE_MESSAGE
@@ -217,6 +220,7 @@ export function App() {
   const setSignedInUser = useCallback(
     (nextUser: HMemoUser, options?: { broadcast?: boolean }) => {
       const status = `${nextUser.displayName || nextUser.email || "사용자"}님이 로그인했습니다.`;
+      userRef.current = nextUser;
       setUser(nextUser);
       setBackupStatus(status);
       if (isTauri && options?.broadcast !== false) {
@@ -230,6 +234,7 @@ export function App() {
 
   const setSignedOutUser = useCallback(
     (status: string, options?: { broadcast?: boolean }) => {
+      userRef.current = null;
       setUser(null);
       setBackupStatus(status);
       if (isTauri && options?.broadcast !== false) {
@@ -240,6 +245,28 @@ export function App() {
     },
     [isTauri]
   );
+
+  const authStatus = useMemo(() => {
+    if (!hasFirebaseConfigSet || !servicesAvailable) {
+      return {
+        state: "unavailable" as const,
+        label: "구글 로그인 설정 필요",
+      };
+    }
+
+    if (!user) {
+      return {
+        state: "signed-out" as const,
+        label: "구글 로그인 안 됨",
+      };
+    }
+
+    return {
+      state: "signed-in" as const,
+      label: user.displayName || user.email || "사용자",
+      photoUrl: user.photoURL || undefined,
+    };
+  }, [hasFirebaseConfigSet, servicesAvailable, user]);
 
   const broadcastMemoStoreChanged = useCallback(
     (payload: Omit<MemoStoreChangedPayload, "sourceId"> = {}) => {
@@ -420,8 +447,11 @@ export function App() {
       if (!isMounted) {
         return;
       }
-      setUser(payload.user);
-      setBackupStatus(payload.status);
+      if (payload.user) {
+        setSignedInUser(payload.user, { broadcast: false });
+        return;
+      }
+      setSignedOutUser(payload.status, { broadcast: false });
     })
       .then((unlisten) => {
         if (!isMounted) {
@@ -438,7 +468,7 @@ export function App() {
       isMounted = false;
       cleanup?.();
     };
-  }, [isTauri]);
+  }, [isTauri, setSignedInUser, setSignedOutUser]);
 
   const visibleMemos = useMemo(
     () => memos.filter((memo) => memo.deletedAt === null),
@@ -884,8 +914,13 @@ export function App() {
     setIsBusy(true);
     setBackupStatus("구글 로그인 중...");
     try {
+      const desktopOAuth =
+        isTauri && googleOAuthClientId
+          ? (): Promise<GoogleOAuthTokens> => startGoogleDesktopOAuth(googleOAuthClientId)
+          : undefined;
       const nextUser = await signInWithGoogle(services.auth, {
-        fallbackToRedirect: isTauri,
+        desktopOAuth,
+        fallbackToRedirect: isTauri && !desktopOAuth,
       });
       if (!nextUser) {
         setBackupStatus("구글 로그인 완료를 확인하는 중입니다...");
@@ -1268,11 +1303,12 @@ export function App() {
   return (
     <>
       <MemoWorkspace
-        appClassName="desktop-app"
-        title="H Memo"
-        memos={displayedMemos}
-        managedMemos={visibleMemos}
-        onCreateMemo={handleCreateMemo}
+          appClassName="desktop-app"
+          title="H Memo"
+          memos={displayedMemos}
+          managedMemos={visibleMemos}
+          authStatus={authStatus}
+          onCreateMemo={handleCreateMemo}
         onOpenMemo={isTauri ? handleOpenMemo : undefined}
         onMemoChange={handleMemoChange}
         onDeleteMemo={handleDeleteMemo}

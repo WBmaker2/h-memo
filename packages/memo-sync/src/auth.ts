@@ -4,6 +4,7 @@ import {
   getRedirectResult,
   onAuthStateChanged,
   GoogleAuthProvider,
+  signInWithCredential,
   signInWithPopup,
   signInWithRedirect,
   signOut,
@@ -17,6 +18,16 @@ export type HMemoUser = {
   displayName: string;
   email: string;
   photoURL: string;
+};
+
+export type GoogleOAuthTokens = {
+  idToken: string;
+  accessToken?: string;
+};
+
+export type SignInWithGoogleOptions = {
+  fallbackToRedirect?: boolean;
+  desktopOAuth?: () => Promise<GoogleOAuthTokens>;
 };
 
 export function toHMemoUser(user: User): HMemoUser {
@@ -46,9 +57,17 @@ function shouldFallbackToRedirect(error: unknown): boolean {
 
 export async function signInWithGoogle(
   auth: Auth,
-  options: { fallbackToRedirect?: boolean } = {}
+  options: SignInWithGoogleOptions = {}
 ): Promise<HMemoUser | null> {
   const provider = new GoogleAuthProvider();
+
+  if (options.desktopOAuth) {
+    const tokens = await options.desktopOAuth();
+    const credential = GoogleAuthProvider.credential(tokens.idToken, tokens.accessToken);
+    const result = await signInWithCredential(auth, credential);
+    return toHMemoUser(result.user);
+  }
+
   try {
     const result = await signInWithPopup(auth, provider);
     return toHMemoUser(result.user);
