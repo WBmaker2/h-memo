@@ -22,6 +22,8 @@ const {
   defaultRestoreMemo,
   mockBackupMemos,
   mockRestoreLatestBackup,
+  mockListBackedUpMemos,
+  mockDeleteBackedUpMemo,
   mockCompleteGoogleRedirectSignIn,
   mockWaitForSignedInUser,
   mockGetFirestore,
@@ -37,8 +39,11 @@ const {
   mockRestoreWindowBounds,
   mockSetWindowHeight,
   mockListenWindowBoundsChanged,
+  mockNotifyMemoStoreChanged,
+  mockNotifyAuthStateChanged,
   tauriRepositoryState,
   tauriWindowState,
+  tauriEventState,
 } = vi.hoisted(() => {
   const mockExportTextFile = vi.fn();
   const mockExportJsonFile = vi.fn();
@@ -52,6 +57,8 @@ const {
   const mockRestoreMemo = vi.fn();
   const mockBackupMemos = vi.fn();
   const mockRestoreLatestBackup = vi.fn();
+  const mockListBackedUpMemos = vi.fn();
+  const mockDeleteBackedUpMemo = vi.fn();
   const mockCompleteGoogleRedirectSignIn = vi.fn();
   const mockWaitForSignedInUser = vi.fn();
   const mockStartWindowDrag = vi.fn();
@@ -61,6 +68,24 @@ const {
   const mockRestoreWindowBounds = vi.fn();
   const mockSetWindowHeight = vi.fn();
   const mockListenWindowBoundsChanged = vi.fn();
+  const mockNotifyMemoStoreChanged = vi.fn();
+  const mockNotifyAuthStateChanged = vi.fn();
+  const tauriEventState: {
+    memoStoreListener: ((payload: { memoId?: string; deletedMemoId?: string }) => void) | null;
+    authStateListener:
+      | ((payload: {
+          user: { uid: string; displayName: string | null; email: string | null; photoURL: string | null } | null;
+          status: string;
+        }) => void)
+      | null;
+    unlistenMemoStore: ReturnType<typeof vi.fn>;
+    unlistenAuthState: ReturnType<typeof vi.fn>;
+  } = {
+    memoStoreListener: null,
+    authStateListener: null,
+    unlistenMemoStore: vi.fn(),
+    unlistenAuthState: vi.fn(),
+  };
   const tauriWindowState: {
     bounds: { x: number; y: number; width: number; height: number };
     boundsListener: (() => void) | null;
@@ -160,6 +185,8 @@ const {
     mockGetFirebaseClientEnv,
     mockBackupMemos,
     mockRestoreLatestBackup,
+    mockListBackedUpMemos,
+    mockDeleteBackedUpMemo,
     mockCompleteGoogleRedirectSignIn,
     mockWaitForSignedInUser,
     mockGetFirestore,
@@ -175,8 +202,11 @@ const {
     mockRestoreWindowBounds,
     mockSetWindowHeight,
     mockListenWindowBoundsChanged,
+    mockNotifyMemoStoreChanged,
+    mockNotifyAuthStateChanged,
     tauriRepositoryState,
     tauriWindowState,
+    tauriEventState,
     MockTauriMemoRepository,
   };
 });
@@ -214,6 +244,8 @@ vi.mock("@h-memo/memo-sync", () => {
     FirestoreBackupGateway: class {
       saveBackup = vi.fn();
       loadLatestBackup = vi.fn();
+      loadBackups = vi.fn();
+      deleteMemoFromBackups = vi.fn();
     },
     backupMemos: (gateway: unknown, userId: string, memos: unknown[]) =>
       mockBackupMemos(gateway, userId, memos),
@@ -230,6 +262,10 @@ vi.mock("@h-memo/memo-sync", () => {
       env.appId.trim() !== "",
     restoreLatestBackup: (gateway: unknown, userId: string) =>
       mockRestoreLatestBackup(gateway, userId),
+    listBackedUpMemos: (gateway: unknown, userId: string) =>
+      mockListBackedUpMemos(gateway, userId),
+    deleteBackedUpMemo: (gateway: unknown, userId: string, memoId: string) =>
+      mockDeleteBackedUpMemo(gateway, userId, memoId),
     completeGoogleRedirectSignIn: (auth: unknown) => mockCompleteGoogleRedirectSignIn(auth),
     waitForSignedInUser: (auth: unknown, timeoutMs?: number, intervalMs?: number) =>
       mockWaitForSignedInUser(auth, timeoutMs, intervalMs),
@@ -265,6 +301,26 @@ vi.mock("./adapters/tauriWindow", () => ({
   listenWindowBoundsChanged: (listener: () => void) => {
     tauriWindowState.boundsListener = listener;
     return mockListenWindowBoundsChanged(listener);
+  },
+}));
+
+vi.mock("./adapters/tauriEvents", () => ({
+  notifyMemoStoreChanged: (payload: unknown) => mockNotifyMemoStoreChanged(payload),
+  notifyAuthStateChanged: (payload: unknown) => mockNotifyAuthStateChanged(payload),
+  listenMemoStoreChanged: async (
+    listener: (payload: { memoId?: string; deletedMemoId?: string }) => void
+  ) => {
+    tauriEventState.memoStoreListener = listener;
+    return tauriEventState.unlistenMemoStore;
+  },
+  listenAuthStateChanged: async (
+    listener: (payload: {
+      user: { uid: string; displayName: string | null; email: string | null; photoURL: string | null } | null;
+      status: string;
+    }) => void
+  ) => {
+    tauriEventState.authStateListener = listener;
+    return tauriEventState.unlistenAuthState;
   },
 }));
 
@@ -332,6 +388,8 @@ beforeEach(() => {
   mockRestoreMemo.mockReset();
   mockBackupMemos.mockReset();
   mockRestoreLatestBackup.mockReset();
+  mockListBackedUpMemos.mockReset();
+  mockDeleteBackedUpMemo.mockReset();
   mockCompleteGoogleRedirectSignIn.mockReset();
   mockWaitForSignedInUser.mockReset();
   mockGetFirestore.mockReset();
@@ -347,9 +405,15 @@ beforeEach(() => {
   mockRestoreWindowBounds.mockReset();
   mockSetWindowHeight.mockReset();
   mockListenWindowBoundsChanged.mockReset();
+  mockNotifyMemoStoreChanged.mockReset();
+  mockNotifyAuthStateChanged.mockReset();
   tauriWindowState.bounds = { x: 20, y: 30, width: 380, height: 420 };
   tauriWindowState.boundsListener = null;
   tauriWindowState.unlisten.mockReset();
+  tauriEventState.memoStoreListener = null;
+  tauriEventState.authStateListener = null;
+  tauriEventState.unlistenMemoStore.mockReset();
+  tauriEventState.unlistenAuthState.mockReset();
 
   mockSaveMemo.mockImplementation((nextMemo: any) => defaultSaveMemo(nextMemo));
   mockSoftDeleteMemo.mockImplementation((id: string, deletedAt: string) =>
@@ -380,6 +444,10 @@ beforeEach(() => {
   mockExportTextFile.mockResolvedValue({ status: "saved", path: "/tmp/h-memo-backup.txt" });
   mockExportJsonFile.mockResolvedValue({ status: "saved", path: "/tmp/h-memo-backup.json" });
   mockImportJsonFile.mockResolvedValue({ status: "cancelled" });
+  mockListBackedUpMemos.mockResolvedValue([]);
+  mockDeleteBackedUpMemo.mockResolvedValue(0);
+  mockNotifyMemoStoreChanged.mockResolvedValue(undefined);
+  mockNotifyAuthStateChanged.mockResolvedValue(undefined);
   mockCompleteGoogleRedirectSignIn.mockResolvedValue(null);
   mockWaitForSignedInUser.mockResolvedValue(null);
   Object.defineProperty(window, "confirm", {
@@ -791,21 +859,104 @@ describe("desktop App", () => {
 
   it("excludes deleted memo from export", async () => {
     const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const deleteMemo = createMemo({
+      id: "memo-delete-export",
+      now: "2026-05-13T09:00:00.000Z",
+      plainText: "delete text",
+    });
+    const keepMemo = createMemo({
+      id: "memo-keep-export",
+      now: "2026-05-13T09:01:00.000Z",
+      plainText: "keep text",
+    });
+    tauriRepositoryState.set(deleteMemo.id, deleteMemo);
+    tauriRepositoryState.set(keepMemo.id, keepMemo);
+
     render(<App />);
 
-    await createMemoFromAppMenu(user);
-    fireEvent.change(screen.getByLabelText("메모 내용"), {
-      target: { value: "delete text" },
-    });
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "delete text 삭제" })).toBeInTheDocument()
     );
     await user.click(screen.getByRole("button", { name: "delete text 삭제" }));
-    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(await screen.findByRole("button", { name: "삭제하기" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "delete text 삭제" })).not.toBeInTheDocument();
+    });
     await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
 
-    expect(screen.getByRole("status")).toHaveTextContent("내보낼 메모가 없습니다.");
-    expect(mockExportTextFile).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("TXT 저장 완료:");
+    });
+    expect(mockExportTextFile).toHaveBeenCalledWith("h-memo-backup.txt", expect.stringContaining("keep text"));
+    expect(mockExportTextFile.mock.calls[0]?.[1]).not.toContain("delete text");
+  });
+
+  it("blocks deletion when only one visible memo remains", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await createMemoFromAppMenu(user);
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "마지막 메모" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "마지막 메모 삭제" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("마지막 남은 메모는 삭제할 수 없습니다.");
+    });
+    expect(screen.queryByRole("dialog", { name: "메모 삭제" })).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("마지막 메모")).toBeInTheDocument();
+  });
+
+  it("asks before deleting a memo and can back up before delete", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({
+        uid: "user-1",
+        displayName: "테스터",
+        email: "test@example.com",
+        photoURL: "",
+      });
+      return mockAuthUnsubscribe;
+    });
+    mockBackupMemos.mockResolvedValue({
+      path: "users/user-1/backups/1",
+      payload: {
+        version: 1,
+        userId: "user-1",
+        createdAt: "2026-05-13T09:00:00.000Z",
+        memos: [],
+      },
+    });
+
+    render(<App />);
+    await createMemoFromAppMenu(user);
+    fireEvent.change(screen.getByLabelText("메모 내용"), { target: { value: "삭제 후보" } });
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+
+    await user.click(screen.getByRole("button", { name: "삭제 후보 삭제" }));
+
+    expect(screen.getByRole("dialog", { name: "메모 삭제" })).toHaveTextContent(
+      "아직 백업되지 않는 내용이 있습니다. 정말 삭제하겠습니까?"
+    );
+    await user.click(screen.getByRole("button", { name: "지금 백업하기" }));
+
+    await waitFor(() => {
+      expect(mockBackupMemos).toHaveBeenCalledTimes(1);
+      expect(mockSoftDeleteMemo).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("status")).toHaveTextContent("백업 후 메모를 삭제했습니다.");
+    });
   });
 
   it("toggles startup registration switch", async () => {
@@ -1015,6 +1166,79 @@ describe("desktop App", () => {
       expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
       expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
       expect(screen.getByRole("status")).toHaveTextContent("리다이렉트 사용자님이 로그인했습니다.");
+    });
+  });
+
+  it("enables server controls when another memo window shares auth state", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(tauriEventState.authStateListener).not.toBeNull());
+
+    act(() => {
+      tauriEventState.authStateListener?.({
+        user: {
+          uid: "shared-user",
+          displayName: "공유 사용자",
+          email: "shared@example.com",
+          photoURL: "",
+        },
+        status: "공유 사용자님이 로그인했습니다.",
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
+      expect(screen.getByRole("status")).toHaveTextContent("공유 사용자님이 로그인했습니다.");
+    });
+  });
+
+  it("reloads the memo management list when another window changes the memo store", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const localMemo = createMemo({
+      id: "memo-local",
+      now: "2026-05-13T09:00:00.000Z",
+      plainText: "현재 창 메모",
+    });
+    tauriRepositoryState.set(localMemo.id, localMemo);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("현재 창 메모")).toBeInTheDocument();
+      expect(tauriEventState.memoStoreListener).not.toBeNull();
+    });
+
+    tauriRepositoryState.set(
+      "memo-external",
+      createMemo({
+        id: "memo-external",
+        now: "2026-05-13T09:01:00.000Z",
+        plainText: "외부 창 메모",
+      })
+    );
+    await act(async () => {
+      tauriEventState.memoStoreListener?.({ memoId: "memo-external" });
+      await Promise.resolve();
+    });
+
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "외부 창 메모 열기" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "외부 창 메모 삭제" })).toBeInTheDocument();
     });
   });
 
@@ -1303,6 +1527,77 @@ describe("desktop App", () => {
         expect.arrayContaining([expect.objectContaining({ plainText: "복구 세션 텍스트" })])
       );
       expect(screen.getByRole("status")).toHaveTextContent("백업 완료: users/restored-user/backups/1");
+    });
+  });
+
+  it("shows backed up server memos so deleted local memos can be restored or removed from DB", async () => {
+    const user = userEvent.setup();
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({
+        uid: "server-user",
+        displayName: "서버 사용자",
+        email: "server@example.com",
+        photoURL: "",
+      });
+      return mockAuthUnsubscribe;
+    });
+    const deletedServerMemo = {
+      ...createMemo({
+        id: "memo-server-deleted",
+        now: "2026-05-13T09:00:00.000Z",
+        plainText: "서버에 남은 삭제 메모",
+      }),
+      deletedAt: "2026-05-13T09:10:00.000Z",
+    };
+    mockListBackedUpMemos.mockResolvedValue([
+      {
+        memo: deletedServerMemo,
+        backupCreatedAt: "2026-05-13T09:11:00.000Z",
+      },
+    ]);
+    mockDeleteBackedUpMemo.mockResolvedValue(2);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "서버 메모 관리" })).toBeEnabled();
+    });
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+
+    await waitFor(() => {
+      expect(mockListBackedUpMemos).toHaveBeenCalledWith(expect.anything(), "server-user");
+      expect(screen.getByRole("dialog", { name: "서버 메모 관리" })).toHaveTextContent(
+        "서버에 남은 삭제 메모"
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("서버 메모 1개를 불러왔습니다.");
+    });
+
+    await user.click(screen.getByRole("button", { name: "복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("서버에 남은 삭제 메모")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("서버 백업에서 메모를 복원했습니다.");
+    });
+
+    await user.click(screen.getByRole("button", { name: "서버 삭제" }));
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      "서버 백업에서 이 메모를 삭제합니다. 삭제한 뒤에는 서버에서 복원할 수 없습니다. 계속할까요?"
+    );
+    await waitFor(() => {
+      expect(mockDeleteBackedUpMemo).toHaveBeenCalledWith(
+        expect.anything(),
+        "server-user",
+        "memo-server-deleted"
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("서버 백업에서 메모를 삭제했습니다.");
+      expect(screen.getByText("서버에 저장된 메모가 없습니다.")).toBeInTheDocument();
     });
   });
 
