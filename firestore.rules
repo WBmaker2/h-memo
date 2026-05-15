@@ -32,8 +32,8 @@ service cloud.firestore {
 
     match /users/{uid}/backupSnapshots/{snapshotId} {
       allow read: if isOwner(uid);
-      allow create, update: if isOwner(uid) && hasValidBackupSnapshotShape(uid);
-      allow delete: if isOwner(uid);
+      allow create: if isOwner(uid) && hasValidBackupSnapshotShape(uid);
+      allow update, delete: if false;
     }
   }
 }

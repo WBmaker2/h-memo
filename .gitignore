@@ -2,6 +2,8 @@ node_modules/
 dist/
 dist-ssr/
 coverage/
+.playwright-mcp/
+h-memo-firebase-ready-menu.png
 .env
 .env.local
 .env*.local

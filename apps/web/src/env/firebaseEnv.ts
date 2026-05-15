@@ -1,4 +1,8 @@
-import type { FirebaseClientEnv } from "@h-memo/memo-sync/firebase-env-validation";
+import {
+  getDefaultFirebaseClientEnv,
+  mergeFirebaseClientConfig,
+  type FirebaseClientEnv,
+} from "@h-memo/memo-sync";
 
 type RawViteEnv = Record<string, string | undefined>;
 
@@ -9,7 +13,7 @@ function trim(value: string | undefined): string {
 }
 
 export function getFirebaseClientEnv(): Partial<FirebaseClientEnv> {
-  return {
+  const viteFirebaseClientEnv = {
     apiKey: trim(viteEnv.VITE_FIREBASE_API_KEY),
     authDomain: trim(viteEnv.VITE_FIREBASE_AUTH_DOMAIN),
     projectId: trim(viteEnv.VITE_FIREBASE_PROJECT_ID),
@@ -18,4 +22,6 @@ export function getFirebaseClientEnv(): Partial<FirebaseClientEnv> {
     messagingSenderId: trim(viteEnv.VITE_FIREBASE_MESSAGING_SENDER_ID),
     measurementId: trim(viteEnv.VITE_FIREBASE_MEASUREMENT_ID),
   };
+
+  return mergeFirebaseClientConfig(getDefaultFirebaseClientEnv(), viteFirebaseClientEnv);
 }

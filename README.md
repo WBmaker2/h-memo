@@ -28,15 +28,15 @@ npm run tauri:build          # Tauri Windows/MSI/NSIS 빌드 시도
 ## 로컬 개발 가이드
 
 ```bash
-cp .env.example .env
 npm ci
 npm run dev
 ```
 
 ### Firebase 환경 변수
 
-필수/선택 변수는 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고하세요.
-빌드에 환경 변수가 포함되지 않은 설치본도 앱 메뉴의 `구글 로그인 설정`에서 Firebase Web Client 값을 저장하면 Google 로그인을 사용할 수 있습니다.
+기본 배포판은 H Memo용 Firebase Web Client 설정을 내장합니다. 다른 Firebase 프로젝트로 개발/스테이징 테스트를 할 때만 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고해 환경 변수를 지정하세요.
+운영 배포판은 H Memo용 Firebase Web Client 설정을 내장해 사용자가 `구글 로그인`만으로 백업/복원을 시작할 수 있게 합니다.
+내장/빌드 설정이 모두 비어 있는 개발 빌드에서만 앱 메뉴의 `구글 로그인 설정` 입력 폼이 나타납니다.
 
 ## 테스트/타입체크/빌드
 
@@ -54,7 +54,7 @@ npm run check:versions
 
 ### 웹 앱 동기화 상태
 
-- Firebase 환경 변수 또는 앱 안의 `구글 로그인 설정`이 완료되면 웹 앱에서 Google 로그인 후 서버 백업/복원이 동작합니다.
+- Firebase 설정이 내장되었거나 환경 변수로 제공되면 웹 앱에서 구글 로그인 후 서버 백업/복원이 동작합니다.
 - 시작프로그램 등록은 웹에서 계속 비활성 상태로 유지됩니다.
 
 ### Tauri 빌드

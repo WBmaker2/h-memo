@@ -15,7 +15,7 @@ import { getFirebaseClientEnv } from "./env/firebaseEnv";
 import { WebApp } from "./WebApp";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
-  "Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.";
+  "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
 const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
 const SUCCESS_BACKUP_MESSAGE = "백업 완료:";
 
@@ -243,6 +243,38 @@ describe("WebApp", () => {
 
     expect(screen.getByRole("button", { name: "구글 로그인" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
+  });
+
+  it("hides manual Firebase settings when build config is available", async () => {
+    installLocalStorageStub({
+      initialEntries: [
+        [
+          "h-memo.firebaseClientConfig.v1",
+          JSON.stringify({
+            apiKey: "stored-api-key",
+            authDomain: "stored.firebaseapp.com",
+            projectId: "stored-project",
+            appId: "stored-app-id",
+          }),
+        ],
+      ],
+    });
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+
+    render(<WebApp />);
+
+    await waitFor(() => {
+      expect(createFirebaseApp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apiKey: VALID_FIREBASE_ENV.apiKey,
+          authDomain: VALID_FIREBASE_ENV.authDomain,
+          projectId: VALID_FIREBASE_ENV.projectId,
+          appId: VALID_FIREBASE_ENV.appId,
+        })
+      );
+    });
+    expect(screen.queryByRole("heading", { name: "구글 로그인 설정" })).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("stored-api-key")).not.toBeInTheDocument();
   });
 
   it("allows Google login and then performs server backup", async () => {

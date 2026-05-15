@@ -12,7 +12,7 @@
   - Vite + React + TypeScript 진입점
   - `MemoWorkspace` 공통 쉘 컴포넌트를 사용해 데스크톱 앱과 레이아웃 구조 공유
   - localStorage 기반 저장소(`LocalStorageMemoRepository`) 사용
-  - Firebase 설정이 있을 때 웹에서도 Google 로그인/세션 복구 기반 서버 백업/복원 동작
+  - Firebase 설정이 있을 때 웹에서도 구글 로그인/세션 복구 기반 서버 백업/복원 동작
   - 시작프로그램 토글은 웹에서 계속 비활성 처리
 - PWA 준비
   - `manifest.webmanifest`, `sw.js`, `registerServiceWorker` 유틸, 아이콘 목록을 포함해 설치 가능한 첫 PWA 기반 구성 완료

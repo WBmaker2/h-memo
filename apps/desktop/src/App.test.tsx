@@ -433,7 +433,9 @@ describe("desktop App", () => {
     render(<App />);
 
     const status = getStatus();
-    expect(status).toHaveTextContent("Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.");
+    expect(status).toHaveTextContent(
+      "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다."
+    );
 
     await createMemoFromAppMenu(user);
     fireEvent.change(screen.getByLabelText("메모 내용"), {
@@ -661,7 +663,7 @@ describe("desktop App", () => {
 
     await waitFor(() => {
       expect(getStatus()).toHaveTextContent(
-        "Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다."
+        "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다."
       );
     });
     expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
@@ -684,6 +686,39 @@ describe("desktop App", () => {
     expect(screen.getByRole("button", { name: "구글 로그인" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "서버 복원" })).toBeDisabled();
+  });
+
+  it("hides manual Firebase settings and uses build config when available", async () => {
+    window.localStorage.setItem(
+      "h-memo.firebaseClientConfig.v1",
+      JSON.stringify({
+        apiKey: "stored-api-key",
+        authDomain: "stored.firebaseapp.com",
+        projectId: "stored-project",
+        appId: "stored-app-id",
+      })
+    );
+    setMockFirebaseClientEnv({
+      apiKey: "build-api-key",
+      authDomain: "build.firebaseapp.com",
+      projectId: "build-project",
+      appId: "build-app-id",
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mockCreateFirebaseApp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apiKey: "build-api-key",
+          authDomain: "build.firebaseapp.com",
+          projectId: "build-project",
+          appId: "build-app-id",
+        })
+      );
+    });
+    expect(screen.queryByRole("heading", { name: "구글 로그인 설정" })).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("stored-api-key")).not.toBeInTheDocument();
   });
 
   it("enables Google login after saving Firebase config in settings", async () => {

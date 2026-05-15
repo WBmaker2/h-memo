@@ -58,11 +58,12 @@ type SyncServices = {
   gateway: FirestoreBackupGateway;
 };
 
-const FIREBASE_UNAVAILABLE_MESSAGE = "Firebase 환경 변수가 없어 서버 백업 기능을 사용할 수 없습니다.";
+const FIREBASE_UNAVAILABLE_MESSAGE =
+  "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
 const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
 const FIREBASE_INIT_FAILED_PREFIX = "서버 백업 초기화 실패:";
 const AUTH_SUBSCRIBE_FAILED_PREFIX = "인증 상태 복구 실패:";
-const AUTH_LOGIN_FAILED_PREFIX = "Google 로그인 실패:";
+const AUTH_LOGIN_FAILED_PREFIX = "구글 로그인 실패:";
 const BACKUP_FAILED_PREFIX = "백업 실패:";
 const RESTORE_FAILED_PREFIX = "복원 실패:";
 const COLLAPSED_WINDOW_HEIGHT = 46;
@@ -102,12 +103,20 @@ export function App() {
   const [startupEnabled, setStartupEnabled] = useState(false);
   const [syncServicesInitialized, setSyncServicesInitialized] = useState(false);
   const buildFirebaseClientEnv = useMemo(() => getFirebaseClientEnv(), []);
+  const hasBuildFirebaseConfigSet = useMemo(
+    () => hasFirebaseConfig(buildFirebaseClientEnv),
+    [buildFirebaseClientEnv]
+  );
   const [storedFirebaseClientEnv, setStoredFirebaseClientEnv] = useState(() =>
     readStoredFirebaseClientConfig()
   );
+  const allowFirebaseConfigOverride = !hasBuildFirebaseConfigSet;
   const firebaseClientEnv = useMemo(
-    () => mergeFirebaseClientConfig(buildFirebaseClientEnv, storedFirebaseClientEnv),
-    [buildFirebaseClientEnv, storedFirebaseClientEnv]
+    () =>
+      hasBuildFirebaseConfigSet
+        ? buildFirebaseClientEnv
+        : mergeFirebaseClientConfig(buildFirebaseClientEnv, storedFirebaseClientEnv),
+    [buildFirebaseClientEnv, hasBuildFirebaseConfigSet, storedFirebaseClientEnv]
   );
   const firebaseConfigFormValue = useMemo(
     () => toFirebaseClientConfigInput(firebaseClientEnv),
@@ -505,7 +514,7 @@ export function App() {
     }
 
     setIsBusy(true);
-    setBackupStatus("Google 로그인 중...");
+    setBackupStatus("구글 로그인 중...");
     try {
       const nextUser = await signInWithGoogle(services.auth);
       setUser(nextUser);
@@ -775,15 +784,15 @@ export function App() {
         userName: user ? user.displayName || user.email || "구글 계정" : null,
         backupStatus,
         startupEnabled,
-        firebaseConfig: firebaseConfigFormValue,
+        firebaseConfig: allowFirebaseConfigOverride ? firebaseConfigFormValue : undefined,
         onBackup: handleBackup,
         onRestore: handleRestore,
         onExportText: handleGenerateTextPreview,
         onToggleStartup: handleToggleStartup,
         onSignIn: handleSignIn,
         onSignOut: handleSignOut,
-        onSaveFirebaseConfig: handleSaveFirebaseConfig,
-        onClearFirebaseConfig: handleClearFirebaseConfig,
+        onSaveFirebaseConfig: allowFirebaseConfigOverride ? handleSaveFirebaseConfig : undefined,
+        onClearFirebaseConfig: allowFirebaseConfigOverride ? handleClearFirebaseConfig : undefined,
         isServerAvailable: servicesAvailable,
         isServerBusy: isBusy,
         isBackupDisabled,
