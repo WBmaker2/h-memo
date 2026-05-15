@@ -861,35 +861,38 @@ describe("desktop App", () => {
     const user = userEvent.setup();
     setTauriRuntime(true);
     mockGetStartupEnabled.mockResolvedValue(false);
-    const deleteMemo = createMemo({
+    const deletedMemo = {
+      ...createMemo({
       id: "memo-delete-export",
       now: "2026-05-13T09:00:00.000Z",
       plainText: "delete text",
-    });
+      }),
+      deletedAt: "2026-05-13T09:02:00.000Z",
+      updatedAt: "2026-05-13T09:02:00.000Z",
+    };
     const keepMemo = createMemo({
       id: "memo-keep-export",
       now: "2026-05-13T09:01:00.000Z",
       plainText: "keep text",
     });
-    tauriRepositoryState.set(deleteMemo.id, deleteMemo);
+    tauriRepositoryState.set(deletedMemo.id, deletedMemo);
     tauriRepositoryState.set(keepMemo.id, keepMemo);
 
     render(<App />);
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "delete text 삭제" })).toBeInTheDocument()
-    );
-    await user.click(screen.getByRole("button", { name: "delete text 삭제" }));
-    await user.click(await screen.findByRole("button", { name: "삭제하기" }));
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "delete text 삭제" })).not.toBeInTheDocument();
+      expect(screen.getByDisplayValue("keep text")).toBeInTheDocument();
     });
     await user.click(screen.getByRole("button", { name: "TXT 내보내기" }));
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent("TXT 저장 완료:");
     });
-    expect(mockExportTextFile).toHaveBeenCalledWith("h-memo-backup.txt", expect.stringContaining("keep text"));
+    expect(mockExportTextFile).toHaveBeenCalledWith(
+      "h-memo-backup.txt",
+      expect.stringContaining("keep text")
+    );
     expect(mockExportTextFile.mock.calls[0]?.[1]).not.toContain("delete text");
   });
 
