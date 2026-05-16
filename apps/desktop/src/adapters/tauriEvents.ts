@@ -3,6 +3,8 @@ import type { HMemoUser } from "@h-memo/memo-sync";
 
 const MEMO_STORE_CHANGED_EVENT = "h-memo:memo-store-changed";
 const AUTH_STATE_CHANGED_EVENT = "h-memo:auth-state-changed";
+const TRAY_OPEN_ALL_MEMOS_EVENT = "h-memo:tray-open-all-memos";
+const TRAY_CREATE_MEMO_EVENT = "h-memo:tray-create-memo";
 const sourceId = `window-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 export type MemoStoreChangedPayload = {
@@ -54,5 +56,17 @@ export function listenAuthStateChanged(
       return;
     }
     handler(event.payload);
+  });
+}
+
+export function listenTrayOpenAllMemos(handler: () => void | Promise<void>) {
+  return listen(TRAY_OPEN_ALL_MEMOS_EVENT, () => {
+    void handler();
+  });
+}
+
+export function listenTrayCreateMemo(handler: () => void | Promise<void>) {
+  return listen(TRAY_CREATE_MEMO_EVENT, () => {
+    void handler();
   });
 }

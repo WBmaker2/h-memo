@@ -35,6 +35,8 @@ import {
 import {
   listenAuthStateChanged,
   listenMemoStoreChanged,
+  listenTrayCreateMemo,
+  listenTrayOpenAllMemos,
   notifyAuthStateChanged,
   notifyMemoStoreChanged,
   type MemoStoreChangedPayload,
@@ -191,6 +193,8 @@ export function App() {
   const activeMemoIdRef = useRef<string | null>(requestedMemoId);
   const openedRestoredMemoWindowsRef = useRef(false);
   const userRef = useRef<HMemoUser | null>(null);
+  const createMemoFromTrayRef = useRef<() => Promise<void>>(async () => {});
+  const openAllMemosFromTrayRef = useRef<() => Promise<void>>(async () => {});
 
   const syncServicesRef = useRef<SyncServices | null>(null);
 
@@ -738,6 +742,88 @@ export function App() {
     await openMemoWindow(nextMemo);
   };
 
+  const handleOpenAllMemos = async () => {
+    if (!isTauri) {
+      return;
+    }
+
+    await waitForPendingPersists();
+    const storedMemos = sortMemos(await repository.listMemos());
+    const visibleStoredMemos = storedMemos.filter((memo) => memo.deletedAt === null);
+
+    memosRef.current = storedMemos;
+    setMemos(storedMemos);
+
+    if (visibleStoredMemos.length === 0) {
+      await handleCreateMemo();
+      return;
+    }
+
+    const currentActiveMemoId = activeMemoIdRef.current;
+    const mainWindowMemo =
+      visibleStoredMemos.find((memo) => memo.id === currentActiveMemoId) ??
+      visibleStoredMemos[0];
+
+    if (mainWindowMemo.id !== currentActiveMemoId) {
+      setActiveMemoId(mainWindowMemo.id);
+    }
+
+    for (const memo of visibleStoredMemos) {
+      if (memo.id === mainWindowMemo.id) {
+        continue;
+      }
+      await openMemoWindow(memo);
+    }
+
+    setBackupStatus(`메모 ${visibleStoredMemos.length}개를 열었습니다.`);
+  };
+
+  useEffect(() => {
+    createMemoFromTrayRef.current = handleCreateMemo;
+    openAllMemosFromTrayRef.current = handleOpenAllMemos;
+  });
+
+  useEffect(() => {
+    if (!isTauri) {
+      return;
+    }
+
+    let isMounted = true;
+    let cleanupOpenAll: (() => void) | null = null;
+    let cleanupCreateMemo: (() => void) | null = null;
+
+    void Promise.all([
+      listenTrayOpenAllMemos(() => {
+        void openAllMemosFromTrayRef.current().catch((error) => {
+          setBackupStatus(`트레이 메모 열기 실패: ${getErrorMessage(error)}`);
+        });
+      }),
+      listenTrayCreateMemo(() => {
+        void createMemoFromTrayRef.current().catch((error) => {
+          setBackupStatus(`트레이 새 메모 생성 실패: ${getErrorMessage(error)}`);
+        });
+      }),
+    ])
+      .then(([unlistenOpenAll, unlistenCreateMemo]) => {
+        if (!isMounted) {
+          unlistenOpenAll();
+          unlistenCreateMemo();
+          return;
+        }
+        cleanupOpenAll = unlistenOpenAll;
+        cleanupCreateMemo = unlistenCreateMemo;
+      })
+      .catch((error) => {
+        setBackupStatus(`트레이 동작 수신 실패: ${getErrorMessage(error)}`);
+      });
+
+    return () => {
+      isMounted = false;
+      cleanupOpenAll?.();
+      cleanupCreateMemo?.();
+    };
+  }, [isTauri]);
+
   const handleOpenMemo = async (memoId: string) => {
     const target = memos.find((memo) => memo.id === memoId && memo.deletedAt === null);
     if (!target || !isTauri) {
@@ -1243,10 +1329,36 @@ export function App() {
     if (!pendingDeleteMemo) {
       return;
     }
-    await performDeleteMemo(pendingDeleteMemo.id);
+    if (isBusy) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      let deletedFromServer = false;
+      if (user) {
+        const services = ensureSyncServices();
+        if (!services || !servicesAvailable) {
+          throw new Error("서버 연결 상태를 확인해 주세요.");
+        }
+        await deleteBackedUpMemo(services.gateway, user.uid, pendingDeleteMemo.id);
+        deletedFromServer = true;
+      }
+
+      await performDeleteMemo(
+        pendingDeleteMemo.id,
+        deletedFromServer
+          ? "로컬과 서버에서 메모를 삭제했습니다."
+          : "메모를 로컬에서 삭제했습니다."
+      );
+    } catch (error) {
+      setBackupStatus(`메모 삭제 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
   };
 
-  const handleBackupThenDelete = async () => {
+  const handleBackupThenClose = async () => {
     if (!pendingDeleteMemo) {
       return;
     }
@@ -1254,7 +1366,18 @@ export function App() {
     if (!didBackup) {
       return;
     }
-    await performDeleteMemo(pendingDeleteMemo.id, "백업 후 메모를 삭제했습니다.");
+    setPendingDeleteMemo(null);
+    setBackupStatus("백업 후 메모창을 닫았습니다.");
+
+    if (!isTauri) {
+      return;
+    }
+
+    try {
+      await closeWindow();
+    } catch (error) {
+      setBackupStatus(`메모창 닫기 실패: ${getErrorMessage(error)}`);
+    }
   };
 
   const isServerReady = hasFirebaseConfigSet && servicesAvailable;
@@ -1384,7 +1507,7 @@ export function App() {
             <p>{DELETE_MEMO_CONFIRM_MESSAGE}</p>
             <p className="delete-dialog__memo-name">{pendingDeleteMemo.label}</p>
             <div className="delete-dialog__actions">
-              <button type="button" onClick={handleBackupThenDelete} disabled={isBusy}>
+              <button type="button" onClick={handleBackupThenClose} disabled={isBusy}>
                 지금 백업하기
               </button>
               <button type="button" onClick={handleDeleteWithoutBackup} disabled={isBusy}>

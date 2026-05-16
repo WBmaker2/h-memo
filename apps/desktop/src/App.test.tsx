@@ -74,6 +74,8 @@ const {
   const mockStartGoogleDesktopOAuth = vi.fn();
   const tauriEventState: {
     memoStoreListener: ((payload: { memoId?: string; deletedMemoId?: string }) => void) | null;
+    trayOpenAllMemosListener: (() => void | Promise<void>) | null;
+    trayCreateMemoListener: (() => void | Promise<void>) | null;
     authStateListener:
       | ((payload: {
           user: { uid: string; displayName: string | null; email: string | null; photoURL: string | null } | null;
@@ -81,11 +83,17 @@ const {
         }) => void)
       | null;
     unlistenMemoStore: ReturnType<typeof vi.fn>;
+    unlistenTrayOpenAllMemos: ReturnType<typeof vi.fn>;
+    unlistenTrayCreateMemo: ReturnType<typeof vi.fn>;
     unlistenAuthState: ReturnType<typeof vi.fn>;
   } = {
     memoStoreListener: null,
+    trayOpenAllMemosListener: null,
+    trayCreateMemoListener: null,
     authStateListener: null,
     unlistenMemoStore: vi.fn(),
+    unlistenTrayOpenAllMemos: vi.fn(),
+    unlistenTrayCreateMemo: vi.fn(),
     unlistenAuthState: vi.fn(),
   };
   const tauriWindowState: {
@@ -320,6 +328,14 @@ vi.mock("./adapters/tauriEvents", () => ({
     tauriEventState.memoStoreListener = listener;
     return tauriEventState.unlistenMemoStore;
   },
+  listenTrayOpenAllMemos: async (listener: () => void | Promise<void>) => {
+    tauriEventState.trayOpenAllMemosListener = listener;
+    return tauriEventState.unlistenTrayOpenAllMemos;
+  },
+  listenTrayCreateMemo: async (listener: () => void | Promise<void>) => {
+    tauriEventState.trayCreateMemoListener = listener;
+    return tauriEventState.unlistenTrayCreateMemo;
+  },
   listenAuthStateChanged: async (
     listener: (payload: {
       user: { uid: string; displayName: string | null; email: string | null; photoURL: string | null } | null;
@@ -453,6 +469,14 @@ beforeEach(() => {
     tauriWindowState.boundsListener = listener;
     return tauriWindowState.unlisten;
   });
+  tauriEventState.memoStoreListener = null;
+  tauriEventState.trayOpenAllMemosListener = null;
+  tauriEventState.trayCreateMemoListener = null;
+  tauriEventState.authStateListener = null;
+  tauriEventState.unlistenMemoStore.mockReset();
+  tauriEventState.unlistenTrayOpenAllMemos.mockReset();
+  tauriEventState.unlistenTrayCreateMemo.mockReset();
+  tauriEventState.unlistenAuthState.mockReset();
   mockExportTextFile.mockResolvedValue({ status: "saved", path: "/tmp/h-memo-backup.txt" });
   mockExportJsonFile.mockResolvedValue({ status: "saved", path: "/tmp/h-memo-backup.json" });
   mockImportJsonFile.mockResolvedValue({ status: "cancelled" });
@@ -543,6 +567,88 @@ describe("desktop App", () => {
         })
       );
     });
+  });
+
+  it("opens all stored desktop memos when the tray asks to open all memos", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const first = createMemo({
+      id: "memo-first",
+      now: "2026-05-16T09:00:00.000Z",
+      plainText: "111",
+    });
+    const second = createMemo({
+      id: "memo-second",
+      now: "2026-05-16T09:01:00.000Z",
+      plainText: "222",
+    });
+    const deleted = {
+      ...createMemo({
+        id: "memo-deleted",
+        now: "2026-05-16T09:02:00.000Z",
+        plainText: "삭제된 메모",
+      }),
+      deletedAt: "2026-05-16T09:03:00.000Z",
+    };
+    tauriRepositoryState.set(first.id, first);
+    tauriRepositoryState.set(second.id, second);
+    tauriRepositoryState.set(deleted.id, deleted);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(tauriEventState.trayOpenAllMemosListener).toEqual(expect.any(Function));
+    });
+
+    await act(async () => {
+      await tauriEventState.trayOpenAllMemosListener?.();
+    });
+
+    await waitFor(() => {
+      expect(mockOpenMemoWindow).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "memo-first" })
+      );
+    });
+    expect(mockOpenMemoWindow).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "memo-deleted" })
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("메모 2개를 열었습니다.");
+  });
+
+  it("creates a new independent memo when the tray asks to create a memo", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const existing = createMemo({
+      id: "memo-existing",
+      now: "2026-05-16T09:00:00.000Z",
+      plainText: "기존 메모",
+    });
+    tauriRepositoryState.set(existing.id, existing);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(tauriEventState.trayCreateMemoListener).toEqual(expect.any(Function));
+    });
+
+    await act(async () => {
+      await tauriEventState.trayCreateMemoListener?.();
+    });
+
+    await waitFor(() => {
+      expect(mockOpenMemoWindow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          plainText: "",
+          deletedAt: null,
+        })
+      );
+    });
+    expect(mockSaveMemo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plainText: "",
+        deletedAt: null,
+      })
+    );
   });
 
   it("keeps browser fallback behavior for text export downloads", async () => {
@@ -926,7 +1032,7 @@ describe("desktop App", () => {
     expect(screen.getByDisplayValue("마지막 메모")).toBeInTheDocument();
   });
 
-  it("asks before deleting a memo and can back up before delete", async () => {
+  it("backs up a memo before closing the window without deleting the local or server copy", async () => {
     const user = userEvent.setup();
     setTauriRuntime(true);
     mockGetStartupEnabled.mockResolvedValue(false);
@@ -969,8 +1075,53 @@ describe("desktop App", () => {
 
     await waitFor(() => {
       expect(mockBackupMemos).toHaveBeenCalledTimes(1);
+      expect(mockSoftDeleteMemo).not.toHaveBeenCalled();
+      expect(mockDeleteBackedUpMemo).not.toHaveBeenCalled();
+      expect(mockCloseWindow).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("status")).toHaveTextContent("백업 후 메모창을 닫았습니다.");
+    });
+    expect(screen.getByRole("button", { name: "삭제 후보 열기" })).toBeInTheDocument();
+  });
+
+  it("deletes a memo locally and from the server when delete is confirmed", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({
+        uid: "user-1",
+        displayName: "테스터",
+        email: "test@example.com",
+        photoURL: "",
+      });
+      return mockAuthUnsubscribe;
+    });
+    mockDeleteBackedUpMemo.mockResolvedValue(1);
+
+    render(<App />);
+    await createMemoFromAppMenu(user);
+    fireEvent.change(screen.getByLabelText("메모 내용"), { target: { value: "완전 삭제 후보" } });
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+
+    await user.click(screen.getByRole("button", { name: "완전 삭제 후보 삭제" }));
+    await user.click(screen.getByRole("button", { name: "삭제하기" }));
+
+    await waitFor(() => {
+      expect(mockDeleteBackedUpMemo).toHaveBeenCalledWith(
+        expect.anything(),
+        "user-1",
+        expect.stringMatching(/^memo-/)
+      );
       expect(mockSoftDeleteMemo).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole("status")).toHaveTextContent("백업 후 메모를 삭제했습니다.");
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "로컬과 서버에서 메모를 삭제했습니다."
+      );
     });
   });
 

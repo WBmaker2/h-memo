@@ -18,16 +18,18 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{
   menu::{Menu, MenuItem},
-  tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-  AppHandle, Manager,
+  tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+  AppHandle, Emitter, Manager,
 };
 use tauri_plugin_dialog::DialogExt;
 use url::{form_urlencoded, Url};
 
 const WINDOW_LABEL: &str = "main";
-const SHOW_MEMO_LABEL: &str = "show_memo";
+const OPEN_ALL_MEMOS_LABEL: &str = "open_all_memos";
 const NEW_MEMO_LABEL: &str = "new_memo";
 const QUIT_LABEL: &str = "quit";
+const TRAY_OPEN_ALL_MEMOS_EVENT: &str = "h-memo:tray-open-all-memos";
+const TRAY_CREATE_MEMO_EVENT: &str = "h-memo:tray-create-memo";
 const GOOGLE_OAUTH_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_OAUTH_SCOPE: &str = "openid email profile";
@@ -460,6 +462,11 @@ fn show_main_window_inner(app: &AppHandle) -> Result<(), String> {
   Ok(())
 }
 
+fn send_tray_event_to_main(app: &AppHandle, event: &str) -> Result<(), String> {
+  show_main_window_inner(app)?;
+  app.emit_to(WINDOW_LABEL, event, ()).map_err(|error| error.to_string())
+}
+
 fn normalize_record(memo: &MemoRecord) -> MemoRecord {
   let now = Utc::now().to_rfc3339();
   let created_at = memo.created_at.clone();
@@ -570,7 +577,7 @@ fn open_db(app: &AppHandle) -> AnyhowResult<Connection> {
 
 fn build_tray(app: &AppHandle) -> AnyhowResult<()> {
   let show_item =
-    MenuItem::with_id(app, SHOW_MEMO_LABEL, "메모 열기", true, None::<&str>)?;
+    MenuItem::with_id(app, OPEN_ALL_MEMOS_LABEL, "메모 모두 열기", true, None::<&str>)?;
   let new_memo_item =
     MenuItem::with_id(app, NEW_MEMO_LABEL, "새 메모", true, None::<&str>)?;
   let quit_item = MenuItem::with_id(app, QUIT_LABEL, "종료", true, None::<&str>)?;
@@ -583,14 +590,14 @@ fn build_tray(app: &AppHandle) -> AnyhowResult<()> {
     .on_menu_event(|app, event| {
       let id = event.id.as_ref();
       match id {
-        SHOW_MEMO_LABEL => {
-          if let Err(error) = show_main_window_inner(app) {
-            eprintln!("failed to open main window: {error}");
+        OPEN_ALL_MEMOS_LABEL => {
+          if let Err(error) = send_tray_event_to_main(app, TRAY_OPEN_ALL_MEMOS_EVENT) {
+            eprintln!("failed to open all memo windows: {error}");
           }
         }
         NEW_MEMO_LABEL => {
-          if let Err(error) = show_main_window_inner(app) {
-            eprintln!("failed to open main window: {error}");
+          if let Err(error) = send_tray_event_to_main(app, TRAY_CREATE_MEMO_EVENT) {
+            eprintln!("failed to create memo from tray: {error}");
           }
         }
         QUIT_LABEL => {
@@ -601,14 +608,13 @@ fn build_tray(app: &AppHandle) -> AnyhowResult<()> {
     })
     .on_tray_icon_event(|tray, event| {
       let app = tray.app_handle();
-      if let TrayIconEvent::Click {
+      if let TrayIconEvent::DoubleClick {
         button: MouseButton::Left,
-        button_state: MouseButtonState::Up,
         ..
       } = event
       {
-        if let Err(error) = show_main_window_inner(app) {
-          eprintln!("failed to focus main window: {error}");
+        if let Err(error) = send_tray_event_to_main(app, TRAY_OPEN_ALL_MEMOS_EVENT) {
+          eprintln!("failed to open all memo windows from tray double click: {error}");
         }
       }
     })
