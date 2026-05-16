@@ -23,7 +23,6 @@ jobs:
     timeout-minutes: 50
     permissions:
       contents: read
-      id-token: write
     outputs:
       release_tag: ${{ steps.release_tag.outputs.release_tag }}
     steps:
@@ -97,96 +96,6 @@ jobs:
           VITE_FIREBASE_MEASUREMENT_ID: ${{ secrets.VITE_FIREBASE_MEASUREMENT_ID || vars.VITE_FIREBASE_MEASUREMENT_ID || '' }}
           VITE_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.VITE_GOOGLE_OAUTH_CLIENT_ID || vars.VITE_GOOGLE_OAUTH_CLIENT_ID || '' }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET || '' }}
-
-      - name: Resolve Azure Artifact Signing config
-        id: artifact_signing
-        shell: pwsh
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          GITHUB_REF_VALUE: ${{ github.ref }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID || '' }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID || '' }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID || '' }}
-          AZURE_ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT || vars.AZURE_ARTIFACT_SIGNING_ENDPOINT || '' }}
-          AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME || vars.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME || '' }}
-          AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME || vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME || '' }}
-        run: |
-          $isReleaseBuild = $env:EVENT_NAME -eq "workflow_dispatch" -or $env:GITHUB_REF_VALUE -like "refs/tags/*"
-
-          if ($env:EVENT_NAME -eq "pull_request") {
-            Write-Host "Azure Artifact Signing is skipped for pull_request builds."
-            "enabled=false" >> $env:GITHUB_OUTPUT
-            exit 0
-          }
-
-          $requiredVariables = @(
-            "AZURE_CLIENT_ID",
-            "AZURE_TENANT_ID",
-            "AZURE_SUBSCRIPTION_ID",
-            "AZURE_ARTIFACT_SIGNING_ENDPOINT",
-            "AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME",
-            "AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME"
-          )
-          $missingVariables = @(
-            $requiredVariables | Where-Object {
-              [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_))
-            }
-          )
-
-          if ($missingVariables.Count -gt 0) {
-            $message = "Azure Artifact Signing config is missing: $($missingVariables -join ', ')"
-            if ($isReleaseBuild) {
-              Write-Error "Release signing requires a complete Azure Artifact Signing configuration. $message"
-              exit 1
-            }
-
-            Write-Warning "$message. Unsigned branch artifact build will continue."
-            "enabled=false" >> $env:GITHUB_OUTPUT
-            exit 0
-          }
-
-          Write-Host "Azure Artifact Signing is enabled for this build."
-          "enabled=true" >> $env:GITHUB_OUTPUT
-
-      - name: Azure login for Artifact Signing
-        if: steps.artifact_signing.outputs.enabled == 'true'
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Sign MSI installer with Azure Artifact Signing
-        if: steps.artifact_signing.outputs.enabled == 'true'
-        uses: azure/artifact-signing-action@v1
-        with:
-          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT || vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME || vars.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME || vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          files-folder: ${{ github.workspace }}\apps\desktop\src-tauri\target\release\bundle\msi
-          files-folder-filter: msi
-          files-folder-recurse: false
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-          description: H Memo Windows MSI installer
-          description-url: https://github.com/${{ github.repository }}
-
-      - name: Sign NSIS installer with Azure Artifact Signing
-        if: steps.artifact_signing.outputs.enabled == 'true'
-        uses: azure/artifact-signing-action@v1
-        with:
-          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT || vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME || vars.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME || vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
-          files-folder: ${{ github.workspace }}\apps\desktop\src-tauri\target\release\bundle\nsis
-          files-folder-filter: exe
-          files-folder-recurse: false
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-          description: H Memo Windows NSIS installer
-          description-url: https://github.com/${{ github.repository }}
 
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v7

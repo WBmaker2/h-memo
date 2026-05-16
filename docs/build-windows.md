@@ -39,8 +39,6 @@ npm run check:versions
 - `apps/desktop/src-tauri/target/release/bundle/msi/*.msi`
 - `apps/desktop/src-tauri/target/release/bundle/nsis/*.exe`
 
-GitHub Actions `windows-tauri.yml`에서는 Azure Artifact Signing 설정이 준비된 경우 위 MSI/NSIS 설치 파일을 업로드 전에 서명합니다. 태그 또는 수동 릴리스 빌드는 서명 구성이 없으면 실패하므로, 정식 배포 전에 [`docs/release.md`](./release.md)의 Azure Artifact Signing 설정을 먼저 완료하세요.
-
 > 로컬 환경에서 `cargo`가 없으면 `npm run tauri:build -w apps/desktop`은 `cargo not found` 또는 유사 에러로 실패할 수 있습니다.  
 > 이 경우 Windows Tauri 검증은 GitHub Actions 워크플로(`windows-tauri.yml`)로 대체하세요.
 
