@@ -36,10 +36,12 @@ import {
 import {
   listenAuthStateChanged,
   listenMemoStoreChanged,
+  listenStartupStateChanged,
   listenTrayCreateMemo,
   listenTrayOpenAllMemos,
   notifyAuthStateChanged,
   notifyMemoStoreChanged,
+  notifyStartupStateChanged,
   type MemoStoreChangedPayload,
 } from "./adapters/tauriEvents";
 import { startGoogleDesktopOAuth } from "./adapters/tauriGoogleOAuth";
@@ -492,6 +494,37 @@ export function App() {
       cleanup?.();
     };
   }, [isTauri, setSignedInUser, setSignedOutUser]);
+
+  useEffect(() => {
+    if (!isTauri) {
+      return;
+    }
+
+    let isMounted = true;
+    let cleanup: (() => void) | null = null;
+
+    void listenStartupStateChanged((payload) => {
+      if (!isMounted) {
+        return;
+      }
+      setStartupEnabled(payload.enabled);
+    })
+      .then((unlisten) => {
+        if (!isMounted) {
+          unlisten();
+          return;
+        }
+        cleanup = unlisten;
+      })
+      .catch((error) => {
+        setBackupStatus(`시작프로그램 상태 공유 수신 실패: ${getErrorMessage(error)}`);
+      });
+
+    return () => {
+      isMounted = false;
+      cleanup?.();
+    };
+  }, [isTauri]);
 
   const visibleMemos = useMemo(
     () => memos.filter((memo) => memo.deletedAt === null),
@@ -1312,6 +1345,9 @@ export function App() {
     try {
       const nextEnabled = await setTauriStartupEnabled(enabled);
       setStartupEnabled(nextEnabled);
+      void notifyStartupStateChanged({ enabled: nextEnabled }).catch((error) => {
+        setBackupStatus(`시작프로그램 상태 공유 실패: ${getErrorMessage(error)}`);
+      });
       if (nextEnabled !== enabled) {
         setBackupStatus("시작프로그램 설정을 변경하지 못했습니다.");
       }

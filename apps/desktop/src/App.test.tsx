@@ -42,6 +42,7 @@ const {
   mockListenWindowBoundsChanged,
   mockNotifyMemoStoreChanged,
   mockNotifyAuthStateChanged,
+  mockNotifyStartupStateChanged,
   mockStartGoogleDesktopOAuth,
   tauriRepositoryState,
   tauriWindowState,
@@ -73,11 +74,13 @@ const {
   const mockListenWindowBoundsChanged = vi.fn();
   const mockNotifyMemoStoreChanged = vi.fn();
   const mockNotifyAuthStateChanged = vi.fn();
+  const mockNotifyStartupStateChanged = vi.fn();
   const mockStartGoogleDesktopOAuth = vi.fn();
   const tauriEventState: {
     memoStoreListener: ((payload: { memoId?: string; deletedMemoId?: string }) => void) | null;
     trayOpenAllMemosListener: (() => void | Promise<void>) | null;
     trayCreateMemoListener: (() => void | Promise<void>) | null;
+    startupStateListener: ((payload: { enabled: boolean }) => void) | null;
     authStateListener:
       | ((payload: {
           user: { uid: string; displayName: string | null; email: string | null; photoURL: string | null } | null;
@@ -87,15 +90,18 @@ const {
     unlistenMemoStore: ReturnType<typeof vi.fn>;
     unlistenTrayOpenAllMemos: ReturnType<typeof vi.fn>;
     unlistenTrayCreateMemo: ReturnType<typeof vi.fn>;
+    unlistenStartupState: ReturnType<typeof vi.fn>;
     unlistenAuthState: ReturnType<typeof vi.fn>;
   } = {
     memoStoreListener: null,
     trayOpenAllMemosListener: null,
     trayCreateMemoListener: null,
+    startupStateListener: null,
     authStateListener: null,
     unlistenMemoStore: vi.fn(),
     unlistenTrayOpenAllMemos: vi.fn(),
     unlistenTrayCreateMemo: vi.fn(),
+    unlistenStartupState: vi.fn(),
     unlistenAuthState: vi.fn(),
   };
   const tauriWindowState: {
@@ -218,6 +224,7 @@ const {
     mockListenWindowBoundsChanged,
     mockNotifyMemoStoreChanged,
     mockNotifyAuthStateChanged,
+    mockNotifyStartupStateChanged,
     mockStartGoogleDesktopOAuth,
     tauriRepositoryState,
     tauriWindowState,
@@ -326,6 +333,7 @@ vi.mock("./adapters/tauriWindow", () => ({
 vi.mock("./adapters/tauriEvents", () => ({
   notifyMemoStoreChanged: (payload: unknown) => mockNotifyMemoStoreChanged(payload),
   notifyAuthStateChanged: (payload: unknown) => mockNotifyAuthStateChanged(payload),
+  notifyStartupStateChanged: (payload: unknown) => mockNotifyStartupStateChanged(payload),
   listenMemoStoreChanged: async (
     listener: (payload: { memoId?: string; deletedMemoId?: string }) => void
   ) => {
@@ -348,6 +356,10 @@ vi.mock("./adapters/tauriEvents", () => ({
   ) => {
     tauriEventState.authStateListener = listener;
     return tauriEventState.unlistenAuthState;
+  },
+  listenStartupStateChanged: async (listener: (payload: { enabled: boolean }) => void) => {
+    tauriEventState.startupStateListener = listener;
+    return tauriEventState.unlistenStartupState;
   },
 }));
 
@@ -439,13 +451,16 @@ beforeEach(() => {
   mockListenWindowBoundsChanged.mockReset();
   mockNotifyMemoStoreChanged.mockReset();
   mockNotifyAuthStateChanged.mockReset();
+  mockNotifyStartupStateChanged.mockReset();
   mockStartGoogleDesktopOAuth.mockReset();
   tauriWindowState.bounds = { x: 20, y: 30, width: 380, height: 420 };
   tauriWindowState.boundsListener = null;
   tauriWindowState.unlisten.mockReset();
   tauriEventState.memoStoreListener = null;
+  tauriEventState.startupStateListener = null;
   tauriEventState.authStateListener = null;
   tauriEventState.unlistenMemoStore.mockReset();
+  tauriEventState.unlistenStartupState.mockReset();
   tauriEventState.unlistenAuthState.mockReset();
 
   mockSaveMemo.mockImplementation((nextMemo: any) => defaultSaveMemo(nextMemo));
@@ -478,10 +493,12 @@ beforeEach(() => {
   tauriEventState.memoStoreListener = null;
   tauriEventState.trayOpenAllMemosListener = null;
   tauriEventState.trayCreateMemoListener = null;
+  tauriEventState.startupStateListener = null;
   tauriEventState.authStateListener = null;
   tauriEventState.unlistenMemoStore.mockReset();
   tauriEventState.unlistenTrayOpenAllMemos.mockReset();
   tauriEventState.unlistenTrayCreateMemo.mockReset();
+  tauriEventState.unlistenStartupState.mockReset();
   tauriEventState.unlistenAuthState.mockReset();
   mockExportTextFile.mockResolvedValue({ status: "saved", path: "/tmp/h-memo-backup.txt" });
   mockExportJsonFile.mockResolvedValue({ status: "saved", path: "/tmp/h-memo-backup.json" });
@@ -490,6 +507,7 @@ beforeEach(() => {
   mockDeleteBackedUpMemo.mockResolvedValue(0);
   mockNotifyMemoStoreChanged.mockResolvedValue(undefined);
   mockNotifyAuthStateChanged.mockResolvedValue(undefined);
+  mockNotifyStartupStateChanged.mockResolvedValue(undefined);
   mockCompleteGoogleRedirectSignIn.mockResolvedValue(null);
   mockWaitForSignedInUser.mockResolvedValue(null);
   Object.defineProperty(window, "confirm", {
@@ -979,6 +997,53 @@ describe("desktop App", () => {
       expect(startupSwitch).not.toBeChecked();
       expect(screen.getByRole("status")).toHaveTextContent("시작프로그램 설정을 변경하지 못했습니다.");
     });
+  });
+
+  it("broadcasts startup registration changes to other memo windows", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    mockSetStartupEnabled.mockResolvedValue(true);
+
+    render(<App />);
+    const startupSwitch = screen.getByRole("switch", { name: "시작프로그램 등록" });
+
+    await waitFor(() => {
+      expect(startupSwitch).not.toBeChecked();
+    });
+
+    await user.click(startupSwitch);
+
+    await waitFor(() => {
+      expect(mockSetStartupEnabled).toHaveBeenCalledWith(true);
+      expect(mockNotifyStartupStateChanged).toHaveBeenCalledWith({ enabled: true });
+      expect(startupSwitch).toBeChecked();
+    });
+  });
+
+  it("syncs startup registration state from another memo window", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+
+    render(<App />);
+    const startupSwitch = screen.getByRole("switch", { name: "시작프로그램 등록" });
+
+    await waitFor(() => {
+      expect(startupSwitch).not.toBeChecked();
+      expect(tauriEventState.startupStateListener).not.toBeNull();
+    });
+
+    act(() => {
+      tauriEventState.startupStateListener?.({ enabled: true });
+    });
+
+    expect(startupSwitch).toBeChecked();
+
+    act(() => {
+      tauriEventState.startupStateListener?.({ enabled: false });
+    });
+
+    expect(startupSwitch).not.toBeChecked();
   });
 
   it("excludes deleted memo from export", async () => {

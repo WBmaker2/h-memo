@@ -3,6 +3,7 @@ import type { HMemoUser } from "@h-memo/memo-sync";
 
 const MEMO_STORE_CHANGED_EVENT = "h-memo:memo-store-changed";
 const AUTH_STATE_CHANGED_EVENT = "h-memo:auth-state-changed";
+const STARTUP_STATE_CHANGED_EVENT = "h-memo:startup-state-changed";
 const TRAY_OPEN_ALL_MEMOS_EVENT = "h-memo:tray-open-all-memos";
 const TRAY_CREATE_MEMO_EVENT = "h-memo:tray-create-memo";
 const sourceId = `window-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -17,6 +18,11 @@ export type AuthStateChangedPayload = {
   sourceId: string;
   user: HMemoUser | null;
   status: string;
+};
+
+export type StartupStateChangedPayload = {
+  sourceId: string;
+  enabled: boolean;
 };
 
 export function notifyMemoStoreChanged(
@@ -52,6 +58,26 @@ export function listenAuthStateChanged(
   handler: (payload: Omit<AuthStateChangedPayload, "sourceId">) => void
 ) {
   return listen<AuthStateChangedPayload>(AUTH_STATE_CHANGED_EVENT, (event) => {
+    if (event.payload.sourceId === sourceId) {
+      return;
+    }
+    handler(event.payload);
+  });
+}
+
+export function notifyStartupStateChanged(
+  payload: Omit<StartupStateChangedPayload, "sourceId">
+) {
+  return emit<StartupStateChangedPayload>(STARTUP_STATE_CHANGED_EVENT, {
+    sourceId,
+    ...payload,
+  });
+}
+
+export function listenStartupStateChanged(
+  handler: (payload: Omit<StartupStateChangedPayload, "sourceId">) => void
+) {
+  return listen<StartupStateChangedPayload>(STARTUP_STATE_CHANGED_EVENT, (event) => {
     if (event.payload.sourceId === sourceId) {
       return;
     }
