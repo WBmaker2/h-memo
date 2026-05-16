@@ -23,6 +23,7 @@ import {
 } from "./adapters/tauriPlatform";
 import {
   closeWindow,
+  closeMemoWindow,
   openMemoWindow,
   listenWindowBoundsChanged,
   readWindowBounds,
@@ -1374,7 +1375,11 @@ export function App() {
     }
 
     try {
-      await closeWindow();
+      if (activeMemoIdRef.current === pendingDeleteMemo.id) {
+        await closeWindow();
+      } else {
+        await closeMemoWindow(pendingDeleteMemo.id);
+      }
     } catch (error) {
       setBackupStatus(`메모창 닫기 실패: ${getErrorMessage(error)}`);
     }

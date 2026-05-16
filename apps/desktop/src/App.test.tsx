@@ -34,6 +34,7 @@ const {
   mockStartWindowDrag,
   mockStartWindowResize,
   mockCloseWindow,
+  mockCloseMemoWindow,
   mockOpenMemoWindow,
   mockReadWindowBounds,
   mockRestoreWindowBounds,
@@ -65,6 +66,7 @@ const {
   const mockStartWindowDrag = vi.fn();
   const mockStartWindowResize = vi.fn();
   const mockCloseWindow = vi.fn();
+  const mockCloseMemoWindow = vi.fn();
   const mockOpenMemoWindow = vi.fn();
   const mockRestoreWindowBounds = vi.fn();
   const mockSetWindowHeight = vi.fn();
@@ -208,6 +210,7 @@ const {
     mockStartWindowDrag,
     mockStartWindowResize,
     mockCloseWindow,
+    mockCloseMemoWindow,
     mockOpenMemoWindow,
     mockReadWindowBounds,
     mockRestoreWindowBounds,
@@ -309,6 +312,7 @@ vi.mock("./adapters/tauriWindow", () => ({
   startWindowDrag: () => mockStartWindowDrag(),
   startWindowResize: (direction: "SouthEast") => mockStartWindowResize(direction),
   closeWindow: () => mockCloseWindow(),
+  closeMemoWindow: (memoId: string) => mockCloseMemoWindow(memoId),
   openMemoWindow: (memo: unknown) => mockOpenMemoWindow(memo),
   readWindowBounds: () => mockReadWindowBounds(),
   restoreWindowBounds: (bounds: unknown) => mockRestoreWindowBounds(bounds),
@@ -427,6 +431,7 @@ beforeEach(() => {
   mockStartWindowDrag.mockReset();
   mockStartWindowResize.mockReset();
   mockCloseWindow.mockReset();
+  mockCloseMemoWindow.mockReset();
   mockOpenMemoWindow.mockReset();
   mockReadWindowBounds.mockReset();
   mockRestoreWindowBounds.mockReset();
@@ -461,6 +466,7 @@ beforeEach(() => {
   mockStartWindowDrag.mockResolvedValue(undefined);
   mockStartWindowResize.mockResolvedValue(undefined);
   mockCloseWindow.mockResolvedValue(undefined);
+  mockCloseMemoWindow.mockResolvedValue(undefined);
   mockOpenMemoWindow.mockResolvedValue(undefined);
   mockReadWindowBounds.mockImplementation(async () => tauriWindowState.bounds);
   mockRestoreWindowBounds.mockResolvedValue(undefined);
@@ -1081,6 +1087,70 @@ describe("desktop App", () => {
       expect(screen.getByRole("status")).toHaveTextContent("백업 후 메모창을 닫았습니다.");
     });
     expect(screen.getByRole("button", { name: "삭제 후보 열기" })).toBeInTheDocument();
+  });
+
+  it("backs up and closes the selected memo window instead of the current main window", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({
+        uid: "user-1",
+        displayName: "테스터",
+        email: "test@example.com",
+        photoURL: "",
+      });
+      return mockAuthUnsubscribe;
+    });
+    mockBackupMemos.mockResolvedValue({
+      path: "users/user-1/backups/1",
+      payload: {
+        version: 1,
+        userId: "user-1",
+        createdAt: "2026-05-16T09:04:00.000Z",
+        memos: [],
+      },
+    });
+    const activeMainMemo = createMemo({
+      id: "memo-111",
+      now: "2026-05-16T09:03:00.000Z",
+      plainText: "111",
+    });
+    const otherMemo = createMemo({
+      id: "memo-222",
+      now: "2026-05-16T09:02:00.000Z",
+      plainText: "222",
+    });
+    const selectedMemo = createMemo({
+      id: "memo-3333",
+      now: "2026-05-16T09:01:00.000Z",
+      plainText: "3333",
+    });
+    tauriRepositoryState.set(activeMainMemo.id, activeMainMemo);
+    tauriRepositoryState.set(otherMemo.id, otherMemo);
+    tauriRepositoryState.set(selectedMemo.id, selectedMemo);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("111")).toBeInTheDocument();
+    });
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    await user.click(screen.getByRole("button", { name: "3333 삭제" }));
+    await user.click(screen.getByRole("button", { name: "지금 백업하기" }));
+
+    await waitFor(() => {
+      expect(mockBackupMemos).toHaveBeenCalledTimes(1);
+      expect(mockCloseMemoWindow).toHaveBeenCalledWith("memo-3333");
+      expect(mockCloseWindow).not.toHaveBeenCalled();
+      expect(screen.getByRole("status")).toHaveTextContent("백업 후 메모창을 닫았습니다.");
+    });
   });
 
   it("deletes a memo locally and from the server when delete is confirmed", async () => {

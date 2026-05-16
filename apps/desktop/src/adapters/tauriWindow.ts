@@ -63,6 +63,14 @@ export async function openMemoWindow(memo: Memo) {
   });
 }
 
+export async function closeMemoWindow(memoId: string) {
+  const memoWindow = await WebviewWindow.getByLabel(getMemoWindowLabel(memoId));
+  if (!memoWindow) {
+    return;
+  }
+  await memoWindow.close();
+}
+
 export async function readWindowBounds(): Promise<WindowBounds> {
   const currentWindow = getCurrentWindow();
   const [position, size] = await Promise.all([
