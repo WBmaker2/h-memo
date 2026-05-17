@@ -897,7 +897,7 @@ Add this section to `docs/firebase-setup.md` after “구글 로그인 설정”
 - 커스텀 도메인을 붙이면 해당 도메인도 추가
 - 앱 URL 예시: `https://wbmaker2.github.io/h-memo/`
 
-웹앱은 브라우저 Firebase Auth popup/redirect 흐름을 사용합니다. 데스크톱 앱의 `VITE_GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` Desktop OAuth 설정은 웹앱 빌드에 필요하지 않습니다.
+웹앱은 브라우저 Firebase Auth popup/redirect 흐름을 사용합니다. 데스크톱 앱의 `VITE_GOOGLE_OAUTH_CLIENT_ID` Desktop OAuth 설정은 웹앱 빌드에 필요하지 않습니다.
 ```
 
 - [ ] **Step 2: Update README web commands**

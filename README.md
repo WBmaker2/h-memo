@@ -35,8 +35,8 @@ npm run dev
 
 ### Firebase 환경 변수
 
-기본 배포판은 H Memo용 Firebase Web Client 설정을 내장합니다. Windows/macOS 데스크톱 Google 로그인은 시스템 기본 브라우저와 로컬 loopback을 사용하는 **Desktop app** OAuth client가 필요하므로, 운영 빌드에는 `VITE_GOOGLE_OAUTH_CLIENT_ID`와 `GOOGLE_OAUTH_CLIENT_SECRET`을 함께 주입해야 합니다. 다른 Firebase 프로젝트로 개발/스테이징 테스트를 할 때는 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고해 환경 변수를 지정하세요.
-운영 배포판은 H Memo용 Firebase Web Client 설정과 Desktop OAuth client ID/secret을 내장해 사용자가 `구글 로그인`만으로 백업/복원을 시작할 수 있게 합니다. `GOOGLE_OAUTH_CLIENT_SECRET`은 프론트엔드 `VITE_` 변수로 노출하지 않고 Tauri 빌드 환경에서만 전달합니다.
+기본 배포판은 H Memo용 Firebase Web Client 설정을 내장합니다. Windows/macOS 데스크톱 Google 로그인은 시스템 기본 브라우저와 로컬 loopback을 사용하는 **Desktop app** OAuth 흐름이므로, 운영 빌드에는 `VITE_GOOGLE_OAUTH_CLIENT_ID`만 주입하면 됩니다. 다른 Firebase 프로젝트로 개발/스테이징 테스트를 할 때는 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고해 환경 변수를 지정하세요.
+운영 배포판은 H Memo용 Firebase Web Client 설정과 Desktop OAuth client ID를 내장해 사용자가 `구글 로그인`만으로 백업/복원을 시작할 수 있게 합니다. OAuth client secret은 더 이상 배포본에 주입하지 않습니다.
 내장/빌드 설정이 모두 비어 있는 개발 빌드에서만 앱 메뉴의 `구글 로그인 설정` 입력 폼이 나타납니다.
 
 ## Web App
@@ -100,3 +100,4 @@ npm run tauri:build:macos
   - [`.github/workflows/windows-tauri.yml`](.github/workflows/windows-tauri.yml)
   - [`.github/workflows/macos-tauri.yml`](.github/workflows/macos-tauri.yml)
   - [`docs/release.md`](./docs/release.md)
+- 공개 저장소 보안 가이드: [`docs/public-repo-security.md`](./docs/public-repo-security.md)
