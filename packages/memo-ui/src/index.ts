@@ -7,3 +7,7 @@ export {
 } from "./SettingsPanel";
 export { memoBackgrounds, textColors, fontFamilies } from "./theme";
 export { MemoWorkspace } from "./MemoWorkspace";
+export {
+  type ServerMemoManagerDialogProps,
+  ServerMemoManagerDialog,
+} from "./ServerMemoManagerDialog";
