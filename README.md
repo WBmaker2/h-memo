@@ -61,6 +61,14 @@ npm run check:versions
 
 - [`docs/web-roadmap.md`](./docs/web-roadmap.md)
 
+## 홍보 페이지와 웹 미리보기
+
+- 웹 루트는 H Memo 소개/다운로드 페이지입니다.
+- 기존 브라우저 메모 미리보기는 `#/app`에서 확인할 수 있습니다.
+- 공개 홍보 페이지는 이 private repo에서 빌드한 정적 파일을 public `WBmaker2/h-memo-releases` repo의 GitHub Pages에 배포합니다.
+- 공개 다운로드 버튼은 public `WBmaker2/h-memo-releases`의 최신 릴리스에서 Windows `.msi`를 우선 찾고, 없으면 `.exe`를 사용합니다.
+- 최신 릴리스 API를 사용할 수 없을 때는 public Pages의 `download-manifest.json`을 fallback으로 사용하며, 그래도 설치 파일 URL이 없으면 버튼을 비활성 상태로 유지합니다.
+
 ### 웹 앱 동기화 상태
 
 - Firebase 설정이 내장되었거나 환경 변수로 제공되면 웹 앱에서 구글 로그인 후 서버 백업/복원이 동작합니다.

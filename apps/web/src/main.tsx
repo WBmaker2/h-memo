@@ -1,12 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { WebApp } from "./WebApp";
+import { AppRouter } from "./AppRouter";
 import { registerServiceWorker, resolveServiceWorkerUrl } from "./serviceWorker";
 import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <WebApp />
+    <AppRouter />
   </StrictMode>
 );
 
