@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("Public repo security guardrails", () => {
-  it("includes Dependabot config for npm dependencies", () => {
+  it("includes Dependabot config for npm and documented Cargo dependencies", () => {
     const dependabotPath = path.resolve(".github", "dependabot.yml");
     expect(existsSync(dependabotPath)).toBe(true);
 
@@ -14,6 +14,10 @@ describe("Public repo security guardrails", () => {
     expect(dependabot).toContain("directory: \"/\"");
     expect(dependabot).toContain("interval: \"weekly\"");
     expect(dependabot).toContain("open-pull-requests-limit:");
+    expect(dependabot).toContain("package-ecosystem: \"cargo\"");
+    expect(dependabot).toContain("directory: \"/apps/desktop/src-tauri\"");
+    expect(dependabot).toContain("dependency-name: \"glib\"");
+    expect(dependabot).toContain("Tauri 2 currently pulls glib 0.18.x");
   });
 
   it("documents public repository security and links it from README/release docs", () => {
@@ -31,6 +35,9 @@ describe("Public repo security guardrails", () => {
     expect(docContent).toContain("Desktop OAuth client ID + PKCE/loopback");
     expect(docContent).toContain("Secret scanning");
     expect(docContent).toContain("Dependabot security updates");
+    expect(docContent).toContain("Cargo/Tauri 예외");
+    expect(docContent).toContain("RUSTSEC-2024-0429");
+    expect(docContent).toContain("glib >=0.20.0");
     expect(docContent).toContain("릴리스 발행 전 점검");
     expect(
       readme.includes("public-repo-security.md") ||

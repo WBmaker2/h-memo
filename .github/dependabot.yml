@@ -5,3 +5,13 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+  - package-ecosystem: "cargo"
+    directory: "/apps/desktop/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    ignore:
+      # Tauri 2 currently pulls glib 0.18.x through Linux-only GTK/WebKitGTK
+      # dependencies. H Memo ships Windows/macOS artifacts, and Dependabot
+      # cannot resolve glib >=0.20.0 until the upstream Tauri GTK stack moves.
+      - dependency-name: "glib"
