@@ -1,0 +1,78 @@
+name: macOS Tauri Build
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos-tauri:
+    name: Build macOS Internal Test Artifacts
+    runs-on: macos-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check version consistency
+        run: npm run check:versions
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Run Tauri Rust tests
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Build desktop bundle
+        run: npm run build -w apps/desktop
+
+      - name: Build macOS app and DMG
+        run: npm run tauri:build:macos
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY || vars.VITE_FIREBASE_API_KEY || '' }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN || vars.VITE_FIREBASE_AUTH_DOMAIN || '' }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID || vars.VITE_FIREBASE_PROJECT_ID || '' }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID || vars.VITE_FIREBASE_APP_ID || '' }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET || vars.VITE_FIREBASE_STORAGE_BUCKET || '' }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID || vars.VITE_FIREBASE_MESSAGING_SENDER_ID || '' }}
+          VITE_FIREBASE_MEASUREMENT_ID: ${{ secrets.VITE_FIREBASE_MEASUREMENT_ID || vars.VITE_FIREBASE_MEASUREMENT_ID || '' }}
+          VITE_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.VITE_GOOGLE_OAUTH_CLIENT_ID || vars.VITE_GOOGLE_OAUTH_CLIENT_ID || '' }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET || '' }}
+          APPLE_SIGNING_IDENTITY: "-"
+
+      - name: Upload macOS app artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: h-memo-macos-app
+          path: apps/desktop/src-tauri/target/release/bundle/macos/*.app
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: h-memo-macos-dmg
+          path: apps/desktop/src-tauri/target/release/bundle/dmg/*_internal.dmg

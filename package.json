@@ -17,6 +17,8 @@
     "build": "node scripts/run-workspace-script.mjs build",
     "tauri:dev": "npm run tauri:dev -w apps/desktop",
     "tauri:build": "npm run tauri:build -w apps/desktop",
+    "tauri:build:windows": "npm run tauri:build:windows -w apps/desktop",
+    "tauri:build:macos": "node scripts/build-macos-internal.mjs",
     "verify:windows-artifacts": "node scripts/verify-windows-artifacts.mjs"
   },
   "devDependencies": {
