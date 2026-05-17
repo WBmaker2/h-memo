@@ -58,4 +58,25 @@ describe("manifest.webmanifest", () => {
     });
     expect(invalidEntries).toHaveLength(0);
   });
+
+  it("uses relative URLs for GitHub Pages base path safety", () => {
+    const manifest = parseManifest();
+    const publicDir = getPublicDir(getManifestPath());
+
+    expect(typeof manifest.start_url).toBe("string");
+    expect(typeof manifest.scope).toBe("string");
+    expect(manifest.start_url?.startsWith(".")).toBe(true);
+    expect(manifest.scope?.startsWith(".")).toBe(true);
+
+    const invalidIcons = (manifest.icons ?? []).filter((icon) => {
+      if (!icon?.src) {
+        return true;
+      }
+      if (!icon.src.startsWith(".")) {
+        return true;
+      }
+      return !existsSync(resolve(publicDir, toPublicPath(icon.src)));
+    });
+    expect(invalidIcons).toHaveLength(0);
+  });
 });
