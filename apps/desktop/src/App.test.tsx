@@ -921,14 +921,16 @@ describe("desktop App", () => {
     });
 
     vi.useFakeTimers();
-    tauriWindowState.bounds = { x: 333, y: 444, width: 460, height: 390 };
-    tauriWindowState.boundsListener?.();
+    try {
+      tauriWindowState.bounds = { x: 333, y: 444, width: 460, height: 390 };
+      tauriWindowState.boundsListener?.();
 
-    await act(async () => {
-      vi.advanceTimersByTime(260);
-      await Promise.resolve();
-    });
-    vi.useRealTimers();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(260);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
 
     await waitFor(() => {
       expect(mockSaveMemo).toHaveBeenCalledWith(
