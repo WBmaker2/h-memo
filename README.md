@@ -1,6 +1,6 @@
 # H Memo
 
-H Memo는 Tauri 2 + React + TypeScript로 만든 Windows 데스크톱 1차 MVP입니다.  
+H Memo는 Tauri 2 + React + TypeScript로 만든 데스크톱/웹 메모 앱입니다.
 공통 메모 도메인과 UI는 워크스페이스 패키지에 두고, `apps/desktop`에서 플랫폼 실행 로직만 처리합니다.
 
 ## 모노레포 구조
@@ -23,6 +23,7 @@ npm run build -w apps/desktop # desktop 패키지 단독 빌드
 npm run build -w apps/web     # web 미리보기 패키지 단독 빌드
 npm run tauri:dev            # Tauri 개발 실행
 npm run tauri:build          # Tauri Windows/MSI/NSIS 빌드 시도
+npm run tauri:build:macos    # macOS 내부 테스트용 .app/.dmg 빌드
 ```
 
 ## 로컬 개발 가이드
@@ -34,7 +35,7 @@ npm run dev
 
 ### Firebase 환경 변수
 
-기본 배포판은 H Memo용 Firebase Web Client 설정을 내장합니다. Windows 데스크톱 Google 로그인은 시스템 기본 브라우저와 로컬 loopback을 사용하는 **Desktop app** OAuth client가 필요하므로, 운영 빌드에는 `VITE_GOOGLE_OAUTH_CLIENT_ID`와 `GOOGLE_OAUTH_CLIENT_SECRET`을 함께 주입해야 합니다. 다른 Firebase 프로젝트로 개발/스테이징 테스트를 할 때는 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고해 환경 변수를 지정하세요.
+기본 배포판은 H Memo용 Firebase Web Client 설정을 내장합니다. Windows/macOS 데스크톱 Google 로그인은 시스템 기본 브라우저와 로컬 loopback을 사용하는 **Desktop app** OAuth client가 필요하므로, 운영 빌드에는 `VITE_GOOGLE_OAUTH_CLIENT_ID`와 `GOOGLE_OAUTH_CLIENT_SECRET`을 함께 주입해야 합니다. 다른 Firebase 프로젝트로 개발/스테이징 테스트를 할 때는 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고해 환경 변수를 지정하세요.
 운영 배포판은 H Memo용 Firebase Web Client 설정과 Desktop OAuth client ID/secret을 내장해 사용자가 `구글 로그인`만으로 백업/복원을 시작할 수 있게 합니다. `GOOGLE_OAUTH_CLIENT_SECRET`은 프론트엔드 `VITE_` 변수로 노출하지 않고 Tauri 빌드 환경에서만 전달합니다.
 내장/빌드 설정이 모두 비어 있는 개발 빌드에서만 앱 메뉴의 `구글 로그인 설정` 입력 폼이 나타납니다.
 
@@ -51,6 +52,7 @@ npm run check:versions
 ## 현재 지원 기능
 
 - Windows 앱에서는 여러 개의 포스트잇 메모를 각각 독립 창으로 만들고, 앱을 다시 실행해도 마지막 내용과 위치/크기를 유지합니다.
+- macOS 앱은 내부 테스트용 `.app`/`.dmg` 빌드를 지원합니다. Apple Developer ID 서명/공증은 아직 적용하지 않았습니다.
 - 메모별 메뉴에서 색상, 글꼴, 글자 크기, 글자색을 조절하고 필요 없는 메모를 삭제할 수 있습니다.
 - 앱 메뉴의 `메모 관리`에서 여러 메모를 한꺼번에 확인하고, 독립 창으로 열거나 삭제할 수 있습니다.
 - `TXT 내보내기`로 현재 메모 내용을 로컬 텍스트 파일로 저장할 수 있습니다.
@@ -68,19 +70,22 @@ npm run check:versions
 
 ### Tauri 빌드
 
-Windows 패키징은 Rust/Cargo가 필요합니다.  
-로컬에서 현재 환경에 cargo가 없으면 `npm run tauri:build -w apps/desktop`이 실패할 수 있으므로, GitHub Actions(Windows)에서 검증하는 것을 권장합니다.
+Windows/macOS 패키징은 Rust/Cargo가 필요합니다.
+로컬에서 현재 환경에 cargo가 없으면 Tauri 빌드가 실패할 수 있으므로, GitHub Actions에서 검증하는 것을 권장합니다.
 
 ```bash
 # Rust/Cargo 설치 후 실행
 npm run tauri:build -w apps/desktop
+npm run tauri:build:macos
 ```
 
 ## 패키징/배포 문서
 
 - [`docs/build-windows.md`](./docs/build-windows.md)
+- [`docs/build-macos.md`](./docs/build-macos.md)
 - [`docs/firebase-setup.md`](./docs/firebase-setup.md)
 - GitHub Actions
   - [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
   - [`.github/workflows/windows-tauri.yml`](.github/workflows/windows-tauri.yml)
+  - [`.github/workflows/macos-tauri.yml`](.github/workflows/macos-tauri.yml)
   - [`docs/release.md`](./docs/release.md)

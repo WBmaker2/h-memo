@@ -9,6 +9,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:build:windows": "tauri build --bundles nsis,msi",
+    "tauri:build:macos": "tauri build --bundles app",
     "tauri:icon": "tauri icon src-tauri/icons/icon.svg"
   },
   "dependencies": {

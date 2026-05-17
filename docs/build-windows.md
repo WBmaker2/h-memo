@@ -14,7 +14,7 @@
 npm ci
 ```
 
-운영 배포판에는 H Memo용 Firebase Web Client 설정, `VITE_GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`이 내장되어야 구글 로그인/서버 백업 버튼이 활성화됩니다. Windows 데스크톱 로그인은 WebView 팝업이 아니라 시스템 기본 브라우저와 Desktop OAuth client의 로컬 loopback으로 완료됩니다. `GOOGLE_OAUTH_CLIENT_SECRET`은 GitHub Actions secret으로 주입하고 프론트엔드 `VITE_` 변수로 만들지 않습니다.
+운영 배포판에는 H Memo용 Firebase Web Client 설정, `VITE_GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`이 내장되어야 구글 로그인/서버 백업 버튼이 활성화됩니다. Windows/macOS 데스크톱 로그인은 WebView 팝업이 아니라 시스템 기본 브라우저와 Desktop OAuth client의 로컬 loopback으로 완료됩니다. `GOOGLE_OAUTH_CLIENT_SECRET`은 GitHub Actions secret으로 주입하고 프론트엔드 `VITE_` 변수로 만들지 않습니다.
 다른 Firebase 프로젝트로 테스트해야 할 때만 `.env.example`를 참고해 Vite 환경 변수를 지정하세요.
 
 ## 3) Windows 패키지 빌드
@@ -54,4 +54,4 @@ npm run check:versions
 
 ## 5) GitHub 릴리스
 
-Windows 태그 릴리스 및 수동 릴리스 실행 방법은 [`docs/release.md`](./release.md)를 참고하세요.
+Windows 태그 릴리스 및 수동 릴리스 실행 방법은 [`docs/release.md`](./release.md)를 참고하세요. macOS 내부 테스트 빌드는 [`docs/build-macos.md`](./build-macos.md)를 참고하세요.
