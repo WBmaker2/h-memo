@@ -7,6 +7,9 @@ import {
   completeGoogleRedirectSignIn,
   createFirebaseApp,
   getFirebaseAuth,
+  type BackedUpMemo,
+  deleteBackedUpMemo,
+  listBackedUpMemos,
   restoreLatestBackup,
   signInWithGoogle,
   signOutUser,
@@ -37,6 +40,33 @@ const LOGGED_IN_USER = {
   email: "hong@example.com",
   photoURL: "",
 };
+const SERVER_BACKED_UP_MEMO: BackedUpMemo = {
+  memo: {
+    id: "server-memo-1",
+    title: "서버 메모",
+    plainText: "서버에서 가져온 웹 메모",
+    richContent: { type: "doc", content: [] },
+    style: {
+      backgroundColor: "#fff7b8",
+      textColor: "#1f2937",
+      fontFamily: "Malgun Gothic, Segoe UI, sans-serif",
+      fontSize: 16,
+    },
+    windowState: {
+      x: null,
+      y: null,
+      width: 320,
+      height: 280,
+      visible: false,
+      alwaysOnTop: false,
+    },
+    createdAt: "2026-05-17T09:00:00.000Z",
+    updatedAt: "2026-05-17T09:01:00.000Z",
+    deletedAt: "2026-05-17T09:02:00.000Z",
+    syncState: "backed-up",
+  },
+  backupCreatedAt: "2026-05-17T09:03:00.000Z",
+};
 
 const LOCAL_MEMO_KEY = "h-memo:web-memo-repository-v1";
 
@@ -53,6 +83,8 @@ vi.mock("@h-memo/memo-sync", async () => {
     backupMemos: vi.fn(),
     completeGoogleRedirectSignIn: vi.fn(),
     restoreLatestBackup: vi.fn(),
+    listBackedUpMemos: vi.fn(),
+    deleteBackedUpMemo: vi.fn(),
     signInWithGoogle: vi.fn(),
     signOutUser: vi.fn(),
     subscribeAuthUser: vi.fn(),
@@ -138,6 +170,8 @@ beforeEach(() => {
     memos: [],
   } });
   vi.mocked(restoreLatestBackup).mockResolvedValue(null);
+  vi.mocked(listBackedUpMemos).mockResolvedValue([]);
+  vi.mocked(deleteBackedUpMemo).mockResolvedValue(1);
 });
 
 afterEach(() => {
@@ -622,5 +656,130 @@ describe("WebApp", () => {
       expect(screen.queryByDisplayValue("삭제되어야 할 로컬 데이터")).not.toBeInTheDocument();
       expect(screen.getByDisplayValue("복원된 본문")).toBeInTheDocument();
     });
+  });
+
+  it("opens server memo manager and restores selected server memo", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(listBackedUpMemos).mockResolvedValue([SERVER_BACKED_UP_MEMO]);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+
+    render(<WebApp />);
+
+    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "서버 메모 관리" });
+    await waitFor(() => {
+      expect(listBackedUpMemos).toHaveBeenCalledWith(expect.anything(), LOGGED_IN_USER.uid);
+      expect(screen.getByText("서버에서 가져온 웹 메모")).toBeInTheDocument();
+      expect(within(dialog).getByRole("status")).toHaveTextContent("서버 메모 1개를 불러왔습니다.");
+    });
+
+    await user.click(screen.getByRole("button", { name: "서버에서 가져온 웹 메모 복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "메모 내용" })).toHaveValue("서버에서 가져온 웹 메모");
+      expect(screen.getAllByRole("status").map((status) => status.textContent).join(" ")).toContain(
+        "서버 메모 복원 완료"
+      );
+    });
+  });
+
+  it("deletes a server memo from manager and removes it from list", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(listBackedUpMemos).mockResolvedValue([SERVER_BACKED_UP_MEMO]);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+
+    render(<WebApp />);
+
+    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "서버 메모 관리" });
+    await user.click(screen.getByRole("button", { name: "서버에서 가져온 웹 메모 서버 삭제" }));
+
+    await waitFor(() => {
+      expect(deleteBackedUpMemo).toHaveBeenCalledWith(expect.anything(), LOGGED_IN_USER.uid, "server-memo-1");
+      expect(within(dialog).queryByRole("button", { name: "서버에서 가져온 웹 메모 서버 삭제" })).toBeNull();
+      expect(within(dialog).getByText("서버에 저장된 메모가 없습니다.")).toBeInTheDocument();
+      expect(within(dialog).getByRole("status")).toHaveTextContent("서버 메모를 삭제했습니다.");
+    });
+  });
+
+  it("removes server memo from manager even when delete API returns 0", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(listBackedUpMemos).mockResolvedValue([SERVER_BACKED_UP_MEMO]);
+    vi.mocked(deleteBackedUpMemo).mockResolvedValue(0);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+
+    render(<WebApp />);
+
+    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "서버 메모 관리" });
+    await user.click(screen.getByRole("button", { name: "서버에서 가져온 웹 메모 서버 삭제" }));
+
+    await waitFor(() => {
+      expect(deleteBackedUpMemo).toHaveBeenCalledWith(expect.anything(), LOGGED_IN_USER.uid, "server-memo-1");
+      expect(within(dialog).queryByRole("button", { name: "서버에서 가져온 웹 메모 서버 삭제" })).toBeNull();
+      expect(within(dialog).getByText("서버에 저장된 메모가 없습니다.")).toBeInTheDocument();
+      expect(within(dialog).getByRole("status")).toHaveTextContent("서버 메모를 삭제했습니다.");
+    });
+  });
+
+  it("shows restore failure in dialog status when restoring server memo fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(listBackedUpMemos).mockResolvedValue([SERVER_BACKED_UP_MEMO]);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+    installLocalStorageStub({ failOnSet: true });
+
+    render(<WebApp />);
+
+    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "서버 메모 관리" });
+    await user.click(screen.getByRole("button", { name: "서버에서 가져온 웹 메모 복원" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("status").map((status) => status.textContent).join(" ")).toContain(
+        "서버 메모 복원 실패"
+      );
+      expect(within(dialog).getByRole("status")).toHaveTextContent("서버 메모 복원 실패");
+    });
+  });
+
+  it("shows empty message when server memo manager opens with no backups", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+
+    render(<WebApp />);
+
+    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "서버 메모 관리" });
+    expect(within(dialog).getByRole("status")).toHaveTextContent("서버에 저장된 메모가 없습니다.");
   });
 });

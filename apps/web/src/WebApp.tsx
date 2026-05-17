@@ -9,19 +9,22 @@ import {
   type Memo,
   type MemoRepository,
 } from "@h-memo/memo-core";
-import { MemoWorkspace } from "@h-memo/memo-ui";
+import { MemoWorkspace, ServerMemoManagerDialog } from "@h-memo/memo-ui";
 import {
   FirestoreBackupGateway,
   backupMemos,
   completeGoogleRedirectSignIn,
   createFirebaseApp,
+  deleteBackedUpMemo,
   getFirebaseAuth,
   hasFirebaseConfig,
+  listBackedUpMemos,
   restoreLatestBackup,
   signInWithGoogle,
   signOutUser,
   subscribeAuthUser,
   waitForSignedInUser,
+  type BackedUpMemo,
   type HMemoUser,
 } from "@h-memo/memo-sync";
 import {
@@ -49,6 +52,7 @@ const RESTORE_FAILED_PREFIX = "복원 실패:";
 const JSON_RESTORE_CONFIRM_MESSAGE =
   "JSON 백업 파일 내용으로 현재 메모를 대체합니다. 백업에 없는 메모는 삭제됩니다. 계속할까요?";
 const NO_BACKUP_MESSAGE = "복원할 백업이 없습니다.";
+const SERVER_MEMO_INITIAL_STATUS = "서버 메모를 불러오지 않았습니다.";
 
 type BackupMessage = string;
 type SyncServices = {
@@ -118,6 +122,9 @@ export function WebApp() {
   const [user, setUser] = useState<WebPreviewUser | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [syncServicesInitialized, setSyncServicesInitialized] = useState(false);
+  const [serverMemoManagerOpen, setServerMemoManagerOpen] = useState(false);
+  const [serverMemoItems, setServerMemoItems] = useState<BackedUpMemo[]>([]);
+  const [serverMemoStatus, setServerMemoStatus] = useState(SERVER_MEMO_INITIAL_STATUS);
 
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
@@ -201,6 +208,19 @@ export function WebApp() {
       return null;
     }
   }, [firebaseClientEnv, hasFirebaseConfigSet]);
+
+  const requireServerMemoSession = useCallback((): { user: WebPreviewUser; services: SyncServices } | null => {
+    const services = ensureSyncServices();
+    if (!user || !services) {
+      setBackupStatus(LOGIN_REQUIRED_MESSAGE);
+      return null;
+    }
+
+    return {
+      user,
+      services,
+    };
+  }, [ensureSyncServices, user]);
 
   useEffect(() => {
     if (!hasFirebaseConfigSet) {
@@ -645,6 +665,101 @@ export function WebApp() {
     }
   };
 
+  const refreshServerMemos = async () => {
+    const session = requireServerMemoSession();
+    if (!session) {
+      return;
+    }
+
+    if (isBusy) {
+      return;
+    }
+
+    setIsBusy(true);
+    setServerMemoStatus("서버 메모를 불러오는 중입니다.");
+    try {
+      const backedUpMemos = await listBackedUpMemos(session.services.gateway, session.user.uid);
+      setServerMemoItems(backedUpMemos);
+      setServerMemoStatus(
+        backedUpMemos.length > 0
+          ? `서버 메모 ${backedUpMemos.length}개를 불러왔습니다.`
+          : "서버에 저장된 메모가 없습니다."
+      );
+    } catch (error) {
+      const message = `서버 메모 목록 불러오기 실패: ${getErrorMessage(error)}`;
+      setBackupStatus(message);
+      setServerMemoStatus(message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleOpenServerMemoManager = async () => {
+    setServerMemoManagerOpen(true);
+    await refreshServerMemos();
+  };
+
+  const handleRestoreServerMemo = async (memoId: string) => {
+    const backedUpMemo = serverMemoItems.find((item) => item.memo.id === memoId);
+    if (!backedUpMemo || isBusy) {
+      if (!backedUpMemo) {
+        setBackupStatus("복원할 서버 메모를 찾지 못했습니다.");
+        setServerMemoStatus("복원할 서버 메모를 찾지 못했습니다.");
+      }
+      return;
+    }
+
+    setIsBusy(true);
+    const now = new Date().toISOString();
+    const restoredMemo: Memo = {
+      ...backedUpMemo.memo,
+      deletedAt: null,
+      updatedAt: now,
+      syncState: "backed-up",
+      windowState: {
+        ...backedUpMemo.memo.windowState,
+        visible: true,
+      },
+    };
+    try {
+      const savedMemo = await repository.saveMemo(restoredMemo);
+      upsertMemo(savedMemo);
+      setBackupStatus("서버 메모 복원 완료");
+      setServerMemoStatus("서버 메모 복원 완료");
+    } catch (error) {
+      setBackupStatus(`서버 메모 복원 실패: ${getErrorMessage(error)}`);
+      setServerMemoStatus(`서버 메모 복원 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleDeleteServerMemo = async (memoId: string) => {
+    const session = requireServerMemoSession();
+    if (!session || isBusy) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const deletedServerRecordCount = await deleteBackedUpMemo(
+        session.services.gateway,
+        session.user.uid,
+        memoId
+      );
+      void deletedServerRecordCount;
+      setServerMemoItems((previous) => previous.filter((item) => item.memo.id !== memoId));
+      setBackupStatus("서버 메모를 삭제했습니다.");
+      setServerMemoStatus("서버 메모를 삭제했습니다.");
+    } catch (error) {
+      const message = `서버 메모 삭제 실패: ${getErrorMessage(error)}`;
+      setBackupStatus(message);
+      setServerMemoStatus(message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const handleToggleStartup = async (enabled: boolean) => {
     setStartupEnabled(enabled);
     setBackupStatus(STARTUP_UNAVAILABLE_MESSAGE);
@@ -663,6 +778,15 @@ export function WebApp() {
         onCreateMemo={handleCreateMemo}
         onMemoChange={handleMemoChange}
         onDeleteMemo={handleDeleteMemo}
+        actions={
+          <button
+            type="button"
+            disabled={!isServerReady || user === null || isBusy}
+            onClick={handleOpenServerMemoManager}
+          >
+            서버 메모 관리
+          </button>
+        }
         settingsProps={{
           userName: user ? user.displayName || user.email || "구글 계정" : null,
           backupStatus,
@@ -693,6 +817,16 @@ export function WebApp() {
         type="file"
         accept="application/json,.json"
         onChange={handleJsonImportFileChange}
+      />
+      <ServerMemoManagerDialog
+        isOpen={serverMemoManagerOpen}
+        isBusy={isBusy}
+        items={serverMemoItems}
+        status={serverMemoStatus}
+        onClose={() => setServerMemoManagerOpen(false)}
+        onRefresh={refreshServerMemos}
+        onRestore={handleRestoreServerMemo}
+        onDelete={handleDeleteServerMemo}
       />
     </>
   );
