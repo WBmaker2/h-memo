@@ -24,6 +24,7 @@ type StickyMemoProps = {
   };
   onChange: (memo: Memo) => void;
   onDelete: (memoId: string) => void;
+  onCloseMemo?: (memoId: string) => void;
   onRequestWindowDrag?: () => void;
   onRequestWindowResize?: (direction: "SouthEast") => void;
   onRequestWindowClose?: () => void;
@@ -36,6 +37,7 @@ export function StickyMemo({
   authStatus,
   onChange,
   onDelete,
+  onCloseMemo,
   onRequestWindowDrag,
   onRequestWindowResize,
   onRequestWindowClose,
@@ -43,7 +45,10 @@ export function StickyMemo({
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const shouldShowWindowControls = Boolean(onRequestWindowClose);
+  const shouldShowWindowControls = Boolean(authStatus || onCloseMemo || onRequestWindowClose);
+  const memoCloseLabel = editingMemo.plainText.trim().replace(/\s+/g, " ")
+    ? `${editingMemo.plainText.trim().replace(/\s+/g, " ")} 메모창 닫기`
+    : "빈 메모창 닫기";
 
   useEffect(() => {
     setEditingMemo(memo);
@@ -184,14 +189,26 @@ export function StickyMemo({
                 )}
               </div>
             ) : null}
-            <button
-              type="button"
-              aria-label="종료"
-              title="종료"
-              onClick={onRequestWindowClose}
-            >
-              ×
-            </button>
+            {onCloseMemo ? (
+              <button
+                type="button"
+                aria-label={memoCloseLabel}
+                title="메모창 닫기"
+                onClick={() => onCloseMemo(editingMemo.id)}
+              >
+                ×
+              </button>
+            ) : null}
+            {onRequestWindowClose ? (
+              <button
+                type="button"
+                aria-label="종료"
+                title="종료"
+                onClick={onRequestWindowClose}
+              >
+                ×
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>

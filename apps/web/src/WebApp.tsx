@@ -288,6 +288,10 @@ export function WebApp() {
   }, [ensureSyncServices, hasFirebaseConfigSet]);
 
   const visibleMemos = useMemo(
+    () => memos.filter((memo) => memo.deletedAt === null && memo.windowState.visible),
+    [memos]
+  );
+  const managedMemos = useMemo(
     () => memos.filter((memo) => memo.deletedAt === null),
     [memos]
   );
@@ -398,6 +402,55 @@ export function WebApp() {
       upsertMemo(deleted);
     } catch (error) {
       setBackupStatus(`메모 삭제 실패: ${getErrorMessage(error)}`);
+    }
+  };
+
+  const handleCloseMemo = async (memoId: string) => {
+    const target = memos.find((memo) => memo.id === memoId);
+    if (!target) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const nextMemo: Memo = {
+      ...target,
+      updatedAt: now,
+      syncState: "queued",
+      windowState: {
+        ...target.windowState,
+        visible: false,
+      },
+    };
+
+    try {
+      await persistMemo(nextMemo);
+    } catch (error) {
+      setBackupStatus(`메모창 닫기 실패: ${getErrorMessage(error)}`);
+    }
+  };
+
+  const handleOpenMemo = async (memoId: string) => {
+    const target = memos.find((memo) => memo.id === memoId);
+    if (!target) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const nextMemo: Memo = {
+      ...target,
+      deletedAt: null,
+      updatedAt: now,
+      syncState: "queued",
+      windowState: {
+        ...target.windowState,
+        visible: true,
+      },
+    };
+
+    try {
+      await persistMemo(nextMemo);
+    } catch (error) {
+      setBackupStatus(`메모 열기 실패: ${getErrorMessage(error)}`);
     }
   };
 
@@ -666,8 +719,21 @@ export function WebApp() {
   };
 
   const refreshServerMemos = async () => {
-    const session = requireServerMemoSession();
-    if (!session) {
+    const services = ensureSyncServices();
+    if (!services) {
+      const message = hasFirebaseConfigSet
+        ? `${FIREBASE_INIT_FAILED_PREFIX} 구성 값을 확인해 주세요.`
+        : FIREBASE_UNAVAILABLE_MESSAGE;
+      setBackupStatus(message);
+      setServerMemoItems([]);
+      setServerMemoStatus(message);
+      return;
+    }
+
+    if (!user) {
+      setBackupStatus(LOGIN_REQUIRED_MESSAGE);
+      setServerMemoItems([]);
+      setServerMemoStatus(LOGIN_REQUIRED_MESSAGE);
       return;
     }
 
@@ -678,7 +744,7 @@ export function WebApp() {
     setIsBusy(true);
     setServerMemoStatus("서버 메모를 불러오는 중입니다.");
     try {
-      const backedUpMemos = await listBackedUpMemos(session.services.gateway, session.user.uid);
+      const backedUpMemos = await listBackedUpMemos(services.gateway, user.uid);
       setServerMemoItems(backedUpMemos);
       setServerMemoStatus(
         backedUpMemos.length > 0
@@ -775,13 +841,16 @@ export function WebApp() {
         appClassName="web-app"
         title="H Memo"
         memos={visibleMemos}
+        managedMemos={managedMemos}
         onCreateMemo={handleCreateMemo}
+        onOpenMemo={handleOpenMemo}
         onMemoChange={handleMemoChange}
         onDeleteMemo={handleDeleteMemo}
+        onCloseMemo={handleCloseMemo}
         actions={
           <button
             type="button"
-            disabled={!isServerReady || user === null || isBusy}
+            disabled={isBusy}
             onClick={handleOpenServerMemoManager}
           >
             서버 메모 관리

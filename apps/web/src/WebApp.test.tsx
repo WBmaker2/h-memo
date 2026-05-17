@@ -435,6 +435,107 @@ describe("WebApp", () => {
     expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
   });
 
+  it("opens server memo manager with login guidance when signed out", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(null);
+      return vi.fn();
+    });
+
+    render(<WebApp />);
+
+    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "서버 메모 관리" });
+    expect(within(dialog).getByRole("status")).toHaveTextContent(LOGIN_REQUIRED_MESSAGE);
+    expect(listBackedUpMemos).not.toHaveBeenCalled();
+  });
+
+  it("closes only the selected memo window and keeps the memo reopenable", async () => {
+    const user = userEvent.setup();
+    installLocalStorageStub({
+      initialEntries: [
+        [
+          LOCAL_MEMO_KEY,
+          JSON.stringify([
+            {
+              id: "web-visible-1",
+              title: "새 메모",
+              plainText: "111",
+              richContent: { type: "doc", content: [] },
+              style: {
+                backgroundColor: "#fff7b8",
+                textColor: "#1f2937",
+                fontFamily: "Malgun Gothic, Segoe UI, sans-serif",
+                fontSize: 16,
+              },
+              windowState: {
+                x: null,
+                y: null,
+                width: 320,
+                height: 280,
+                visible: true,
+                alwaysOnTop: false,
+              },
+              createdAt: "2026-05-17T09:00:00.000Z",
+              updatedAt: "2026-05-17T09:00:00.000Z",
+              deletedAt: null,
+              syncState: "local-only",
+            },
+            {
+              id: "web-visible-2",
+              title: "새 메모",
+              plainText: "222",
+              richContent: { type: "doc", content: [] },
+              style: {
+                backgroundColor: "#cfe8ff",
+                textColor: "#1f2937",
+                fontFamily: "Malgun Gothic, Segoe UI, sans-serif",
+                fontSize: 16,
+              },
+              windowState: {
+                x: null,
+                y: null,
+                width: 320,
+                height: 280,
+                visible: true,
+                alwaysOnTop: false,
+              },
+              createdAt: "2026-05-17T09:01:00.000Z",
+              updatedAt: "2026-05-17T09:01:00.000Z",
+              deletedAt: null,
+              syncState: "local-only",
+            },
+          ]),
+        ],
+      ],
+    });
+
+    render(<WebApp />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("111")).toBeInTheDocument();
+      expect(screen.getByDisplayValue("222")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "222 메모창 닫기" }));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("111")).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("222")).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]);
+    await user.click(screen.getByRole("button", { name: "222 열기" }));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("111")).toBeInTheDocument();
+      expect(screen.getByDisplayValue("222")).toBeInTheDocument();
+    });
+  });
+
   it("hides manual Firebase settings when build config is available", async () => {
     installLocalStorageStub({
       initialEntries: [
