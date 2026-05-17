@@ -9,8 +9,8 @@
   ],
   "scripts": {
     "dev": "npm run dev -w apps/desktop",
-    "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest --passWithNoTests",
+    "test": "node scripts/run-vitest.mjs run --passWithNoTests",
+    "test:watch": "node scripts/run-vitest.mjs --passWithNoTests",
     "check:firebase-env": "node scripts/check-firebase-env.mjs",
     "check:versions": "node scripts/check-version-consistency.mjs",
     "typecheck": "node scripts/run-workspace-script.mjs typecheck",
@@ -31,6 +31,6 @@
     "jsdom": "^25.0.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.0",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.6"
   }
 }

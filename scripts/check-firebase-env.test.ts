@@ -85,6 +85,24 @@ describe("check-firebase-env", () => {
     expect(result.optional.present).toEqual([]);
   });
 
+  it("does not treat GOOGLE_OAUTH_CLIENT_SECRET as a tracked optional env key", () => {
+    const result = checkFirebaseEnv({
+      VITE_FIREBASE_API_KEY: "api-key",
+      VITE_FIREBASE_AUTH_DOMAIN: "project.firebaseapp.com",
+      VITE_FIREBASE_PROJECT_ID: "project-id",
+      VITE_FIREBASE_APP_ID: "app-id",
+      VITE_GOOGLE_OAUTH_CLIENT_ID: "client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "legacy-secret",
+    });
+
+    expect(result.optional.present).toEqual(["VITE_GOOGLE_OAUTH_CLIENT_ID"]);
+    expect(result.optional.missing).toEqual([
+      "VITE_FIREBASE_STORAGE_BUCKET",
+      "VITE_FIREBASE_MESSAGING_SENDER_ID",
+      "VITE_FIREBASE_MEASUREMENT_ID",
+    ]);
+  });
+
   it("loads built-in Firebase defaults before env files and process env", () => {
     const fixture = createTempEnvDir();
     try {

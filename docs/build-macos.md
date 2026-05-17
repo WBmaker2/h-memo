@@ -22,7 +22,7 @@ npm ci
 npm run check:versions
 ```
 
-Google 로그인과 서버 백업까지 검증하려면 Windows 빌드와 동일하게 H Memo용 Firebase Web Client 설정, `VITE_GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`이 빌드 환경에 포함되어야 합니다. macOS 데스크톱 로그인도 시스템 기본 브라우저와 Desktop OAuth client의 로컬 loopback 흐름을 사용합니다.
+Google 로그인과 서버 백업까지 검증하려면 Windows 빌드와 동일하게 H Memo용 Firebase Web Client 설정과 `VITE_GOOGLE_OAUTH_CLIENT_ID`가 빌드 환경에 포함되어야 합니다. macOS 데스크톱 로그인도 시스템 기본 브라우저와 Desktop OAuth client의 로컬 loopback 흐름을 사용하며, secret 주입은 필요하지 않습니다.
 
 ## 3) macOS 내부 테스트 패키지 빌드
 

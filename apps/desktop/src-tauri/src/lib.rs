@@ -244,14 +244,7 @@ fn run_google_desktop_oauth(client_id: String) -> AnyhowResult<GoogleOAuthTokens
     .context("Google 로그인 응답에 인증 코드가 없습니다.")?;
 
   respond_to_browser(&mut stream, true)?;
-  let client_secret = google_oauth_client_secret();
-  exchange_google_code(
-    &client_id,
-    &redirect_uri,
-    &code,
-    &code_verifier,
-    client_secret.as_deref(),
-  )
+  exchange_google_code(&client_id, &redirect_uri, &code, &code_verifier)
 }
 
 fn random_urlsafe(byte_count: usize) -> String {
@@ -283,16 +276,6 @@ fn build_google_auth_url(
   let query = serializer.finish();
 
   format!("{GOOGLE_OAUTH_AUTH_URL}?{query}")
-}
-
-fn google_oauth_client_secret() -> Option<String> {
-  let runtime_secret = std::env::var("GOOGLE_OAUTH_CLIENT_SECRET").ok();
-  let compile_time_secret = option_env!("GOOGLE_OAUTH_CLIENT_SECRET").map(ToOwned::to_owned);
-
-  runtime_secret
-    .or(compile_time_secret)
-    .map(|value| value.trim().to_string())
-    .filter(|value| !value.is_empty())
 }
 
 fn open_system_browser(url: &str) -> AnyhowResult<()> {
@@ -388,16 +371,9 @@ fn exchange_google_code(
   redirect_uri: &str,
   code: &str,
   code_verifier: &str,
-  client_secret: Option<&str>,
 ) -> AnyhowResult<GoogleOAuthTokens> {
   let client = reqwest::blocking::Client::new();
-  let token_form = build_google_token_form(
-    client_id,
-    redirect_uri,
-    code,
-    code_verifier,
-    client_secret,
-  );
+  let token_form = build_google_token_form(client_id, redirect_uri, code, code_verifier);
   let response = client
     .post(GOOGLE_OAUTH_TOKEN_URL)
     .form(&token_form)
@@ -434,21 +410,14 @@ fn build_google_token_form<'a>(
   redirect_uri: &'a str,
   code: &'a str,
   code_verifier: &'a str,
-  client_secret: Option<&'a str>,
 ) -> Vec<(&'static str, &'a str)> {
-  let mut form = vec![
+  vec![
     ("client_id", client_id),
     ("redirect_uri", redirect_uri),
     ("grant_type", "authorization_code"),
     ("code", code),
     ("code_verifier", code_verifier),
-  ];
-
-  if let Some(client_secret) = client_secret.map(str::trim).filter(|value| !value.is_empty()) {
-    form.push(("client_secret", client_secret));
-  }
-
-  form
+  ]
 }
 
 fn show_main_window_inner(app: &AppHandle) -> Result<(), String> {
@@ -685,28 +654,20 @@ mod tests {
   }
 
   #[test]
-  fn includes_google_client_secret_when_available() {
+  fn builds_token_form_without_client_secret() {
     let form = build_google_token_form(
       "client-id",
       "http://127.0.0.1:9004",
       "auth-code",
       "code-verifier",
-      Some(" client-secret "),
     );
 
-    assert!(form.contains(&("client_secret", "client-secret")));
-  }
-
-  #[test]
-  fn omits_empty_google_client_secret() {
-    let form = build_google_token_form(
-      "client-id",
-      "http://127.0.0.1:9004",
-      "auth-code",
-      "code-verifier",
-      Some("   "),
-    );
-
+    assert_eq!(form.len(), 5);
     assert!(!form.iter().any(|(key, _)| *key == "client_secret"));
+    assert!(form.contains(&("client_id", "client-id")));
+    assert!(form.contains(&("redirect_uri", "http://127.0.0.1:9004")));
+    assert!(form.contains(&("grant_type", "authorization_code")));
+    assert!(form.contains(&("code", "auth-code")));
+    assert!(form.contains(&("code_verifier", "code-verifier")));
   }
 }

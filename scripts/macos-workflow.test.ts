@@ -13,6 +13,8 @@ describe("macOS Tauri workflow", () => {
     expect(workflow).toContain("runs-on: macos-latest");
     expect(workflow).toContain("npm run tauri:build:macos");
     expect(workflow).toContain('APPLE_SIGNING_IDENTITY: "-"');
+    expect(workflow).toContain("VITE_GOOGLE_OAUTH_CLIENT_ID:");
+    expect(workflow).not.toContain("GOOGLE_OAUTH_CLIENT_SECRET:");
     expect(workflow).toContain("bundle/macos/*.app");
     expect(workflow).toContain("bundle/dmg/*_internal.dmg");
     expect(workflow).not.toContain("gh release");
