@@ -13,7 +13,13 @@ import path from "node:path";
 import process from "node:process";
 
 const rootDir = process.cwd();
-const productName = "H Memo";
+const TAURI_CONFIG_PATH = path.resolve(
+  rootDir,
+  "apps",
+  "desktop",
+  "src-tauri",
+  "tauri.conf.json"
+);
 const desktopBundleRoot = path.resolve(
   rootDir,
   "apps",
@@ -23,6 +29,24 @@ const desktopBundleRoot = path.resolve(
   "release",
   "bundle"
 );
+
+function ensureMacosOnly() {
+  if (process.platform !== "darwin") {
+    console.error("이 스크립트는 macOS 전용 빌드입니다. macOS 환경에서만 실행할 수 있습니다.");
+    process.exit(1);
+  }
+}
+
+function readProductName() {
+  const config = JSON.parse(readFileSync(TAURI_CONFIG_PATH, "utf8"));
+  const productName = config.productName;
+
+  if (typeof productName !== "string" || productName.length === 0) {
+    throw new Error(`productName is missing in ${TAURI_CONFIG_PATH}`);
+  }
+
+  return productName;
+}
 
 function run(command, args) {
   const result = spawnSync(command, args, {
@@ -63,6 +87,7 @@ function resolveMacArch() {
 
 function createInternalDmg() {
   const version = readVersion();
+  const productName = readProductName();
   const appPath = path.join(desktopBundleRoot, "macos", `${productName}.app`);
   if (!existsSync(appPath)) {
     throw new Error(`macOS app bundle was not found: ${appPath}`);
@@ -97,5 +122,6 @@ function createInternalDmg() {
   console.log(`Created internal macOS DMG: ${dmgPath}`);
 }
 
+ensureMacosOnly();
 run("npm", ["run", "tauri:build:macos", "-w", "apps/desktop"]);
 createInternalDmg();

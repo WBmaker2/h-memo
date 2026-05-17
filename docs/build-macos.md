@@ -30,6 +30,8 @@ Google 로그인과 서버 백업까지 검증하려면 Windows 빌드와 동일
 npm run tauri:build:macos
 ```
 
+이 명령은 macOS 환경에서만 실행할 수 있습니다.
+
 이 명령은 `apps/desktop`의 Tauri 앱을 macOS용 `.app`으로 빌드한 뒤, 내부 테스트용 단순 DMG를 `hdiutil`로 생성합니다. Tauri 기본 DMG 꾸미기 단계는 Finder/AppleScript 권한에 민감하므로 내부 테스트 빌드에서는 사용하지 않습니다.
 
 생성 위치:

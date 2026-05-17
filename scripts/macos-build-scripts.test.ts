@@ -20,8 +20,16 @@ describe("macOS build scripts", () => {
     expect(desktopPackage.scripts["tauri:build:macos"]).toBe(
       "tauri build --bundles app"
     );
+    expect(buildScript).toContain("TAURI_CONFIG_PATH");
+    expect(buildScript).toContain('process.platform !== "darwin"');
+    expect(buildScript).toContain(
+      "이 스크립트는 macOS 전용 빌드입니다. macOS 환경에서만 실행할 수 있습니다."
+    );
+    expect(buildScript).toContain("readProductName");
+    expect(buildScript).toContain("const appPath = path.join(");
     expect(buildScript).toContain('"hdiutil"');
     expect(buildScript).toContain('"internal-staging"');
     expect(buildScript).toContain('"Applications"');
+    expect(buildScript).not.toContain('const productName = "H Memo";');
   });
 });

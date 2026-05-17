@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 type TauriConfig = {
+  productName?: string;
   bundle?: {
     targets?: unknown;
     icon?: unknown;
@@ -34,5 +35,12 @@ describe("Tauri macOS internal build config", () => {
 
     expect(config.bundle?.icon).toEqual(expect.arrayContaining(["icons/icon.icns"]));
     expect(config.bundle?.macOS?.signingIdentity).toBe("-");
+  });
+
+  it("exposes a productName for bundle and DMG naming", () => {
+    const config = readTauriConfig();
+
+    expect(config.productName).toBeTypeOf("string");
+    expect(config.productName.length).toBeGreaterThan(0);
   });
 });
