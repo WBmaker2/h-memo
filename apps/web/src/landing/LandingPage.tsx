@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { resolveWindowsDownloadUrl, type ReleaseDownloadState } from "./releaseDownload";
 
 const LOADING_DOWNLOAD_LABEL = "다운로드 파일을 확인하는 중입니다.";
+const MACOS_DOWNLOAD_URL =
+  "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
+const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
 
 function getInstallImagePath(fileName: string): string {
   const base = import.meta.env.BASE_URL.endsWith("/") ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
@@ -39,29 +42,53 @@ export function LandingPage() {
 
       <section className="landing-page__section landing-page__section--download">
         <h2>프로그램 다운로드</h2>
-        <p>Windows용 먼저 제공</p>
-        {canDownload ? (
+        <p>Windows 설치 파일, macOS DMG 다운로드, 웹앱 실행 링크를 함께 제공합니다.</p>
+        <div className="landing-page__download-actions">
+          {canDownload ? (
+            <a
+              href={downloadState.url}
+              className="landing-page__button"
+              title={downloadLabel}
+              aria-label="Windows 버전 다운로드"
+            >
+              Windows 버전 다운로드
+            </a>
+          ) : (
+            <button
+              type="button"
+              className="landing-page__button"
+              title={downloadLabel}
+              aria-label="Windows 버전 다운로드"
+              disabled
+            >
+              Windows 버전 다운로드
+            </button>
+          )}
           <a
-            href={downloadState.url}
-            className="landing-page__button"
-            title={downloadLabel}
-            aria-label="프로그램 다운로드"
+            href={MACOS_DOWNLOAD_URL}
+            className="landing-page__button landing-page__button--secondary"
+            target="_blank"
+            rel="noreferrer"
           >
-            프로그램 다운로드
+            macOS 버전 다운로드
           </a>
-        ) : (
-          <button
-            type="button"
-            className="landing-page__button"
-            title={downloadLabel}
-            aria-label="프로그램 다운로드"
-            disabled
+          <a
+            href={WEB_APP_URL}
+            className="landing-page__button landing-page__button--web"
+            target="_blank"
+            rel="noreferrer"
           >
-            프로그램 다운로드
-          </button>
-        )}
+            웹앱 실행
+          </a>
+        </div>
         <p className="landing-page__download-meta" aria-live="polite">
           {downloadLabel}
+        </p>
+        <p className="landing-page__download-meta">
+          macOS 버전은 Apple Silicon용 DMG 파일로 제공합니다.
+        </p>
+        <p className="landing-page__download-meta">
+          웹앱은 브라우저에서 열리며 설치 없이 H Memo를 사용할 수 있습니다.
         </p>
       </section>
 
@@ -94,9 +121,10 @@ export function LandingPage() {
       </section>
 
       <section className="landing-page__section">
-        <h2>예정 기능</h2>
-        <p>macOS용 앱은 추후 제공 예정</p>
-        <p>웹 브라우저용 웹앱도 개발 및 배포 예정</p>
+        <h2>지원 플랫폼</h2>
+        <p>Windows용 설치 파일 제공</p>
+        <p>macOS용 DMG 다운로드 제공</p>
+        <p>웹 브라우저용 웹앱 제공</p>
       </section>
 
       <section className="landing-page__section">
@@ -130,11 +158,12 @@ export function LandingPage() {
       </section>
 
       <section className="landing-page__section landing-page__section--links">
-        <h2>웹 미리보기</h2>
-        <p>브라우저에서도 동일한 메모 화면을 바로 확인할 수 있습니다.</p>
-        <a href="#/app" className="landing-page__button landing-page__button--secondary">
-          웹 미리보기 열기
-        </a>
+        <h2>macOS 다운로드 안내</h2>
+        <p>
+          macOS에서는 다운로드 후 보안 확인 메시지가 표시될 수 있습니다. 다운로드한
+          DMG 파일 이름이 H Memo 설치 파일인지 확인한 뒤 macOS 화면 안내에 따라
+          실행하세요.
+        </p>
       </section>
     </main>
   );

@@ -465,6 +465,12 @@ body {
   display: inline-flex;
 }
 
+.landing-page__button--web {
+  border-color: #0f766e;
+  color: #ffffff;
+  background: #0f766e;
+}
+
 .landing-page__button:hover {
   background: #fde047;
   border-color: #fde047;
@@ -487,8 +493,15 @@ body {
   background: #1e293b;
 }
 
+.landing-page__button--web:hover {
+  color: #ffffff;
+  border-color: #115e59;
+  background: #115e59;
+}
+
 .landing-page__button:focus-visible,
-.landing-page__button--secondary:focus-visible {
+.landing-page__button--secondary:focus-visible,
+.landing-page__button--web:focus-visible {
   outline: 2px solid #38bdf8;
   outline-offset: 2px;
 }
@@ -497,6 +510,13 @@ body {
   margin: 0;
   font-size: 14px;
   color: #334155;
+}
+
+.landing-page__download-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
 }
 
 .landing-page__release-text {
@@ -538,6 +558,10 @@ body {
 
 .landing-page__section--download .landing-page__button {
   margin-right: auto;
+}
+
+.landing-page__section--download .landing-page__download-actions .landing-page__button {
+  margin-right: 0;
 }
 
 @media (max-width: 768px) {

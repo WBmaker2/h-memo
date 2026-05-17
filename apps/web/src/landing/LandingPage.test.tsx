@@ -35,6 +35,10 @@ const MANIFEST_DOWNLOAD_STATE = {
   source: "download-manifest" as const,
 };
 
+const MACOS_DOWNLOAD_URL =
+  "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
+const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
+
 beforeEach(() => {
   vi.clearAllMocks();
   window.location.hash = "";
@@ -50,7 +54,7 @@ describe("LandingPage", () => {
     render(<AppRouter />);
 
     expect(screen.getByRole("heading", { name: "H Memo" })).toBeInTheDocument();
-    const downloadButton = await screen.findByRole("button", { name: "프로그램 다운로드" });
+    const downloadButton = await screen.findByRole("button", { name: "Windows 버전 다운로드" });
     expect(downloadButton).toBeDisabled();
     expect(
       screen.queryByRole("heading", { name: "H Memo (웹 미리보기)" }),
@@ -60,7 +64,7 @@ describe("LandingPage", () => {
   it("renders a disabled download button before resolution", async () => {
     render(<LandingPage />);
 
-    const downloadButton = screen.getByRole("button", { name: "프로그램 다운로드" });
+    const downloadButton = screen.getByRole("button", { name: "Windows 버전 다운로드" });
     expect(downloadButton).toBeDisabled();
     expect(downloadButton).toHaveAttribute("title", "다운로드 파일을 확인하는 중입니다.");
     expect(screen.getByText("다운로드 파일을 확인하는 중입니다.")).toBeInTheDocument();
@@ -75,7 +79,7 @@ describe("LandingPage", () => {
 
     render(<LandingPage />);
 
-    const downloadLink = await screen.findByRole("link", { name: "프로그램 다운로드" });
+    const downloadLink = await screen.findByRole("link", { name: "Windows 버전 다운로드" });
 
     expect(downloadLink).toHaveAttribute("href", RESOLVED_DOWNLOAD_STATE.url);
     expect(downloadLink).toHaveAttribute("title", RESOLVED_DOWNLOAD_STATE.label);
@@ -86,7 +90,7 @@ describe("LandingPage", () => {
 
     render(<LandingPage />);
 
-    const downloadLink = await screen.findByRole("link", { name: "프로그램 다운로드" });
+    const downloadLink = await screen.findByRole("link", { name: "Windows 버전 다운로드" });
 
     expect(downloadLink).toHaveAttribute("href", MANIFEST_DOWNLOAD_STATE.url);
     expect(downloadLink).toHaveAttribute("title", MANIFEST_DOWNLOAD_STATE.label);
@@ -97,7 +101,7 @@ describe("LandingPage", () => {
 
     render(<LandingPage />);
 
-    const downloadButton = screen.getByRole("button", { name: "프로그램 다운로드" });
+    const downloadButton = screen.getByRole("button", { name: "Windows 버전 다운로드" });
 
     await waitFor(() => {
       expect(downloadButton).toBeDisabled();
@@ -111,7 +115,7 @@ describe("LandingPage", () => {
   it("renders both SmartScreen guidance images with exact alt text", async () => {
     render(<LandingPage />);
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "프로그램 다운로드" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Windows 버전 다운로드" })).toBeDisabled();
     });
 
     expect(
@@ -142,6 +146,41 @@ describe("LandingPage", () => {
       expect(
         screen.getByAltText("H Memo 메모 관리 화면 미리보기"),
       ).toBeInTheDocument();
+    });
+  });
+
+  it("links to the macOS DMG download from the landing page", async () => {
+    render(<LandingPage />);
+
+    const macDownloadLink = screen.getByRole("link", { name: "macOS 버전 다운로드" });
+
+    expect(macDownloadLink).toHaveAttribute("href", MACOS_DOWNLOAD_URL);
+    expect(macDownloadLink).toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("heading", { name: "macOS 다운로드 안내" })).toBeInTheDocument();
+    expect(screen.getByText("macOS용 DMG 다운로드 제공")).toBeInTheDocument();
+    expect(
+      screen.queryByText("웹 브라우저용 웹앱도 개발 및 배포 예정"),
+    ).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByText(FALLBACK_DOWNLOAD_STATE.label)).toBeInTheDocument();
+    });
+  });
+
+  it("links to the hosted web app from the landing page", async () => {
+    render(<LandingPage />);
+
+    const webAppLink = screen.getByRole("link", { name: "웹앱 실행" });
+
+    expect(webAppLink).toHaveAttribute("href", WEB_APP_URL);
+    expect(webAppLink).toHaveAttribute("target", "_blank");
+    expect(
+      screen.getByText("웹앱은 브라우저에서 열리며 설치 없이 H Memo를 사용할 수 있습니다."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("웹 브라우저용 웹앱 제공")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByText(FALLBACK_DOWNLOAD_STATE.label)).toBeInTheDocument();
     });
   });
 
