@@ -18,6 +18,7 @@ type MemoWorkspaceShellProps = {
   onOpenMemo?: (memoId: string) => void;
   onMemoChange: (memo: Memo) => void;
   onDeleteMemo: (memoId: string) => void;
+  onCloseMemo?: (memoId: string) => void;
   onRequestWindowDrag?: () => void;
   onRequestWindowResize?: (direction: "SouthEast") => void;
   onRequestWindowClose?: () => void;
@@ -34,6 +35,7 @@ export function MemoWorkspace({
   onOpenMemo,
   onMemoChange,
   onDeleteMemo,
+  onCloseMemo,
   onRequestWindowDrag,
   onRequestWindowResize,
   onRequestWindowClose,
@@ -140,6 +142,7 @@ export function MemoWorkspace({
               authStatus={authStatus}
               onChange={onMemoChange}
               onDelete={onDeleteMemo}
+              onCloseMemo={onCloseMemo}
               onRequestWindowDrag={onRequestWindowDrag}
               onRequestWindowResize={onRequestWindowResize}
               onRequestWindowClose={onRequestWindowClose}

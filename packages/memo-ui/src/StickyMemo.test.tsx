@@ -100,6 +100,30 @@ describe("StickyMemo", () => {
     expect(onDelete).toHaveBeenCalledWith("memo-1");
   });
 
+  it("requests memo window close from the titlebar close button", async () => {
+    const user = userEvent.setup();
+    const memo = createMemo({
+      now: "2026-05-13T09:00:00.000Z",
+      id: "memo-1",
+      plainText: "닫을 메모",
+    });
+    const onCloseMemo = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onCloseMemo={onCloseMemo}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "닫을 메모 메모창 닫기" }));
+
+    expect(onCloseMemo).toHaveBeenCalledWith("memo-1");
+    expect(screen.queryByRole("button", { name: "종료" })).not.toBeInTheDocument();
+  });
+
   it("requests native window drag and resize from the titlebar and handle", async () => {
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
     const onRequestWindowDrag = vi.fn();
