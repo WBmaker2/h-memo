@@ -30,6 +30,12 @@ describe("macOS build scripts", () => {
     expect(buildScript).toContain('"hdiutil"');
     expect(buildScript).toContain('"internal-staging"');
     expect(buildScript).toContain('"Applications"');
+    expect(buildScript).toContain("createInternalDmgGuide");
+    expect(buildScript).toContain("H Memo 내부 테스트 실행 안내.txt");
+    expect(buildScript).toContain("xattr -dr com.apple.quarantine");
+    expect(buildScript).toContain("createAppArchive");
+    expect(buildScript).toContain("_app.tar.gz");
+    expect(buildScript).toContain('"tar"');
     expect(buildScript).not.toContain('const productName = "H Memo";');
   });
 });

@@ -925,8 +925,7 @@ describe("desktop App", () => {
     tauriWindowState.boundsListener?.();
 
     await act(async () => {
-      vi.advanceTimersByTime(260);
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(260);
     });
     vi.useRealTimers();
 
