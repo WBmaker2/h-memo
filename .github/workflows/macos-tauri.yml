@@ -63,12 +63,12 @@ jobs:
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET || '' }}
           APPLE_SIGNING_IDENTITY: "-"
 
-      - name: Upload macOS app artifact
+      - name: Upload macOS app archive artifact
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: h-memo-macos-app
-          path: apps/desktop/src-tauri/target/release/bundle/macos/*.app
+          name: h-memo-macos-app-archive
+          path: apps/desktop/src-tauri/target/release/bundle/macos/*_app.tar.gz
 
       - name: Upload macOS DMG artifact
         uses: actions/upload-artifact@v7
