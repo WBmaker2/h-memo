@@ -42,7 +42,6 @@ import { LocalStorageMemoRepository } from "./adapters/localStorageMemoRepositor
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
 const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
-const STARTUP_UNAVAILABLE_MESSAGE = "웹에서는 시작프로그램 등록을 사용할 수 없습니다.";
 const BROWSER_BACKUP_READY_MESSAGE = "백업 정보 없음";
 const FIREBASE_INIT_FAILED_PREFIX = "서버 백업 초기화 실패:";
 const AUTH_SUBSCRIBE_FAILED_PREFIX = "인증 상태 복구 실패:";
@@ -828,7 +827,6 @@ export function WebApp() {
 
   const handleToggleStartup = async (enabled: boolean) => {
     setStartupEnabled(enabled);
-    setBackupStatus(STARTUP_UNAVAILABLE_MESSAGE);
   };
 
   const isBackupDisabled = !isServerReady || user === null || isBusy;
@@ -877,6 +875,7 @@ export function WebApp() {
           isRestoreDisabled,
           isAuthDisabled,
           isStartupAvailable: false,
+          showStartupSection: false,
         }}
       />
       <input

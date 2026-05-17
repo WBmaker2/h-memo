@@ -3,7 +3,9 @@ import {
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
+  type SyntheticEvent,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import {
@@ -13,6 +15,8 @@ import {
   updateMemoStyle,
 } from "@h-memo/memo-core";
 import { MemoToolbar } from "./MemoToolbar";
+
+const MEMO_MENU_OPENED_EVENT = "h-memo:memo-menu-opened";
 
 type StickyMemoProps = {
   memo: Memo;
@@ -45,6 +49,7 @@ export function StickyMemo({
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const memoMenuRef = useRef<HTMLDetailsElement | null>(null);
   const shouldShowWindowControls = Boolean(authStatus || onCloseMemo || onRequestWindowClose);
   const memoCloseLabel = editingMemo.plainText.trim().replace(/\s+/g, " ")
     ? `${editingMemo.plainText.trim().replace(/\s+/g, " ")} 메모창 닫기`
@@ -53,6 +58,23 @@ export function StickyMemo({
   useEffect(() => {
     setEditingMemo(memo);
   }, [memo]);
+
+  useEffect(() => {
+    const closeWhenAnotherMemoMenuOpens = (event: Event) => {
+      if (!(event instanceof CustomEvent) || event.detail === memo.id) {
+        return;
+      }
+      if (memoMenuRef.current?.open) {
+        memoMenuRef.current.open = false;
+      }
+    };
+
+    window.addEventListener(MEMO_MENU_OPENED_EVENT, closeWhenAnotherMemoMenuOpens);
+
+    return () => {
+      window.removeEventListener(MEMO_MENU_OPENED_EVENT, closeWhenAnotherMemoMenuOpens);
+    };
+  }, [memo.id]);
 
   const commitMemo = (nextMemo: Memo) => {
     setEditingMemo(nextMemo);
@@ -116,6 +138,13 @@ export function StickyMemo({
     onRequestWindowResize?.("SouthEast");
   };
 
+  const handleMemoMenuToggle = (event: SyntheticEvent<HTMLDetailsElement>) => {
+    if (!event.currentTarget.open) {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent(MEMO_MENU_OPENED_EVENT, { detail: editingMemo.id }));
+  };
+
   return (
     <article
       className={isCollapsed ? "sticky-memo sticky-memo--collapsed" : "sticky-memo"}
@@ -134,7 +163,12 @@ export function StickyMemo({
         onMouseDown={handleWindowDrag}
         onDoubleClick={handleTitlebarDoubleClick}
       >
-        <details className="memo-menu" data-no-window-drag="true">
+        <details
+          ref={memoMenuRef}
+          className="memo-menu"
+          data-no-window-drag="true"
+          onToggle={handleMemoMenuToggle}
+        >
           <summary
             aria-label="메모 메뉴"
             title="메모 메뉴"

@@ -1,6 +1,6 @@
 import { createMemo } from "@h-memo/memo-core";
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { StickyMemo } from "./StickyMemo";
@@ -122,6 +122,39 @@ describe("StickyMemo", () => {
 
     expect(onCloseMemo).toHaveBeenCalledWith("memo-1");
     expect(screen.queryByRole("button", { name: "종료" })).not.toBeInTheDocument();
+  });
+
+  it("closes another memo menu when a different memo menu opens", async () => {
+    const user = userEvent.setup();
+    const firstMemo = createMemo({
+      now: "2026-05-13T09:00:00.000Z",
+      id: "memo-1",
+    });
+    const secondMemo = createMemo({
+      now: "2026-05-13T09:01:00.000Z",
+      id: "memo-2",
+    });
+
+    render(
+      <>
+        <StickyMemo memo={firstMemo} onChange={vi.fn()} onDelete={vi.fn()} />
+        <StickyMemo memo={secondMemo} onChange={vi.fn()} onDelete={vi.fn()} />
+      </>
+    );
+
+    const menuButtons = screen.getAllByTitle("메모 메뉴");
+    const firstMenu = menuButtons[0].closest("details");
+    const secondMenu = menuButtons[1].closest("details");
+
+    await user.click(menuButtons[0]);
+    expect(firstMenu).toHaveAttribute("open");
+
+    await user.click(menuButtons[1]);
+
+    await waitFor(() => {
+      expect(firstMenu).not.toHaveAttribute("open");
+      expect(secondMenu).toHaveAttribute("open");
+    });
   });
 
   it("requests native window drag and resize from the titlebar and handle", async () => {

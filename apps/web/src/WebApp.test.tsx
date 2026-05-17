@@ -189,7 +189,8 @@ describe("WebApp", () => {
       expect(screen.getByText("메모가 없습니다. 상단의 메뉴에서 새 메모를 만들어 보세요.")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "TXT 내보내기" })).toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent(FIREBASE_UNAVAILABLE_MESSAGE);
-      expect(screen.getByRole("switch", { name: "시작프로그램 등록" })).toBeDisabled();
+      expect(screen.queryByRole("heading", { name: "시작프로그램" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("switch", { name: "시작프로그램 등록" })).not.toBeInTheDocument();
     });
   });
 

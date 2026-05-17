@@ -21,6 +21,7 @@ export type SettingsPanelProps = {
   isBackupDisabled?: boolean;
   isRestoreDisabled?: boolean;
   isAuthDisabled?: boolean;
+  showStartupSection?: boolean;
   firebaseConfig?: FirebaseConfigFormValue;
   onBackup: () => void;
   onRestore: () => void;
@@ -55,6 +56,7 @@ export function SettingsPanel({
   isBackupDisabled = false,
   isRestoreDisabled = false,
   isAuthDisabled = false,
+  showStartupSection = true,
   firebaseConfig = EMPTY_FIREBASE_CONFIG,
   onBackup,
   onRestore,
@@ -236,20 +238,22 @@ export function SettingsPanel({
         </div>
       </section>
 
-      <section className="settings-panel__section">
-        <h4 className="settings-panel__section-title">시작프로그램</h4>
-        <label className="settings-panel__switch-row">
-          <span>시작프로그램 등록</span>
-          <input
-            type="checkbox"
-            role="switch"
-            aria-label="시작프로그램 등록"
-            checked={startupEnabled}
-            disabled={!isStartupAvailable}
-            onChange={handleToggleStartup}
-          />
-        </label>
-      </section>
+      {showStartupSection ? (
+        <section className="settings-panel__section">
+          <h4 className="settings-panel__section-title">시작프로그램</h4>
+          <label className="settings-panel__switch-row">
+            <span>시작프로그램 등록</span>
+            <input
+              type="checkbox"
+              role="switch"
+              aria-label="시작프로그램 등록"
+              checked={startupEnabled}
+              disabled={!isStartupAvailable}
+              onChange={handleToggleStartup}
+            />
+          </label>
+        </section>
+      ) : null}
     </section>
   );
 }
