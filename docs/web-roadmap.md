@@ -34,6 +34,7 @@
 
 1. 웹 동기화 게이트웨이 플러그인화
    - Firebase/클라우드 연동을 선택적으로 넣는 웹 전용 sync 레이어 추가
+   - Windows/macOS/web 공용 DB 전환 설계는 [`cross-platform-sync-roadmap.md`](./cross-platform-sync-roadmap.md)를 기준으로 진행
 2. 플랫폼별 빌드
    - 모바일은 동일한 web shell 기반으로 PWA 또는 웹뷰 래퍼 적용
 3. macOS

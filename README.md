@@ -62,6 +62,7 @@ npm run check:versions
 ## 웹 미리보기 확장 경로
 
 - [`docs/web-roadmap.md`](./docs/web-roadmap.md)
+- [`docs/cross-platform-sync-roadmap.md`](./docs/cross-platform-sync-roadmap.md)
 
 ### 웹 앱 동기화 상태
 
