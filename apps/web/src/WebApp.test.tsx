@@ -179,11 +179,11 @@ afterEach(() => {
 });
 
 describe("WebApp", () => {
-  it("renders web preview shell", async () => {
+  it("renders shared db web app shell", async () => {
     render(<WebApp />);
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "H Memo (웹 미리보기)" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "H Memo" })).toBeInTheDocument();
       const memoArea = screen.getByRole("region", { name: "메모 목록" });
       expect(within(memoArea).queryByRole("button", { name: "새 메모" })).not.toBeInTheDocument();
       expect(screen.getByText("메모가 없습니다. 상단의 메뉴에서 새 메모를 만들어 보세요.")).toBeInTheDocument();

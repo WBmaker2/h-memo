@@ -3,10 +3,10 @@
 ## 목표
 
 - `desktop` 앱의 핵심 저장소/도메인 계층(`memo-core`)과 UI 계층(`memo-ui`), 동기화 계층(`memo-sync`)을 재사용해
-  브라우저 미리보기 앱을 먼저 제공합니다.
+  브라우저 기반의 공유 DB 웹앱을 제공합니다.
 - 최종적으로는 브라우저, 모바일(PWA/웹뷰), macOS 앱까지 동일한 멀티 플랫폼 방향으로 확장할 수 있는 기반을 마련합니다.
 
-## 지금 반영한 범위 (web preview)
+## 지금 반영한 범위 (공유 DB 웹앱)
 
 - `apps/web` 추가
   - Vite + React + TypeScript 진입점
@@ -22,7 +22,9 @@
   - `SettingsPanel`에 시작프로그램 토글 비활성화 옵션을 선택적으로 제어할 수 있는 `isStartupAvailable` 추가
   - 공통 뷰 쉘 컴포넌트 `MemoWorkspace` 추가 (`desktop-app`/`web-app` 클래스명으로 렌더링 가능)
 - `README`
-  - 웹 미리보기 경로/제약 사항 링크 추가
+  - 웹앱 범위/운영 제약 링크 추가
+- `apps/web` (공유 DB 웹앱)
+  - 서버 메모 목록 조회/복원/삭제 흐름(`ServerMemoManagerDialog`) 동작 반영
 
 ## 제한 사항
 

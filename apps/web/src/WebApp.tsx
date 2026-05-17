@@ -773,7 +773,7 @@ export function WebApp() {
     <>
       <MemoWorkspace
         appClassName="web-app"
-        title="H Memo (웹 미리보기)"
+        title="H Memo"
         memos={visibleMemos}
         onCreateMemo={handleCreateMemo}
         onMemoChange={handleMemoChange}
