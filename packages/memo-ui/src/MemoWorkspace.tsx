@@ -23,6 +23,9 @@ type MemoWorkspaceShellProps = {
   onRequestWindowResize?: (direction: "SouthEast") => void;
   onRequestWindowClose?: () => void;
   onRequestCollapseChange?: (collapsed: boolean) => void;
+  onRequestSync?: () => void;
+  isSyncDisabled?: boolean;
+  isSyncBusy?: boolean;
   settingsProps: SettingsPanelProps;
 };
 
@@ -40,6 +43,9 @@ export function MemoWorkspace({
   onRequestWindowResize,
   onRequestWindowClose,
   onRequestCollapseChange,
+  onRequestSync,
+  isSyncDisabled,
+  isSyncBusy,
   settingsProps,
   actions,
   authStatus,
@@ -148,6 +154,9 @@ export function MemoWorkspace({
               onRequestWindowResize={onRequestWindowResize}
               onRequestWindowClose={onRequestWindowClose}
               onRequestCollapseChange={onRequestCollapseChange}
+              onRequestSync={onRequestSync}
+              isSyncDisabled={isSyncDisabled}
+              isSyncBusy={isSyncBusy}
             />
           ))
         ) : (

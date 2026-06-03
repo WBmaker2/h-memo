@@ -225,6 +225,19 @@ body {
   object-fit: cover;
 }
 
+.sticky-memo__sync-button {
+  position: relative;
+}
+
+.sticky-memo__sync-button:disabled {
+  color: rgba(15, 23, 42, 0.28);
+  cursor: default;
+}
+
+.sticky-memo__sync-button:disabled:hover {
+  background: transparent;
+}
+
 .sticky-memo__window-controls button {
   display: grid;
   place-items: center;
