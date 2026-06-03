@@ -33,6 +33,9 @@ type StickyMemoProps = {
   onRequestWindowResize?: (direction: "SouthEast") => void;
   onRequestWindowClose?: () => void;
   onRequestCollapseChange?: (collapsed: boolean) => void;
+  onRequestSync?: () => void;
+  isSyncDisabled?: boolean;
+  isSyncBusy?: boolean;
 };
 
 export function StickyMemo({
@@ -46,11 +49,18 @@ export function StickyMemo({
   onRequestWindowResize,
   onRequestWindowClose,
   onRequestCollapseChange,
+  onRequestSync,
+  isSyncDisabled = false,
+  isSyncBusy = false,
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const memoMenuRef = useRef<HTMLDetailsElement | null>(null);
-  const shouldShowWindowControls = Boolean(authStatus || onCloseMemo || onRequestWindowClose);
+  const shouldShowSyncAction = Boolean(authStatus && onRequestSync);
+  const shouldShowWindowControls = Boolean(
+    authStatus || onCloseMemo || onRequestWindowClose || shouldShowSyncAction
+  );
+  const isTopbarSyncDisabled = isSyncDisabled || isSyncBusy || !onRequestSync;
   const memoCloseLabel = editingMemo.plainText.trim().replace(/\s+/g, " ")
     ? `${editingMemo.plainText.trim().replace(/\s+/g, " ")} 메모창 닫기`
     : "빈 메모창 닫기";
@@ -198,6 +208,24 @@ export function StickyMemo({
         </div>
         {shouldShowWindowControls ? (
           <div className="sticky-memo__window-controls" data-no-window-drag="true">
+            {shouldShowSyncAction ? (
+              <button
+                type="button"
+                className="sticky-memo__sync-button"
+                aria-label="동기화"
+                title={
+                  isSyncDisabled
+                    ? "구글 로그인 후 동기화 가능"
+                    : isSyncBusy
+                      ? "동기화 중"
+                      : "서버 백업"
+                }
+                disabled={isTopbarSyncDisabled}
+                onClick={onRequestSync}
+              >
+                <span aria-hidden="true">{isSyncBusy ? "..." : "↻"}</span>
+              </button>
+            ) : null}
             {authStatus ? (
               <div
                 className={`sticky-memo__auth-status sticky-memo__auth-status--${authStatus.state}`}

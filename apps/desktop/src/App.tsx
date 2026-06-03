@@ -1492,15 +1492,18 @@ export function App() {
   return (
     <>
       <MemoWorkspace
-          appClassName="desktop-app"
-          title="H Memo"
-          memos={displayedMemos}
-          managedMemos={visibleMemos}
-          authStatus={authStatus}
-          onCreateMemo={handleCreateMemo}
+        appClassName="desktop-app"
+        title="H Memo"
+        memos={displayedMemos}
+        managedMemos={visibleMemos}
+        authStatus={authStatus}
+        onCreateMemo={handleCreateMemo}
         onOpenMemo={isTauri ? handleOpenMemo : undefined}
         onMemoChange={handleMemoChange}
         onDeleteMemo={handleDeleteMemo}
+        onRequestSync={handleBackup}
+        isSyncDisabled={isBackupDisabled}
+        isSyncBusy={isBusy}
         actions={
           <button
             type="button"
