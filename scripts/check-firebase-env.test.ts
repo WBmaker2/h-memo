@@ -148,6 +148,48 @@ describe("check-firebase-env", () => {
     }
   });
 
+  it("does not let empty env values override built-in Firebase defaults", () => {
+    const fixture = createTempEnvDir();
+    try {
+      const configPath = path.join(
+        fixture.root,
+        "packages",
+        "memo-sync",
+        "src",
+        "defaultFirebaseProject.json"
+      );
+      mkdirSync(path.dirname(configPath), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          apiKey: "built-in-api-key",
+          authDomain: "built-in.firebaseapp.com",
+          projectId: "built-in-project",
+          appId: "built-in-app-id",
+        })
+      );
+
+      const env = loadFirebaseEnv({
+        cwd: fixture.root,
+        processEnv: {
+          VITE_FIREBASE_API_KEY: "",
+          VITE_FIREBASE_AUTH_DOMAIN: "   ",
+          VITE_GOOGLE_OAUTH_CLIENT_ID: "desktop-client-id",
+        },
+      });
+
+      expect(env).toMatchObject({
+        VITE_FIREBASE_API_KEY: "built-in-api-key",
+        VITE_FIREBASE_AUTH_DOMAIN: "built-in.firebaseapp.com",
+        VITE_FIREBASE_PROJECT_ID: "built-in-project",
+        VITE_FIREBASE_APP_ID: "built-in-app-id",
+        VITE_GOOGLE_OAUTH_CLIENT_ID: "desktop-client-id",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it("parses --mode and resolves Vite-like env file order", () => {
     expect(parseArgs(["--mode", "staging", "--require-desktop-oauth"])).toMatchObject({
       mode: "staging",

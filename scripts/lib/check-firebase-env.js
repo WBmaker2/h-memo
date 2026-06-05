@@ -44,6 +44,16 @@ function trim(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function collectNonEmptyEnv(env) {
+  return Object.entries(env).reduce((result, [key, value]) => {
+    const trimmed = trim(value);
+    if (trimmed !== "") {
+      result[key] = trimmed;
+    }
+    return result;
+  }, {});
+}
+
 export function parseArgs(argv = process.argv.slice(2)) {
   const options = {
     help: false,
@@ -156,8 +166,8 @@ export function loadFirebaseEnv({
 } = {}) {
   return {
     ...readBuiltInFirebaseEnv({ cwd }),
-    ...readDotEnvFiles({ cwd, mode }),
-    ...processEnv,
+    ...collectNonEmptyEnv(readDotEnvFiles({ cwd, mode })),
+    ...collectNonEmptyEnv(processEnv),
   };
 }
 
