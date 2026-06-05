@@ -181,7 +181,11 @@ jobs:
           echo "Found ${#msi_files[@]} MSI and ${#nsis_files[@]} NSIS files."
 
           tag_ref="tags/$RELEASE_TAG"
-          existing_tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/${tag_ref}" --jq '.object.sha' 2>/dev/null || true)"
+          if existing_tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/${tag_ref}" --jq '.object.sha' 2>/dev/null)"; then
+            :
+          else
+            existing_tag_sha=""
+          fi
           if [ -n "$existing_tag_sha" ] && [ "$existing_tag_sha" != "$RELEASE_TARGET" ]; then
             echo "Release tag $RELEASE_TAG already points to $existing_tag_sha, but this workflow built $RELEASE_TARGET." >&2
             echo "Run the workflow from the matching tag/ref or use a new release tag." >&2
