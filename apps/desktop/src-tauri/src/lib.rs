@@ -34,6 +34,8 @@ const GOOGLE_OAUTH_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/aut
 const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_OAUTH_SCOPE: &str = "openid email profile";
 const GOOGLE_OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
+const GOOGLE_OAUTH_SECRET_REQUIRED_MESSAGE: &str =
+  "Windows 데스크톱 구글 로그인에는 Google OAuth Client Secret 설정이 필요합니다. GOOGLE_OAUTH_CLIENT_SECRET이 포함된 설치 파일로 다시 실행해 주세요.";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +190,10 @@ async fn start_google_desktop_oauth(client_id: String) -> Result<GoogleOAuthToke
   let client_id = client_id.trim().to_string();
   if client_id.is_empty() {
     return Err("Google OAuth Client ID가 비어 있습니다.".to_string());
+  }
+
+  if google_oauth_client_secret().is_none() {
+    return Err(GOOGLE_OAUTH_SECRET_REQUIRED_MESSAGE.to_string());
   }
 
   tauri::async_runtime::spawn_blocking(move || run_google_desktop_oauth(client_id))

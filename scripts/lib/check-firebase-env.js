@@ -17,6 +17,11 @@ export const OPTIONAL_ENV_KEYS = [
   "GOOGLE_OAUTH_CLIENT_SECRET",
 ];
 
+export const DESKTOP_OAUTH_ENV_KEYS = [
+  "VITE_GOOGLE_OAUTH_CLIENT_ID",
+  "GOOGLE_OAUTH_CLIENT_SECRET",
+];
+
 export const BUILT_IN_FIREBASE_CONFIG_PATH = path.join(
   "packages",
   "memo-sync",
@@ -43,6 +48,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
   const options = {
     help: false,
     mode: "",
+    requireDesktopOAuth: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -63,6 +69,11 @@ export function parseArgs(argv = process.argv.slice(2)) {
 
     if (arg.startsWith("--mode=")) {
       options.mode = arg.slice("--mode=".length);
+      continue;
+    }
+
+    if (arg === "--require-desktop-oauth") {
+      options.requireDesktopOAuth = true;
       continue;
     }
 
@@ -163,28 +174,34 @@ export function collectStatusFromKeys(keys, sourceEnv) {
   return { present, missing };
 }
 
-export function checkFirebaseEnv(sourceEnv) {
+export function checkFirebaseEnv(sourceEnv, { requireDesktopOAuth = false } = {}) {
+  const desktopOAuth = requireDesktopOAuth
+    ? collectStatusFromKeys(DESKTOP_OAUTH_ENV_KEYS, sourceEnv)
+    : { present: [], missing: [] };
+
   return {
     required: collectStatusFromKeys(REQUIRED_ENV_KEYS, sourceEnv),
     optional: collectStatusFromKeys(OPTIONAL_ENV_KEYS, sourceEnv),
+    desktopOAuth,
   };
 }
 
 function printUsage() {
   console.log("Usage: node scripts/check-firebase-env.mjs [--mode <mode>]");
   console.log("  --mode  Also load .env.<mode> and .env.<mode>.local after generic env files");
+  console.log("  --require-desktop-oauth  Require desktop Google OAuth Client ID and Secret");
 }
 
 export function main() {
   try {
-    const { help, mode } = parseArgs();
+    const { help, mode, requireDesktopOAuth } = parseArgs();
     if (help) {
       printUsage();
       process.exit(0);
     }
 
-    const result = checkFirebaseEnv(loadFirebaseEnv({ mode }));
-    const { required, optional } = result;
+    const result = checkFirebaseEnv(loadFirebaseEnv({ mode }), { requireDesktopOAuth });
+    const { required, optional, desktopOAuth } = result;
 
     console.log("[firebase-env] required keys");
     if (required.missing.length === 0) {
@@ -207,6 +224,20 @@ export function main() {
       );
       process.exitCode = 1;
       return;
+    }
+
+    if (requireDesktopOAuth) {
+      console.log("[firebase-env] desktop Google OAuth keys");
+      if (desktopOAuth.missing.length === 0) {
+        console.log("  present: all desktop OAuth keys");
+      } else {
+        console.log(`  missing: ${desktopOAuth.missing.join(", ")}`);
+        console.error(
+          `[firebase-env] missing desktop OAuth keys: ${desktopOAuth.missing.join(", ")}`
+        );
+        process.exitCode = 1;
+        return;
+      }
     }
 
     console.log("[firebase-env] all required Firebase client keys are present.");

@@ -85,6 +85,23 @@ describe("check-firebase-env", () => {
     expect(result.optional.present).toEqual([]);
   });
 
+  it("requires desktop OAuth keys when requested", () => {
+    const result = checkFirebaseEnv(
+      {
+        VITE_FIREBASE_API_KEY: "api-key",
+        VITE_FIREBASE_AUTH_DOMAIN: "project.firebaseapp.com",
+        VITE_FIREBASE_PROJECT_ID: "project-id",
+        VITE_FIREBASE_APP_ID: "app-id",
+        VITE_GOOGLE_OAUTH_CLIENT_ID: "desktop-client-id",
+      },
+      { requireDesktopOAuth: true }
+    );
+
+    expect(result.required.missing).toEqual([]);
+    expect(result.desktopOAuth.present).toEqual(["VITE_GOOGLE_OAUTH_CLIENT_ID"]);
+    expect(result.desktopOAuth.missing).toEqual(["GOOGLE_OAUTH_CLIENT_SECRET"]);
+  });
+
   it("loads built-in Firebase defaults before env files and process env", () => {
     const fixture = createTempEnvDir();
     try {
@@ -132,8 +149,9 @@ describe("check-firebase-env", () => {
   });
 
   it("parses --mode and resolves Vite-like env file order", () => {
-    expect(parseArgs(["--mode", "staging"])).toMatchObject({
+    expect(parseArgs(["--mode", "staging", "--require-desktop-oauth"])).toMatchObject({
       mode: "staging",
+      requireDesktopOAuth: true,
     });
     expect(getDotEnvFileOrder("staging")).toEqual([
       ".env",
