@@ -6,6 +6,9 @@ import { describe, expect, it } from "vitest";
 const REQUIRED_WINDOW_PERMISSIONS = [
   "core:window:allow-close",
   "core:window:allow-hide",
+  "core:window:allow-current-monitor",
+  "core:window:allow-monitor-from-point",
+  "core:window:allow-primary-monitor",
   "core:window:allow-set-position",
   "core:window:allow-set-size",
   "core:window:allow-start-dragging",

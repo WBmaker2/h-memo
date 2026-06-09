@@ -1,7 +1,11 @@
 import {
+  currentMonitor,
   getCurrentWindow,
+  monitorFromPoint,
   PhysicalPosition,
   PhysicalSize,
+  primaryMonitor,
+  type Monitor,
 } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { Memo } from "@h-memo/memo-core";
@@ -34,6 +38,54 @@ function getMemoWindowUrl(memoId: string) {
   return `index.html?memoId=${encodeURIComponent(memoId)}`;
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getMonitorWorkArea(monitor: Monitor) {
+  return monitor.workArea ?? {
+    position: monitor.position,
+    size: monitor.size,
+  };
+}
+
+function keepBoundsInsideMonitor(bounds: WindowBounds, monitor: Monitor): WindowBounds {
+  const workArea = getMonitorWorkArea(monitor);
+  const minX = workArea.position.x;
+  const minY = workArea.position.y;
+  const maxX = Math.max(minX, minX + workArea.size.width - bounds.width);
+  const maxY = Math.max(minY, minY + workArea.size.height - bounds.height);
+
+  return {
+    ...bounds,
+    x: clamp(bounds.x, minX, maxX),
+    y: clamp(bounds.y, minY, maxY),
+  };
+}
+
+async function readMonitor(
+  loader: () => Promise<Monitor | null>
+): Promise<Monitor | null> {
+  try {
+    return await loader();
+  } catch {
+    return null;
+  }
+}
+
+async function getBestMonitorForBounds(bounds: WindowBounds) {
+  return (
+    (await readMonitor(() => monitorFromPoint(bounds.x, bounds.y))) ??
+    (await readMonitor(() => currentMonitor())) ??
+    (await readMonitor(() => primaryMonitor()))
+  );
+}
+
+async function resolveVisibleWindowBounds(bounds: WindowBounds): Promise<WindowBounds> {
+  const monitor = await getBestMonitorForBounds(bounds);
+  return monitor ? keepBoundsInsideMonitor(bounds, monitor) : bounds;
+}
+
 export async function openMemoWindow(memo: Memo) {
   const label = getMemoWindowLabel(memo.id);
   const existingWindow = await WebviewWindow.getByLabel(label);
@@ -44,13 +96,23 @@ export async function openMemoWindow(memo: Memo) {
     return;
   }
 
+  const safeBounds =
+    memo.windowState.x !== null && memo.windowState.y !== null
+      ? await resolveVisibleWindowBounds({
+          x: memo.windowState.x,
+          y: memo.windowState.y,
+          width: memo.windowState.width,
+          height: memo.windowState.height,
+        })
+      : null;
+
   const memoWindow = new WebviewWindow(label, {
     url: getMemoWindowUrl(memo.id),
     title: "H Memo",
     width: memo.windowState.width,
     height: memo.windowState.height,
-    x: memo.windowState.x ?? undefined,
-    y: memo.windowState.y ?? undefined,
+    x: safeBounds?.x ?? undefined,
+    y: safeBounds?.y ?? undefined,
     resizable: true,
     decorations: false,
     visible: true,
@@ -96,7 +158,13 @@ export async function restoreWindowBounds(bounds: {
 
   await currentWindow.setSize(new PhysicalSize(bounds.width, bounds.height));
   if (bounds.x !== null && bounds.y !== null) {
-    await currentWindow.setPosition(new PhysicalPosition(bounds.x, bounds.y));
+    const safeBounds = await resolveVisibleWindowBounds({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+    });
+    await currentWindow.setPosition(new PhysicalPosition(safeBounds.x, safeBounds.y));
   }
 }
 
