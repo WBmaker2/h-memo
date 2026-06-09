@@ -12,9 +12,9 @@
     "tauri:icon": "tauri icon src-tauri/icons/icon.svg"
   },
   "dependencies": {
-    "@h-memo/memo-core": "0.1.4",
-    "@h-memo/memo-ui": "0.1.4",
-    "@h-memo/memo-sync": "0.1.4",
+    "@h-memo/memo-core": "0.1.5",
+    "@h-memo/memo-ui": "0.1.5",
+    "@h-memo/memo-sync": "0.1.5",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-autostart": "^2.2.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",

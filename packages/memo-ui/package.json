@@ -6,7 +6,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "peerDependencies": {
-    "@h-memo/memo-core": "0.1.4",
+    "@h-memo/memo-core": "0.1.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
