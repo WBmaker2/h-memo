@@ -1,10 +1,50 @@
 import { useEffect, useState } from "react";
-import { resolveWindowsDownloadUrl, type ReleaseDownloadState } from "./releaseDownload";
+import {
+  resolveWindowsDownloadUrls,
+  type WindowsInstallerDownloadStates,
+  type WindowsInstallerKind,
+} from "./releaseDownload";
 
 const LOADING_DOWNLOAD_LABEL = "다운로드 파일을 확인하는 중입니다.";
+const LATEST_RELEASE_VERSION = "v0.1.6";
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
 const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
+const RELEASE_HISTORY = [
+  {
+    version: "v0.1.6",
+    title: "상단바 사용성 개선",
+    items: [
+      "메모창 제목 옆에 현재 버전을 표시합니다.",
+      "구글 로그인 아이콘 옆에 서버 백업용 동기화 버튼을 다시 추가했습니다.",
+      "메뉴 화면이 가로로 길게 밀리지 않도록 최대 폭을 조정했습니다.",
+    ],
+  },
+  {
+    version: "v0.1.5",
+    title: "새 PC 화면 복원 안정화",
+    items: [
+      "새 Windows PC에서 로그인 후 메모창이 화면 밖으로 복원되는 문제를 보완했습니다.",
+      "저장된 창 위치를 현재 모니터 범위 안으로 다시 맞추도록 개선했습니다.",
+    ],
+  },
+  {
+    version: "v0.1.4",
+    title: "Windows 설치 파일 정리",
+    items: [
+      "MSI와 EXE 설치 파일을 각각 받을 수 있도록 다운로드 버튼을 분리했습니다.",
+      "Google 로그인에 필요한 Desktop OAuth 설정을 빌드에 반영했습니다.",
+    ],
+  },
+];
+
+const WINDOWS_INSTALLER_BUTTONS: Array<{
+  kind: WindowsInstallerKind;
+  label: string;
+}> = [
+  { kind: "msi", label: "Windows MSI 다운로드" },
+  { kind: "exe", label: "Windows EXE 다운로드" },
+];
 
 function getInstallImagePath(fileName: string): string {
   const base = import.meta.env.BASE_URL.endsWith("/") ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
@@ -12,16 +52,15 @@ function getInstallImagePath(fileName: string): string {
 }
 
 export function LandingPage() {
-  const [downloadState, setDownloadState] = useState<ReleaseDownloadState | null>(null);
-  const downloadLabel = downloadState?.label ?? LOADING_DOWNLOAD_LABEL;
-  const canDownload = downloadState !== null && downloadState.source !== "fallback";
+  const [downloadStates, setDownloadStates] = useState<WindowsInstallerDownloadStates | null>(null);
+  const [isReleaseHistoryOpen, setIsReleaseHistoryOpen] = useState(false);
 
   useEffect(() => {
     let mounted = true;
 
-    resolveWindowsDownloadUrl().then((nextState) => {
+    resolveWindowsDownloadUrls().then((nextState) => {
       if (mounted) {
-        setDownloadState(nextState);
+        setDownloadStates(nextState);
       }
     });
 
@@ -42,28 +81,47 @@ export function LandingPage() {
 
       <section className="landing-page__section landing-page__section--download">
         <h2>프로그램 다운로드</h2>
-        <p>Windows 설치 파일, macOS DMG 다운로드, 웹앱 실행 링크를 함께 제공합니다.</p>
+        <p className="landing-page__release-notice">
+          {LATEST_RELEASE_VERSION} 탑재 완료: 상단바 버전 표시, 동기화 버튼, 메뉴 폭 조정이
+          반영된 최신 Windows 설치 파일을 받을 수 있습니다.
+        </p>
+        <p>
+          Windows MSI/EXE 설치 파일과 웹앱 실행 링크를 제공합니다. macOS 버전은 현재
+          보안 문제로 정상 설치가 어려울 수 있습니다.
+        </p>
         <div className="landing-page__download-actions">
-          {canDownload ? (
-            <a
-              href={downloadState.url}
-              className="landing-page__button"
-              title={downloadLabel}
-              aria-label="Windows 버전 다운로드"
-            >
-              Windows 버전 다운로드
-            </a>
-          ) : (
-            <button
-              type="button"
-              className="landing-page__button"
-              title={downloadLabel}
-              aria-label="Windows 버전 다운로드"
-              disabled
-            >
-              Windows 버전 다운로드
-            </button>
-          )}
+          {WINDOWS_INSTALLER_BUTTONS.map(({ kind, label }) => {
+            const downloadState = downloadStates?.[kind] ?? null;
+            const downloadLabel = downloadState?.label ?? LOADING_DOWNLOAD_LABEL;
+            const canDownload = downloadState !== null && downloadState.source !== "fallback";
+            const className =
+              kind === "exe"
+                ? "landing-page__button landing-page__button--exe"
+                : "landing-page__button";
+
+            return canDownload ? (
+              <a
+                key={kind}
+                href={downloadState.url}
+                className={className}
+                title={downloadLabel}
+                aria-label={label}
+              >
+                {label}
+              </a>
+            ) : (
+              <button
+                key={kind}
+                type="button"
+                className={className}
+                title={downloadLabel}
+                aria-label={label}
+                disabled
+              >
+                {label}
+              </button>
+            );
+          })}
           <a
             href={MACOS_DOWNLOAD_URL}
             className="landing-page__button landing-page__button--secondary"
@@ -80,17 +138,66 @@ export function LandingPage() {
           >
             웹앱 실행
           </a>
+          <button
+            type="button"
+            className="landing-page__button landing-page__button--history"
+            onClick={() => setIsReleaseHistoryOpen(true)}
+          >
+            업데이트 기록
+          </button>
         </div>
         <p className="landing-page__download-meta" aria-live="polite">
-          {downloadLabel}
+          MSI: {downloadStates?.msi.label ?? LOADING_DOWNLOAD_LABEL}
+        </p>
+        <p className="landing-page__download-meta" aria-live="polite">
+          EXE: {downloadStates?.exe.label ?? LOADING_DOWNLOAD_LABEL}
         </p>
         <p className="landing-page__download-meta">
-          macOS 버전은 Apple Silicon용 DMG 파일로 제공합니다.
+          macOS 버전은 Apple 개발자 서명/공증이 없어 보안 문제로 정상 설치가 안될 수
+          있습니다. 현재는 Windows 설치 파일 사용을 권장합니다.
         </p>
         <p className="landing-page__download-meta">
           웹앱은 브라우저에서 열리며 설치 없이 H Memo를 사용할 수 있습니다.
         </p>
       </section>
+
+      {isReleaseHistoryOpen ? (
+        <div className="landing-page__modal-backdrop" role="presentation">
+          <section
+            className="landing-page__modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="release-history-title"
+          >
+            <div className="landing-page__modal-header">
+              <h2 id="release-history-title">업데이트 기록</h2>
+              <button
+                type="button"
+                className="landing-page__modal-close"
+                onClick={() => setIsReleaseHistoryOpen(false)}
+                aria-label="업데이트 기록 닫기"
+              >
+                닫기
+              </button>
+            </div>
+            <div className="landing-page__release-list">
+              {RELEASE_HISTORY.map((release) => (
+                <article className="landing-page__release-card" key={release.version}>
+                  <h3>
+                    <span>{release.version}</span>
+                    {release.title}
+                  </h3>
+                  <ul>
+                    {release.items.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </article>
+              ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <section className="landing-page__section">
         <h2>앱 소개</h2>
@@ -123,7 +230,7 @@ export function LandingPage() {
       <section className="landing-page__section">
         <h2>지원 플랫폼</h2>
         <p>Windows용 설치 파일 제공</p>
-        <p>macOS용 DMG 다운로드 제공</p>
+        <p>macOS용 DMG는 보안 문제로 정상 설치가 제한될 수 있음</p>
         <p>웹 브라우저용 웹앱 제공</p>
       </section>
 
@@ -160,9 +267,8 @@ export function LandingPage() {
       <section className="landing-page__section landing-page__section--links">
         <h2>macOS 다운로드 안내</h2>
         <p>
-          macOS에서는 다운로드 후 보안 확인 메시지가 표시될 수 있습니다. 다운로드한
-          DMG 파일 이름이 H Memo 설치 파일인지 확인한 뒤 macOS 화면 안내에 따라
-          실행하세요.
+          macOS 버전은 현재 Apple 개발자 서명 및 공증이 적용되지 않아 보안 문제로
+          정상 설치가 안될 수 있습니다. 개발/내부 테스트 용도로만 확인해 주세요.
         </p>
       </section>
     </main>

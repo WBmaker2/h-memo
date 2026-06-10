@@ -6,12 +6,18 @@ function isWebAppHash(hash: string): boolean {
   return hash === "#/app" || hash === "#app";
 }
 
+function shouldOpenWebAppByDefault(): boolean {
+  return import.meta.env.VITE_H_MEMO_WEB_DEFAULT_ROUTE === "app";
+}
+
 export function AppRouter() {
-  const [isWebAppRoute, setIsWebAppRoute] = useState<boolean>(() => isWebAppHash(window.location.hash));
+  const [isWebAppRoute, setIsWebAppRoute] = useState<boolean>(
+    () => shouldOpenWebAppByDefault() || isWebAppHash(window.location.hash)
+  );
 
   useEffect(() => {
     const handleHashChange = () => {
-      setIsWebAppRoute(isWebAppHash(window.location.hash));
+      setIsWebAppRoute(shouldOpenWebAppByDefault() || isWebAppHash(window.location.hash));
     };
 
     window.addEventListener("hashchange", handleHashChange);

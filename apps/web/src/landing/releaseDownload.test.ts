@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DOWNLOAD_MANIFEST_PATH, resolveWindowsDownloadUrl } from "./releaseDownload";
+import {
+  DOWNLOAD_MANIFEST_PATH,
+  resolveWindowsDownloadUrl,
+  resolveWindowsDownloadUrls,
+} from "./releaseDownload";
 
 const makeResponse = (overrides: { ok?: boolean; body?: unknown } = {}) => {
   const { ok = true, body = {} } = overrides;
@@ -36,7 +40,7 @@ describe("resolveWindowsDownloadUrl", () => {
     const result = await resolveWindowsDownloadUrl(fetcher);
 
     expect(fetcher).toHaveBeenCalledWith(
-      "https://api.github.com/repos/WBmaker2/h-memo-releases/releases/latest",
+      "https://api.github.com/repos/WBmaker2/h-memo/releases/latest",
     );
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
@@ -99,7 +103,7 @@ describe("resolveWindowsDownloadUrl", () => {
 
     expect(fetcher).toHaveBeenNthCalledWith(
       1,
-      "https://api.github.com/repos/WBmaker2/h-memo-releases/releases/latest",
+      "https://api.github.com/repos/WBmaker2/h-memo/releases/latest",
     );
     expect(fetcher).toHaveBeenNthCalledWith(2, `/${DOWNLOAD_MANIFEST_PATH}`);
     expect(result).toEqual({
@@ -168,6 +172,120 @@ describe("resolveWindowsDownloadUrl", () => {
       url: "",
       label: "다운로드 링크를 준비 중입니다. 잠시 후 다시 시도해 주세요.",
       source: "fallback",
+    });
+  });
+});
+
+describe("resolveWindowsDownloadUrls", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns separate MSI and EXE states from the latest release assets", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      makeResponse({
+        body: {
+          assets: [
+            {
+              name: "H.Memo_0.1.6_x64-setup.exe",
+              browser_download_url: "https://github.com/example/H.Memo_0.1.6_x64-setup.exe",
+            },
+            {
+              name: "H.Memo_0.1.6_x64_en-US.msi",
+              browser_download_url: "https://github.com/example/H.Memo_0.1.6_x64_en-US.msi",
+            },
+          ],
+        },
+      }),
+    );
+
+    const result = await resolveWindowsDownloadUrls(fetcher);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      msi: {
+        url: "https://github.com/example/H.Memo_0.1.6_x64_en-US.msi",
+        label: "Windows MSI 설치 파일로 연결됩니다.",
+        source: "github-asset",
+      },
+      exe: {
+        url: "https://github.com/example/H.Memo_0.1.6_x64-setup.exe",
+        label: "Windows EXE 설치 파일로 연결됩니다.",
+        source: "github-asset",
+      },
+    });
+  });
+
+  it("uses the manifest to fill an EXE URL when the latest release has only MSI", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(
+        makeResponse({
+          body: {
+            assets: [
+              {
+                name: "H.Memo_0.1.6_x64_en-US.msi",
+                browser_download_url: "https://github.com/example/H.Memo_0.1.6_x64_en-US.msi",
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeResponse({
+          body: {
+            windows: {
+              msiUrl: "https://github.com/example/manifest-msi.msi",
+              exeUrl: "https://github.com/example/manifest-exe.exe",
+            },
+          },
+        }),
+      );
+
+    const result = await resolveWindowsDownloadUrls(fetcher);
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/repos/WBmaker2/h-memo/releases/latest",
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(2, `/${DOWNLOAD_MANIFEST_PATH}`);
+    expect(result).toEqual({
+      msi: {
+        url: "https://github.com/example/H.Memo_0.1.6_x64_en-US.msi",
+        label: "Windows MSI 설치 파일로 연결됩니다.",
+        source: "github-asset",
+      },
+      exe: {
+        url: "https://github.com/example/manifest-exe.exe",
+        label: "Windows EXE 설치 파일로 연결됩니다.",
+        source: "download-manifest",
+      },
+    });
+  });
+
+  it("returns a fallback state for each missing installer type", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ ok: false }))
+      .mockResolvedValueOnce(
+        makeResponse({
+          body: {
+            windows: {},
+          },
+        }),
+      );
+
+    const result = await resolveWindowsDownloadUrls(fetcher);
+
+    expect(result).toEqual({
+      msi: {
+        url: "",
+        label: "다운로드 링크를 준비 중입니다. 잠시 후 다시 시도해 주세요.",
+        source: "fallback",
+      },
+      exe: {
+        url: "",
+        label: "다운로드 링크를 준비 중입니다. 잠시 후 다시 시도해 주세요.",
+        source: "fallback",
+      },
     });
   });
 });

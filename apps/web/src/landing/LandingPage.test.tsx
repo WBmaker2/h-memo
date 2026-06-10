@@ -1,9 +1,10 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppRouter } from "../AppRouter";
 import { LandingPage } from "./LandingPage";
-import { resolveWindowsDownloadUrl } from "./releaseDownload";
+import { resolveWindowsDownloadUrls } from "./releaseDownload";
 
 vi.mock("../WebApp", () => ({
   WebApp: () => <h1>H Memo (웹 미리보기)</h1>,
@@ -13,7 +14,7 @@ vi.mock("./releaseDownload", async () => {
   const actual = await vi.importActual<typeof import("./releaseDownload")>("./releaseDownload");
   return {
     ...actual,
-    resolveWindowsDownloadUrl: vi.fn(),
+    resolveWindowsDownloadUrls: vi.fn(),
   };
 });
 
@@ -24,15 +25,25 @@ const FALLBACK_DOWNLOAD_STATE = {
 };
 
 const RESOLVED_DOWNLOAD_STATE = {
-  url: "https://github.com/WBmaker2/h-memo-releases/releases/download/v0.1.2/H.Memo_0.1.2_x64_en-US.msi",
+  url: "https://github.com/WBmaker2/h-memo/releases/download/v0.1.6/H.Memo_0.1.6_x64_en-US.msi",
   label: "Windows MSI 설치 파일로 연결됩니다.",
   source: "github-asset" as const,
 };
 
 const MANIFEST_DOWNLOAD_STATE = {
-  url: "https://github.com/WBmaker2/h-memo-releases/releases/download/v0.1.2/H.Memo_0.1.2_x64-setup.exe",
+  url: "https://github.com/WBmaker2/h-memo/releases/download/v0.1.6/H.Memo_0.1.6_x64-setup.exe",
   label: "Windows EXE 설치 파일로 연결됩니다.",
   source: "download-manifest" as const,
+};
+
+const FALLBACK_DOWNLOAD_STATES = {
+  msi: FALLBACK_DOWNLOAD_STATE,
+  exe: FALLBACK_DOWNLOAD_STATE,
+};
+
+const RESOLVED_DOWNLOAD_STATES = {
+  msi: RESOLVED_DOWNLOAD_STATE,
+  exe: MANIFEST_DOWNLOAD_STATE,
 };
 
 const MACOS_DOWNLOAD_URL =
@@ -42,10 +53,11 @@ const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
 beforeEach(() => {
   vi.clearAllMocks();
   window.location.hash = "";
-  vi.mocked(resolveWindowsDownloadUrl).mockResolvedValue(FALLBACK_DOWNLOAD_STATE);
+  vi.mocked(resolveWindowsDownloadUrls).mockResolvedValue(FALLBACK_DOWNLOAD_STATES);
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   cleanup();
 });
 
@@ -54,8 +66,10 @@ describe("LandingPage", () => {
     render(<AppRouter />);
 
     expect(screen.getByRole("heading", { name: "H Memo" })).toBeInTheDocument();
-    const downloadButton = await screen.findByRole("button", { name: "Windows 버전 다운로드" });
-    expect(downloadButton).toBeDisabled();
+    const msiDownloadButton = await screen.findByRole("button", { name: "Windows MSI 다운로드" });
+    const exeDownloadButton = screen.getByRole("button", { name: "Windows EXE 다운로드" });
+    expect(msiDownloadButton).toBeDisabled();
+    expect(exeDownloadButton).toBeDisabled();
     expect(
       screen.queryByRole("heading", { name: "H Memo (웹 미리보기)" }),
     ).not.toBeInTheDocument();
@@ -64,58 +78,93 @@ describe("LandingPage", () => {
   it("renders a disabled download button before resolution", async () => {
     render(<LandingPage />);
 
-    const downloadButton = screen.getByRole("button", { name: "Windows 버전 다운로드" });
-    expect(downloadButton).toBeDisabled();
-    expect(downloadButton).toHaveAttribute("title", "다운로드 파일을 확인하는 중입니다.");
-    expect(screen.getByText("다운로드 파일을 확인하는 중입니다.")).toBeInTheDocument();
+    expect(
+      screen.getByText(/v0\.1\.6 탑재 완료: 상단바 버전 표시, 동기화 버튼, 메뉴 폭 조정/),
+    ).toBeInTheDocument();
+    const msiDownloadButton = screen.getByRole("button", { name: "Windows MSI 다운로드" });
+    const exeDownloadButton = screen.getByRole("button", { name: "Windows EXE 다운로드" });
+    expect(msiDownloadButton).toBeDisabled();
+    expect(exeDownloadButton).toBeDisabled();
+    expect(msiDownloadButton).toHaveAttribute("title", "다운로드 파일을 확인하는 중입니다.");
+    expect(exeDownloadButton).toHaveAttribute("title", "다운로드 파일을 확인하는 중입니다.");
+    expect(screen.getByText("MSI: 다운로드 파일을 확인하는 중입니다.")).toBeInTheDocument();
+    expect(screen.getByText("EXE: 다운로드 파일을 확인하는 중입니다.")).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(downloadButton).toHaveAttribute("title", FALLBACK_DOWNLOAD_STATE.label);
+      expect(msiDownloadButton).toHaveAttribute("title", FALLBACK_DOWNLOAD_STATE.label);
+      expect(exeDownloadButton).toHaveAttribute("title", FALLBACK_DOWNLOAD_STATE.label);
     });
   });
 
-  it("updates the download link href when resolveWindowsDownloadUrl returns a GitHub asset", async () => {
-    vi.mocked(resolveWindowsDownloadUrl).mockResolvedValue(RESOLVED_DOWNLOAD_STATE);
+  it("updates the MSI download link href when the resolver returns a GitHub asset", async () => {
+    vi.mocked(resolveWindowsDownloadUrls).mockResolvedValue(RESOLVED_DOWNLOAD_STATES);
 
     render(<LandingPage />);
 
-    const downloadLink = await screen.findByRole("link", { name: "Windows 버전 다운로드" });
+    const downloadLink = await screen.findByRole("link", { name: "Windows MSI 다운로드" });
 
     expect(downloadLink).toHaveAttribute("href", RESOLVED_DOWNLOAD_STATE.url);
     expect(downloadLink).toHaveAttribute("title", RESOLVED_DOWNLOAD_STATE.label);
   });
 
-  it("enables the download link when resolveWindowsDownloadUrl returns the manifest fallback", async () => {
-    vi.mocked(resolveWindowsDownloadUrl).mockResolvedValue(MANIFEST_DOWNLOAD_STATE);
+  it("renders a separate EXE download link when the resolver returns an EXE URL", async () => {
+    vi.mocked(resolveWindowsDownloadUrls).mockResolvedValue(RESOLVED_DOWNLOAD_STATES);
 
     render(<LandingPage />);
 
-    const downloadLink = await screen.findByRole("link", { name: "Windows 버전 다운로드" });
+    const downloadLink = await screen.findByRole("link", { name: "Windows EXE 다운로드" });
 
     expect(downloadLink).toHaveAttribute("href", MANIFEST_DOWNLOAD_STATE.url);
     expect(downloadLink).toHaveAttribute("title", MANIFEST_DOWNLOAD_STATE.label);
   });
 
   it("keeps the download button disabled when no installer URL is available", async () => {
-    vi.mocked(resolveWindowsDownloadUrl).mockResolvedValue(FALLBACK_DOWNLOAD_STATE);
+    vi.mocked(resolveWindowsDownloadUrls).mockResolvedValue(FALLBACK_DOWNLOAD_STATES);
 
     render(<LandingPage />);
 
-    const downloadButton = screen.getByRole("button", { name: "Windows 버전 다운로드" });
+    const msiDownloadButton = screen.getByRole("button", { name: "Windows MSI 다운로드" });
+    const exeDownloadButton = screen.getByRole("button", { name: "Windows EXE 다운로드" });
 
     await waitFor(() => {
-      expect(downloadButton).toBeDisabled();
-      expect(downloadButton).toHaveAttribute("title", FALLBACK_DOWNLOAD_STATE.label);
-      expect(screen.getByText(FALLBACK_DOWNLOAD_STATE.label)).toBeInTheDocument();
+      expect(msiDownloadButton).toBeDisabled();
+      expect(msiDownloadButton).toHaveAttribute("title", FALLBACK_DOWNLOAD_STATE.label);
+      expect(exeDownloadButton).toBeDisabled();
+      expect(exeDownloadButton).toHaveAttribute("title", FALLBACK_DOWNLOAD_STATE.label);
+      expect(screen.getByText(`MSI: ${FALLBACK_DOWNLOAD_STATE.label}`)).toBeInTheDocument();
+      expect(screen.getByText(`EXE: ${FALLBACK_DOWNLOAD_STATE.label}`)).toBeInTheDocument();
     });
 
     expect(screen.queryByRole("link", { name: "최신 릴리스 페이지" })).not.toBeInTheDocument();
   });
 
+  it("opens and closes the update history dialog", async () => {
+    const user = userEvent.setup();
+
+    render(<LandingPage />);
+
+    expect(screen.queryByRole("dialog", { name: "업데이트 기록" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "업데이트 기록" }));
+
+    const dialog = screen.getByRole("dialog", { name: "업데이트 기록" });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByText("v0.1.6")).toBeInTheDocument();
+    expect(screen.getByText("상단바 사용성 개선")).toBeInTheDocument();
+    expect(
+      screen.getByText("구글 로그인 아이콘 옆에 서버 백업용 동기화 버튼을 다시 추가했습니다."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "업데이트 기록 닫기" }));
+
+    expect(screen.queryByRole("dialog", { name: "업데이트 기록" })).not.toBeInTheDocument();
+  });
+
   it("renders both SmartScreen guidance images with exact alt text", async () => {
     render(<LandingPage />);
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Windows 버전 다운로드" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Windows MSI 다운로드" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Windows EXE 다운로드" })).toBeDisabled();
     });
 
     expect(
@@ -130,7 +179,7 @@ describe("LandingPage", () => {
     render(<LandingPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(FALLBACK_DOWNLOAD_STATE.label)).toBeInTheDocument();
+      expect(screen.getByText(`MSI: ${FALLBACK_DOWNLOAD_STATE.label}`)).toBeInTheDocument();
     });
 
     expect(screen.queryByRole("link", { name: "최신 릴리스 페이지" })).not.toBeInTheDocument();
@@ -157,13 +206,13 @@ describe("LandingPage", () => {
     expect(macDownloadLink).toHaveAttribute("href", MACOS_DOWNLOAD_URL);
     expect(macDownloadLink).toHaveAttribute("target", "_blank");
     expect(screen.getByRole("heading", { name: "macOS 다운로드 안내" })).toBeInTheDocument();
-    expect(screen.getByText("macOS용 DMG 다운로드 제공")).toBeInTheDocument();
+    expect(screen.getByText("macOS용 DMG는 보안 문제로 정상 설치가 제한될 수 있음")).toBeInTheDocument();
     expect(
       screen.queryByText("웹 브라우저용 웹앱도 개발 및 배포 예정"),
     ).not.toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.getByText(FALLBACK_DOWNLOAD_STATE.label)).toBeInTheDocument();
+      expect(screen.getByText(`MSI: ${FALLBACK_DOWNLOAD_STATE.label}`)).toBeInTheDocument();
     });
   });
 
@@ -180,7 +229,7 @@ describe("LandingPage", () => {
     expect(screen.getByText("웹 브라우저용 웹앱 제공")).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.getByText(FALLBACK_DOWNLOAD_STATE.label)).toBeInTheDocument();
+      expect(screen.getByText(`MSI: ${FALLBACK_DOWNLOAD_STATE.label}`)).toBeInTheDocument();
     });
   });
 
@@ -193,6 +242,14 @@ describe("LandingPage", () => {
 
   it('also renders WebApp when hash is "#app"', () => {
     window.location.hash = "#app";
+    render(<AppRouter />);
+
+    expect(screen.getByRole("heading", { name: "H Memo (웹 미리보기)" })).toBeInTheDocument();
+  });
+
+  it("renders WebApp at the root when the web app deployment route is enabled", () => {
+    vi.stubEnv("VITE_H_MEMO_WEB_DEFAULT_ROUTE", "app");
+
     render(<AppRouter />);
 
     expect(screen.getByRole("heading", { name: "H Memo (웹 미리보기)" })).toBeInTheDocument();

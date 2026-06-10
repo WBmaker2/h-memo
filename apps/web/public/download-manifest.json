@@ -1,6 +1,6 @@
 {
   "windows": {
-    "msiUrl": "https://github.com/WBmaker2/h-memo-releases/releases/download/v0.1.2/H.Memo_0.1.2_x64_en-US.msi",
-    "exeUrl": "https://github.com/WBmaker2/h-memo-releases/releases/download/v0.1.2/H.Memo_0.1.2_x64-setup.exe"
+    "msiUrl": "https://github.com/WBmaker2/h-memo/releases/download/v0.1.6/H.Memo_0.1.6_x64_en-US.msi",
+    "exeUrl": "https://github.com/WBmaker2/h-memo/releases/download/v0.1.6/H.Memo_0.1.6_x64-setup.exe"
   }
 }
