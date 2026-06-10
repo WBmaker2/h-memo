@@ -71,6 +71,7 @@ import {
   toFirebaseClientConfigInput,
 } from "@h-memo/memo-sync/firebase-client-config";
 import { validateFirebaseClientEnv } from "@h-memo/memo-sync/firebase-env-validation";
+import desktopPackageJson from "../package.json";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
 
 type BackupMessage = string;
@@ -98,6 +99,7 @@ const DELETE_SERVER_MEMO_CONFIRM_MESSAGE =
   "서버 백업에서 이 메모를 삭제합니다. 삭제한 뒤에는 서버에서 복원할 수 없습니다. 계속할까요?";
 const COLLAPSED_WINDOW_HEIGHT = 46;
 const MIN_EXPANDED_WINDOW_HEIGHT = 160;
+const APP_VERSION_LABEL = `v${desktopPackageJson.version}`;
 
 function isTauriRuntime() {
   return "__TAURI_INTERNALS__" in window;
@@ -1494,6 +1496,7 @@ export function App() {
       <MemoWorkspace
           appClassName="desktop-app"
           title="H Memo"
+          appVersion={APP_VERSION_LABEL}
           memos={displayedMemos}
           managedMemos={visibleMemos}
           authStatus={authStatus}
@@ -1514,6 +1517,9 @@ export function App() {
         onRequestWindowResize={handleRequestWindowResize}
         onRequestWindowClose={handleRequestWindowClose}
         onRequestCollapseChange={handleRequestCollapseChange}
+        onRequestSync={handleBackup}
+        isSyncDisabled={isBackupDisabled}
+        isSyncBusy={isBusy}
         settingsProps={{
           userName: user ? user.displayName || user.email || "구글 계정" : null,
           backupStatus,

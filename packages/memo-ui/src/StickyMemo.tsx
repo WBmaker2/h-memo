@@ -16,6 +16,7 @@ import { MemoToolbar } from "./MemoToolbar";
 
 type StickyMemoProps = {
   memo: Memo;
+  appVersion?: string;
   appMenuContent?: ReactNode;
   authStatus?: {
     state: "signed-in" | "signed-out" | "unavailable";
@@ -28,10 +29,14 @@ type StickyMemoProps = {
   onRequestWindowResize?: (direction: "SouthEast") => void;
   onRequestWindowClose?: () => void;
   onRequestCollapseChange?: (collapsed: boolean) => void;
+  onRequestSync?: () => void;
+  isSyncDisabled?: boolean;
+  isSyncBusy?: boolean;
 };
 
 export function StickyMemo({
   memo,
+  appVersion,
   appMenuContent,
   authStatus,
   onChange,
@@ -40,10 +45,15 @@ export function StickyMemo({
   onRequestWindowResize,
   onRequestWindowClose,
   onRequestCollapseChange,
+  onRequestSync,
+  isSyncDisabled = false,
+  isSyncBusy = false,
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const shouldShowWindowControls = Boolean(onRequestWindowClose);
+  const shouldShowSyncAction = Boolean(onRequestSync);
+  const isTopbarSyncDisabled = isSyncDisabled || isSyncBusy || !onRequestSync;
 
   useEffect(() => {
     setEditingMemo(memo);
@@ -155,10 +165,29 @@ export function StickyMemo({
           </div>
         </details>
         <div className="sticky-memo__titlebar-drag" data-tauri-drag-region>
-          H Memo
+          <span className="sticky-memo__app-title">H Memo</span>
+          {appVersion ? <span className="sticky-memo__app-version">{appVersion}</span> : null}
         </div>
         {shouldShowWindowControls ? (
           <div className="sticky-memo__window-controls" data-no-window-drag="true">
+            {shouldShowSyncAction ? (
+              <button
+                type="button"
+                className="sticky-memo__sync-button"
+                aria-label="동기화"
+                title={
+                  isSyncDisabled
+                    ? "구글 로그인 후 동기화 가능"
+                    : isSyncBusy
+                      ? "동기화 중"
+                      : "서버 백업"
+                }
+                disabled={isTopbarSyncDisabled}
+                onClick={onRequestSync}
+              >
+                <span aria-hidden="true">{isSyncBusy ? "…" : "↻"}</span>
+              </button>
+            ) : null}
             {authStatus ? (
               <div
                 className={`sticky-memo__auth-status sticky-memo__auth-status--${authStatus.state}`}

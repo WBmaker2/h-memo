@@ -1,6 +1,6 @@
 {
   "name": "@h-memo/desktop",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,9 +12,9 @@
     "tauri:icon": "tauri icon src-tauri/icons/icon.svg"
   },
   "dependencies": {
-    "@h-memo/memo-core": "0.1.5",
-    "@h-memo/memo-ui": "0.1.5",
-    "@h-memo/memo-sync": "0.1.5",
+    "@h-memo/memo-core": "0.1.6",
+    "@h-memo/memo-sync": "0.1.6",
+    "@h-memo/memo-ui": "0.1.6",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-autostart": "^2.2.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",

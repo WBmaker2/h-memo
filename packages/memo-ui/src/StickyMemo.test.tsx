@@ -128,6 +128,94 @@ describe("StickyMemo", () => {
     expect(onRequestWindowClose).toHaveBeenCalledTimes(1);
   });
 
+  it("renders the app version next to the title", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+
+    render(
+      <StickyMemo
+        memo={memo}
+        appVersion="v0.1.6"
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("H Memo")).toBeInTheDocument();
+    expect(screen.getByText("v0.1.6")).toBeInTheDocument();
+  });
+
+  it("renders an icon-only sync button before the Google login indicator", async () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const onRequestSync = vi.fn();
+
+    const { container } = render(
+      <StickyMemo
+        memo={memo}
+        authStatus={{
+          state: "signed-in",
+          label: "우주TV",
+          photoUrl: "https://example.com/profile.png",
+        }}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+        onRequestSync={onRequestSync}
+      />
+    );
+
+    const syncButton = screen.getByRole("button", { name: "동기화" });
+    const loginIndicator = screen.getByLabelText("구글 로그인됨: 우주TV");
+    const controls = container.querySelector(".sticky-memo__window-controls");
+
+    expect(syncButton).toHaveTextContent("↻");
+    expect(syncButton).not.toHaveTextContent("동기화");
+    expect(controls?.children[0]).toBe(syncButton);
+    expect(controls?.children[1]).toBe(loginIndicator);
+
+    await userEvent.click(syncButton);
+
+    expect(onRequestSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the topbar sync button whenever a sync handler is available", async () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const onRequestSync = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+        onRequestSync={onRequestSync}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "동기화" }));
+
+    expect(onRequestSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the topbar sync button when server backup is not available", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const onRequestSync = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        authStatus={{ state: "signed-out", label: "구글 로그인 필요" }}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+        onRequestSync={onRequestSync}
+        isSyncDisabled
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "동기화" })).toBeDisabled();
+  });
+
   it("collapses and expands the memo body from titlebar double click", () => {
     const memo = createMemo({
       now: "2026-05-13T09:00:00.000Z",
