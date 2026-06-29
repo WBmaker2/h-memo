@@ -171,4 +171,24 @@ describe("SettingsPanel", () => {
     await user.click(startupSwitch);
     expect(onToggleStartup).not.toHaveBeenCalled();
   });
+
+  it("hides startup controls when the platform does not support startup registration", () => {
+    render(
+      <SettingsPanel
+        userName={null}
+        backupStatus="웹앱"
+        startupEnabled={false}
+        showStartupSection={false}
+        onBackup={vi.fn()}
+        onRestore={vi.fn()}
+        onExportText={vi.fn()}
+        onToggleStartup={vi.fn()}
+        onSignIn={vi.fn()}
+        onSignOut={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByRole("heading", { name: "시작프로그램" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "시작프로그램 등록" })).not.toBeInTheDocument();
+  });
 });

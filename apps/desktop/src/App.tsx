@@ -54,11 +54,12 @@ import {
   getFirebaseAuth,
   subscribeAuthUser,
   hasFirebaseConfig,
+  listBackupSnapshots,
   listBackedUpMemos,
-  restoreLatestBackup,
   signInWithGoogle,
   signOutUser,
   waitForSignedInUser,
+  type BackedUpSnapshot,
   type BackedUpMemo,
   type GoogleOAuthTokens,
   type HMemoUser,
@@ -71,6 +72,7 @@ import {
   toFirebaseClientConfigInput,
 } from "@h-memo/memo-sync/firebase-client-config";
 import { validateFirebaseClientEnv } from "@h-memo/memo-sync/firebase-env-validation";
+import desktopPackageJson from "../package.json";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
 
 type BackupMessage = string;
@@ -98,6 +100,7 @@ const DELETE_SERVER_MEMO_CONFIRM_MESSAGE =
   "서버 백업에서 이 메모를 삭제합니다. 삭제한 뒤에는 서버에서 복원할 수 없습니다. 계속할까요?";
 const COLLAPSED_WINDOW_HEIGHT = 46;
 const MIN_EXPANDED_WINDOW_HEIGHT = 160;
+const APP_VERSION_LABEL = `v${desktopPackageJson.version}`;
 
 function isTauriRuntime() {
   return "__TAURI_INTERNALS__" in window;
@@ -183,6 +186,13 @@ export function App() {
   }>({
     isOpen: false,
     memos: [],
+  });
+  const [backupHistoryDialog, setBackupHistoryDialog] = useState<{
+    isOpen: boolean;
+    snapshots: BackedUpSnapshot[];
+  }>({
+    isOpen: false,
+    snapshots: [],
   });
   const [isBusy, setIsBusy] = useState(false);
   const [servicesAvailable, setServicesAvailable] = useState(hasFirebaseConfigSet);
@@ -1193,18 +1203,45 @@ export function App() {
     }
 
     setIsBusy(true);
-    setBackupStatus("복원을 시작합니다.");
+    setBackupStatus("백업 기록을 불러옵니다.");
     try {
       await waitForPendingPersists();
-      const payload = await restoreLatestBackup(services.gateway, user.uid);
+      const snapshots = await listBackupSnapshots(services.gateway, user.uid);
 
-      if (!payload) {
+      if (snapshots.length === 0) {
         setBackupStatus("복원할 백업이 없습니다.");
         return;
       }
 
-      await replaceMemosFromBackup(payload.memos);
-      setBackupStatus(`복원 완료: ${payload.memos.length}개 메모`);
+      setBackupHistoryDialog({
+        isOpen: true,
+        snapshots,
+      });
+      setBackupStatus(`백업 기록 ${snapshots.length}개를 불러왔습니다.`);
+    } catch (error) {
+      setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleCloseBackupHistoryDialog = () => {
+    setBackupHistoryDialog((previous) => ({ ...previous, isOpen: false }));
+  };
+
+  const handleRestoreBackupSnapshot = async (snapshotIndex: number) => {
+    const snapshot = backupHistoryDialog.snapshots[snapshotIndex];
+    if (!snapshot || isBusy) {
+      return;
+    }
+
+    setIsBusy(true);
+    setBackupStatus("선택한 백업을 복원합니다.");
+    try {
+      await waitForPendingPersists();
+      await replaceMemosFromBackup(snapshot.payload.memos);
+      setBackupHistoryDialog({ isOpen: false, snapshots: [] });
+      setBackupStatus(`복원 완료: ${snapshot.payload.memos.length}개 메모`);
     } catch (error) {
       setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
     } finally {
@@ -1494,6 +1531,7 @@ export function App() {
       <MemoWorkspace
           appClassName="desktop-app"
           title="H Memo"
+          appVersion={APP_VERSION_LABEL}
           memos={displayedMemos}
           managedMemos={visibleMemos}
           authStatus={authStatus}
@@ -1514,6 +1552,9 @@ export function App() {
         onRequestWindowResize={handleRequestWindowResize}
         onRequestWindowClose={handleRequestWindowClose}
         onRequestCollapseChange={handleRequestCollapseChange}
+        onRequestSync={handleBackup}
+        isSyncDisabled={isBackupDisabled}
+        isSyncBusy={isBusy}
         settingsProps={{
           userName: user ? user.displayName || user.email || "구글 계정" : null,
           backupStatus,
@@ -1558,6 +1599,58 @@ export function App() {
                 취소하기
               </button>
             </div>
+          </section>
+        </div>
+      ) : null}
+      {backupHistoryDialog.isOpen ? (
+        <div className="backup-history-dialog-backdrop">
+          <section
+            className="backup-history-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="backup-history-dialog-title"
+          >
+            <header className="backup-history-dialog__header">
+              <h2 id="backup-history-dialog-title">백업 기록 선택</h2>
+              <button type="button" onClick={handleCloseBackupHistoryDialog}>
+                닫기
+              </button>
+            </header>
+            <p className="backup-history-dialog__description">
+              복원할 백업 시간대를 선택해 주세요. 선택한 백업에 포함된 메모로 현재
+              로컬 메모가 교체됩니다.
+            </p>
+            <ul className="backup-history-list">
+              {backupHistoryDialog.snapshots.map((snapshot, index) => {
+                const preview =
+                  snapshot.payload.memos
+                    .slice(0, 3)
+                    .map(getMemoLabel)
+                    .join(", ") || "메모 없음";
+
+                return (
+                  <li
+                    key={`${snapshot.createdAt}-${index}`}
+                    className="backup-history-list__item"
+                  >
+                    <div className="backup-history-list__content">
+                      <strong>{snapshot.createdAt}</strong>
+                      <span>{snapshot.memoCount}개 메모</span>
+                      <span title={preview}>미리보기: {preview}</span>
+                    </div>
+                    <div className="backup-history-list__actions">
+                      <button
+                        type="button"
+                        onClick={() => handleRestoreBackupSnapshot(index)}
+                        disabled={isBusy}
+                      >
+                        복원
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
           </section>
         </div>
       ) : null}

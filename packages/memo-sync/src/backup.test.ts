@@ -3,6 +3,7 @@ import { createMemo } from "@h-memo/memo-core";
 import {
   backupMemos,
   deleteBackedUpMemo,
+  listBackupSnapshots,
   listBackedUpMemos,
   type BackupGateway,
   type MemoBackupPayload,
@@ -94,6 +95,40 @@ describe("memo-sync backup", () => {
     expect(restored).not.toBeNull();
     expect(restored?.version).toBe(1);
     expect(restored?.memos[0]?.id).toBe("memo-new");
+  });
+
+  it("시간대별 백업 스냅샷 목록을 최신순으로 반환하고 서버 삭제 표시를 적용한다", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const keepMemo = createMemo({
+      id: "memo-keep",
+      now: "2026-05-13T09:00:00.000Z",
+      plainText: "계속 유지할 메모",
+    });
+    const removedMemo = createMemo({
+      id: "memo-removed",
+      now: "2026-05-13T09:01:00.000Z",
+      plainText: "서버에서 삭제할 메모",
+    });
+
+    await backupMemos(gateway, userId, [keepMemo, removedMemo], "2026-05-13T09:02:00.000Z");
+    await backupMemos(
+      gateway,
+      userId,
+      [{ ...keepMemo, plainText: "나중 백업", updatedAt: "2026-05-13T09:10:00.000Z" }],
+      "2026-05-13T09:11:00.000Z"
+    );
+    await deleteBackedUpMemo(gateway, userId, "memo-removed");
+
+    const snapshots = await listBackupSnapshots(gateway, userId);
+
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]?.createdAt).toBe("2026-05-13T09:11:00.000Z");
+    expect(snapshots[0]?.memoCount).toBe(1);
+    expect(snapshots[0]?.payload.memos.map((memo) => memo.id)).toEqual(["memo-keep"]);
+    expect(snapshots[1]?.createdAt).toBe("2026-05-13T09:02:00.000Z");
+    expect(snapshots[1]?.memoCount).toBe(1);
+    expect(snapshots[1]?.payload.memos.map((memo) => memo.id)).toEqual(["memo-keep"]);
   });
 
   it("최신 payload가 잘못되면 에러를 던진다", async () => {

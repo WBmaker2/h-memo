@@ -1,6 +1,6 @@
 import { createMemo } from "@h-memo/memo-core";
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { StickyMemo } from "./StickyMemo";
@@ -100,6 +100,39 @@ describe("StickyMemo", () => {
     expect(onDelete).toHaveBeenCalledWith("memo-1");
   });
 
+  it("closes another memo menu when a different memo menu opens", async () => {
+    const user = userEvent.setup();
+    const firstMemo = createMemo({
+      now: "2026-05-13T09:00:00.000Z",
+      id: "memo-1",
+    });
+    const secondMemo = createMemo({
+      now: "2026-05-13T09:01:00.000Z",
+      id: "memo-2",
+    });
+
+    render(
+      <>
+        <StickyMemo memo={firstMemo} onChange={vi.fn()} onDelete={vi.fn()} />
+        <StickyMemo memo={secondMemo} onChange={vi.fn()} onDelete={vi.fn()} />
+      </>
+    );
+
+    const menuButtons = screen.getAllByTitle("메모 메뉴");
+    const firstMenu = menuButtons[0].closest("details");
+    const secondMenu = menuButtons[1].closest("details");
+
+    await user.click(menuButtons[0]);
+    expect(firstMenu).toHaveAttribute("open");
+
+    await user.click(menuButtons[1]);
+
+    await waitFor(() => {
+      expect(firstMenu).not.toHaveAttribute("open");
+      expect(secondMenu).toHaveAttribute("open");
+    });
+  });
+
   it("requests native window drag and resize from the titlebar and handle", async () => {
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
     const onRequestWindowDrag = vi.fn();
@@ -126,6 +159,94 @@ describe("StickyMemo", () => {
     expect(onRequestWindowDrag).toHaveBeenCalledTimes(1);
     expect(onRequestWindowResize).toHaveBeenCalledWith("SouthEast");
     expect(onRequestWindowClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the app version next to the title", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+
+    render(
+      <StickyMemo
+        memo={memo}
+        appVersion="v0.1.6"
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("H Memo")).toBeInTheDocument();
+    expect(screen.getByText("v0.1.6")).toBeInTheDocument();
+  });
+
+  it("renders an icon-only sync button before the Google login indicator", async () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const onRequestSync = vi.fn();
+
+    const { container } = render(
+      <StickyMemo
+        memo={memo}
+        authStatus={{
+          state: "signed-in",
+          label: "우주TV",
+          photoUrl: "https://example.com/profile.png",
+        }}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+        onRequestSync={onRequestSync}
+      />
+    );
+
+    const syncButton = screen.getByRole("button", { name: "동기화" });
+    const loginIndicator = screen.getByLabelText("구글 로그인됨: 우주TV");
+    const controls = container.querySelector(".sticky-memo__window-controls");
+
+    expect(syncButton).toHaveTextContent("↻");
+    expect(syncButton).not.toHaveTextContent("동기화");
+    expect(controls?.children[0]).toBe(syncButton);
+    expect(controls?.children[1]).toBe(loginIndicator);
+
+    await userEvent.click(syncButton);
+
+    expect(onRequestSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the topbar sync button whenever a sync handler is available", async () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const onRequestSync = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+        onRequestSync={onRequestSync}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "동기화" }));
+
+    expect(onRequestSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the topbar sync button when server backup is not available", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const onRequestSync = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        authStatus={{ state: "signed-out", label: "구글 로그인 필요" }}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+        onRequestSync={onRequestSync}
+        isSyncDisabled
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "동기화" })).toBeDisabled();
   });
 
   it("collapses and expands the memo body from titlebar double click", () => {

@@ -6,6 +6,7 @@ import { SettingsPanel, type SettingsPanelProps } from "./SettingsPanel";
 type MemoWorkspaceShellProps = {
   appClassName: string;
   title: string;
+  appVersion?: string;
   memos: Memo[];
   managedMemos?: Memo[];
   actions?: ReactNode;
@@ -22,12 +23,16 @@ type MemoWorkspaceShellProps = {
   onRequestWindowResize?: (direction: "SouthEast") => void;
   onRequestWindowClose?: () => void;
   onRequestCollapseChange?: (collapsed: boolean) => void;
+  onRequestSync?: () => void;
+  isSyncDisabled?: boolean;
+  isSyncBusy?: boolean;
   settingsProps: SettingsPanelProps;
 };
 
 export function MemoWorkspace({
   appClassName,
   title,
+  appVersion,
   memos,
   managedMemos,
   onCreateMemo,
@@ -38,6 +43,9 @@ export function MemoWorkspace({
   onRequestWindowResize,
   onRequestWindowClose,
   onRequestCollapseChange,
+  onRequestSync,
+  isSyncDisabled,
+  isSyncBusy,
   settingsProps,
   actions,
   authStatus,
@@ -98,6 +106,7 @@ export function MemoWorkspace({
         isBackupDisabled={settingsProps.isBackupDisabled}
         isRestoreDisabled={settingsProps.isRestoreDisabled}
         isAuthDisabled={settingsProps.isAuthDisabled}
+        showStartupSection={settingsProps.showStartupSection}
         firebaseConfig={settingsProps.firebaseConfig}
         onBackup={settingsProps.onBackup}
         onRestore={settingsProps.onRestore}
@@ -136,6 +145,7 @@ export function MemoWorkspace({
             <StickyMemo
               key={memo.id}
               memo={memo}
+              appVersion={appVersion}
               appMenuContent={index === 0 ? appMenuContent : undefined}
               authStatus={authStatus}
               onChange={onMemoChange}
@@ -144,6 +154,9 @@ export function MemoWorkspace({
               onRequestWindowResize={onRequestWindowResize}
               onRequestWindowClose={onRequestWindowClose}
               onRequestCollapseChange={onRequestCollapseChange}
+              onRequestSync={onRequestSync}
+              isSyncDisabled={isSyncDisabled}
+              isSyncBusy={isSyncBusy}
             />
           ))
         ) : (

@@ -3,7 +3,9 @@ import {
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
+  type SyntheticEvent,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import {
@@ -14,8 +16,11 @@ import {
 } from "@h-memo/memo-core";
 import { MemoToolbar } from "./MemoToolbar";
 
+const MEMO_MENU_OPENED_EVENT = "h-memo:memo-menu-opened";
+
 type StickyMemoProps = {
   memo: Memo;
+  appVersion?: string;
   appMenuContent?: ReactNode;
   authStatus?: {
     state: "signed-in" | "signed-out" | "unavailable";
@@ -28,10 +33,14 @@ type StickyMemoProps = {
   onRequestWindowResize?: (direction: "SouthEast") => void;
   onRequestWindowClose?: () => void;
   onRequestCollapseChange?: (collapsed: boolean) => void;
+  onRequestSync?: () => void;
+  isSyncDisabled?: boolean;
+  isSyncBusy?: boolean;
 };
 
 export function StickyMemo({
   memo,
+  appVersion,
   appMenuContent,
   authStatus,
   onChange,
@@ -40,14 +49,37 @@ export function StickyMemo({
   onRequestWindowResize,
   onRequestWindowClose,
   onRequestCollapseChange,
+  onRequestSync,
+  isSyncDisabled = false,
+  isSyncBusy = false,
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const memoMenuRef = useRef<HTMLDetailsElement | null>(null);
   const shouldShowWindowControls = Boolean(onRequestWindowClose);
+  const shouldShowSyncAction = Boolean(onRequestSync);
+  const isTopbarSyncDisabled = isSyncDisabled || isSyncBusy || !onRequestSync;
 
   useEffect(() => {
     setEditingMemo(memo);
   }, [memo]);
+
+  useEffect(() => {
+    const closeWhenAnotherMemoMenuOpens = (event: Event) => {
+      if (!(event instanceof CustomEvent) || event.detail === memo.id) {
+        return;
+      }
+      if (memoMenuRef.current?.open) {
+        memoMenuRef.current.open = false;
+      }
+    };
+
+    window.addEventListener(MEMO_MENU_OPENED_EVENT, closeWhenAnotherMemoMenuOpens);
+
+    return () => {
+      window.removeEventListener(MEMO_MENU_OPENED_EVENT, closeWhenAnotherMemoMenuOpens);
+    };
+  }, [memo.id]);
 
   const commitMemo = (nextMemo: Memo) => {
     setEditingMemo(nextMemo);
@@ -111,6 +143,13 @@ export function StickyMemo({
     onRequestWindowResize?.("SouthEast");
   };
 
+  const handleMemoMenuToggle = (event: SyntheticEvent<HTMLDetailsElement>) => {
+    if (!event.currentTarget.open) {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent(MEMO_MENU_OPENED_EVENT, { detail: editingMemo.id }));
+  };
+
   return (
     <article
       className={isCollapsed ? "sticky-memo sticky-memo--collapsed" : "sticky-memo"}
@@ -129,7 +168,12 @@ export function StickyMemo({
         onMouseDown={handleWindowDrag}
         onDoubleClick={handleTitlebarDoubleClick}
       >
-        <details className="memo-menu" data-no-window-drag="true">
+        <details
+          ref={memoMenuRef}
+          className="memo-menu"
+          data-no-window-drag="true"
+          onToggle={handleMemoMenuToggle}
+        >
           <summary
             aria-label="메모 메뉴"
             title="메모 메뉴"
@@ -155,10 +199,29 @@ export function StickyMemo({
           </div>
         </details>
         <div className="sticky-memo__titlebar-drag" data-tauri-drag-region>
-          H Memo
+          <span className="sticky-memo__app-title">H Memo</span>
+          {appVersion ? <span className="sticky-memo__app-version">{appVersion}</span> : null}
         </div>
         {shouldShowWindowControls ? (
           <div className="sticky-memo__window-controls" data-no-window-drag="true">
+            {shouldShowSyncAction ? (
+              <button
+                type="button"
+                className="sticky-memo__sync-button"
+                aria-label="동기화"
+                title={
+                  isSyncDisabled
+                    ? "구글 로그인 후 동기화 가능"
+                    : isSyncBusy
+                      ? "동기화 중"
+                      : "서버 백업"
+                }
+                disabled={isTopbarSyncDisabled}
+                onClick={onRequestSync}
+              >
+                <span aria-hidden="true">{isSyncBusy ? "…" : "↻"}</span>
+              </button>
+            ) : null}
             {authStatus ? (
               <div
                 className={`sticky-memo__auth-status sticky-memo__auth-status--${authStatus.state}`}

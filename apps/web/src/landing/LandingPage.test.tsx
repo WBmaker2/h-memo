@@ -25,13 +25,13 @@ const FALLBACK_DOWNLOAD_STATE = {
 };
 
 const RESOLVED_DOWNLOAD_STATE = {
-  url: "https://github.com/WBmaker2/h-memo/releases/download/v0.1.6/H.Memo_0.1.6_x64_en-US.msi",
+  url: "https://github.com/WBmaker2/h-memo/releases/download/v1.0.0/H.Memo_1.0.0_x64_en-US.msi",
   label: "Windows MSI 설치 파일로 연결됩니다.",
   source: "github-asset" as const,
 };
 
 const MANIFEST_DOWNLOAD_STATE = {
-  url: "https://github.com/WBmaker2/h-memo/releases/download/v0.1.6/H.Memo_0.1.6_x64-setup.exe",
+  url: "https://github.com/WBmaker2/h-memo/releases/download/v1.0.0/H.Memo_1.0.0_x64-setup.exe",
   label: "Windows EXE 설치 파일로 연결됩니다.",
   source: "download-manifest" as const,
 };
@@ -79,7 +79,7 @@ describe("LandingPage", () => {
     render(<LandingPage />);
 
     expect(
-      screen.getByText(/v0\.1\.6 탑재 완료: 상단바 버전 표시, 동기화 버튼, 메뉴 폭 조정/),
+      screen.getByText(/v1\.0\.0 탑재 완료: 백업 기록 선택 복원과 보안 의존성 정리/),
     ).toBeInTheDocument();
     const msiDownloadButton = screen.getByRole("button", { name: "Windows MSI 다운로드" });
     const exeDownloadButton = screen.getByRole("button", { name: "Windows EXE 다운로드" });
@@ -149,10 +149,10 @@ describe("LandingPage", () => {
 
     const dialog = screen.getByRole("dialog", { name: "업데이트 기록" });
     expect(dialog).toBeInTheDocument();
-    expect(screen.getByText("v0.1.6")).toBeInTheDocument();
-    expect(screen.getByText("상단바 사용성 개선")).toBeInTheDocument();
+    expect(screen.getByText("v1.0.0")).toBeInTheDocument();
+    expect(screen.getByText("백업 기록 선택 복원")).toBeInTheDocument();
     expect(
-      screen.getByText("구글 로그인 아이콘 옆에 서버 백업용 동기화 버튼을 다시 추가했습니다."),
+      screen.getByText("서버 복원 시 최신본을 바로 덮어쓰지 않고 시간대별 백업 기록 중 선택해 복원합니다."),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "업데이트 기록 닫기" }));

@@ -69,6 +69,7 @@ npm run check:versions
 - 공개 다운로드 버튼은 public `WBmaker2/h-memo-releases`의 최신 릴리스에서 Windows `.msi`를 우선 찾고, 없으면 `.exe`를 사용합니다.
 - macOS 다운로드 버튼은 `https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg` DMG 파일로 연결합니다.
 - 웹앱 실행 버튼은 `https://wbmaker2.github.io/h-memo/` 공개 웹앱으로 연결합니다.
+- 공개 웹앱 배포는 `H_MEMO_WEB_BASE_PATH=/h-memo/ VITE_H_MEMO_WEB_DEFAULT_ROUTE=app npm run build -w apps/web`처럼 루트를 웹앱으로 여는 빌드 플래그를 사용합니다.
 - 최신 릴리스 API를 사용할 수 없을 때는 public Pages의 `download-manifest.json`을 fallback으로 사용하며, 그래도 설치 파일 URL이 없으면 버튼을 비활성 상태로 유지합니다.
 
 ### 웹 앱 동기화 상태

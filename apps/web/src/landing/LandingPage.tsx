@@ -6,11 +6,20 @@ import {
 } from "./releaseDownload";
 
 const LOADING_DOWNLOAD_LABEL = "다운로드 파일을 확인하는 중입니다.";
-const LATEST_RELEASE_VERSION = "v0.1.6";
+const LATEST_RELEASE_VERSION = "v1.0.0";
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
 const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
 const RELEASE_HISTORY = [
+  {
+    version: "v1.0.0",
+    title: "백업 기록 선택 복원",
+    items: [
+      "서버 복원 시 최신본을 바로 덮어쓰지 않고 시간대별 백업 기록 중 선택해 복원합니다.",
+      "삭제 처리된 서버 메모는 백업 기록 목록과 복원 대상에서 제외합니다.",
+      "Vite, Vitest, Firebase 등 보안 취약점이 보고된 의존성을 최신 버전으로 정리했습니다.",
+    ],
+  },
   {
     version: "v0.1.6",
     title: "상단바 사용성 개선",
@@ -82,7 +91,7 @@ export function LandingPage() {
       <section className="landing-page__section landing-page__section--download">
         <h2>프로그램 다운로드</h2>
         <p className="landing-page__release-notice">
-          {LATEST_RELEASE_VERSION} 탑재 완료: 상단바 버전 표시, 동기화 버튼, 메뉴 폭 조정이
+          {LATEST_RELEASE_VERSION} 탑재 완료: 백업 기록 선택 복원과 보안 의존성 정리가
           반영된 최신 Windows 설치 파일을 받을 수 있습니다.
         </p>
         <p>
