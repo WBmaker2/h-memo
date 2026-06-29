@@ -12,5 +12,7 @@ describe("Windows Tauri workflow", () => {
 
     expect(workflow).toContain("VITE_GOOGLE_OAUTH_CLIENT_ID:");
     expect(workflow).not.toContain("GOOGLE_OAUTH_CLIENT_SECRET:");
+    expect(workflow).toContain("Ensure Windows Tauri CLI native binding");
+    expect(workflow).toContain("@tauri-apps/cli-win32-x64-msvc@$tauriCliVersion");
   });
 });

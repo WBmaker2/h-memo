@@ -40,6 +40,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Ensure Windows Tauri CLI native binding
+        shell: pwsh
+        run: |
+          $tauriCliVersion = node -p "require('./node_modules/@tauri-apps/cli/package.json').version"
+          npm install --no-save --ignore-scripts "@tauri-apps/cli-win32-x64-msvc@$tauriCliVersion"
+
       - name: Resolve release tag
         id: release_tag
         shell: pwsh
