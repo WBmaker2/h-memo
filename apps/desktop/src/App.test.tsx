@@ -22,6 +22,7 @@ const {
   defaultRestoreMemo,
   mockBackupMemos,
   mockRestoreLatestBackup,
+  mockListBackupSnapshots,
   mockListBackedUpMemos,
   mockDeleteBackedUpMemo,
   mockCompleteGoogleRedirectSignIn,
@@ -60,6 +61,7 @@ const {
   const mockRestoreMemo = vi.fn();
   const mockBackupMemos = vi.fn();
   const mockRestoreLatestBackup = vi.fn();
+  const mockListBackupSnapshots = vi.fn();
   const mockListBackedUpMemos = vi.fn();
   const mockDeleteBackedUpMemo = vi.fn();
   const mockCompleteGoogleRedirectSignIn = vi.fn();
@@ -204,6 +206,7 @@ const {
     mockGetFirebaseClientEnv,
     mockBackupMemos,
     mockRestoreLatestBackup,
+    mockListBackupSnapshots,
     mockListBackedUpMemos,
     mockDeleteBackedUpMemo,
     mockCompleteGoogleRedirectSignIn,
@@ -287,6 +290,8 @@ vi.mock("@h-memo/memo-sync", () => {
       env.appId.trim() !== "",
     restoreLatestBackup: (gateway: unknown, userId: string) =>
       mockRestoreLatestBackup(gateway, userId),
+    listBackupSnapshots: (gateway: unknown, userId: string) =>
+      mockListBackupSnapshots(gateway, userId),
     listBackedUpMemos: (gateway: unknown, userId: string) =>
       mockListBackedUpMemos(gateway, userId),
     deleteBackedUpMemo: (gateway: unknown, userId: string, memoId: string) =>
@@ -431,6 +436,7 @@ beforeEach(() => {
   mockRestoreMemo.mockReset();
   mockBackupMemos.mockReset();
   mockRestoreLatestBackup.mockReset();
+  mockListBackupSnapshots.mockReset();
   mockListBackedUpMemos.mockReset();
   mockDeleteBackedUpMemo.mockReset();
   mockCompleteGoogleRedirectSignIn.mockReset();
@@ -503,6 +509,7 @@ beforeEach(() => {
   mockExportTextFile.mockResolvedValue({ status: "saved", path: "/tmp/h-memo-backup.txt" });
   mockExportJsonFile.mockResolvedValue({ status: "saved", path: "/tmp/h-memo-backup.json" });
   mockImportJsonFile.mockResolvedValue({ status: "cancelled" });
+  mockListBackupSnapshots.mockResolvedValue([]);
   mockListBackedUpMemos.mockResolvedValue([]);
   mockDeleteBackedUpMemo.mockResolvedValue(0);
   mockNotifyMemoStoreChanged.mockResolvedValue(undefined);
@@ -1714,12 +1721,18 @@ describe("desktop App", () => {
       email: "test@example.com",
       photoURL: "",
     });
-    mockRestoreLatestBackup.mockResolvedValue({
-      version: 1,
-      userId: "user-1",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      memos: [restoredMemo],
-    });
+    mockListBackupSnapshots.mockResolvedValue([
+      {
+        createdAt: "2026-01-01T00:00:00.000Z",
+        memoCount: 1,
+        payload: {
+          version: 1,
+          userId: "user-1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          memos: [restoredMemo],
+        },
+      },
+    ]);
     mockSoftDeleteMemo.mockImplementation(async () => {
       throw new Error("persist soft delete failed");
     });
@@ -1737,6 +1750,8 @@ describe("desktop App", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
+    const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
+    await user.click(within(dialog).getByRole("button", { name: "복원" }));
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent("복원 실패:");
@@ -1769,12 +1784,18 @@ describe("desktop App", () => {
       email: "test@example.com",
       photoURL: "",
     });
-    mockRestoreLatestBackup.mockResolvedValue({
-      version: 1,
-      userId: "user-1",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      memos: [restoredMemo],
-    });
+    mockListBackupSnapshots.mockResolvedValue([
+      {
+        createdAt: "2026-01-01T00:00:00.000Z",
+        memoCount: 1,
+        payload: {
+          version: 1,
+          userId: "user-1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          memos: [restoredMemo],
+        },
+      },
+    ]);
     mockSaveMemo.mockImplementation(async (memo: unknown) => {
       if ((memo as { id?: string }).id === "server-1") {
         throw new Error("server memo save failed");
@@ -1795,6 +1816,8 @@ describe("desktop App", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
+    const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
+    await user.click(within(dialog).getByRole("button", { name: "복원" }));
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent("복원 실패:");
@@ -1804,7 +1827,7 @@ describe("desktop App", () => {
     expect(mockSoftDeleteMemo).not.toHaveBeenCalledWith(localMemoId, expect.any(String));
   });
 
-  it("restores latest backup and replaces local memos", async () => {
+  it("restores selected backup and replaces local memos", async () => {
     const user = userEvent.setup();
     setMockFirebaseClientEnv({
       apiKey: "api-key",
@@ -1826,12 +1849,18 @@ describe("desktop App", () => {
       email: "test@example.com",
       photoURL: "",
     });
-    mockRestoreLatestBackup.mockResolvedValue({
-      version: 1,
-      userId: "user-1",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      memos: [restoredMemo],
-    });
+    mockListBackupSnapshots.mockResolvedValue([
+      {
+        createdAt: "2026-01-01T00:00:00.000Z",
+        memoCount: 1,
+        payload: {
+          version: 1,
+          userId: "user-1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          memos: [restoredMemo],
+        },
+      },
+    ]);
 
     render(<App />);
     await createMemoFromAppMenu(user);
@@ -1846,14 +1875,98 @@ describe("desktop App", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
+    const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
+    await user.click(within(dialog).getByRole("button", { name: "복원" }));
 
     await waitFor(() => {
-      expect(mockRestoreLatestBackup).toHaveBeenCalledTimes(1);
+      expect(mockListBackupSnapshots).toHaveBeenCalledTimes(1);
+      expect(mockRestoreLatestBackup).not.toHaveBeenCalled();
       expect(screen.getByRole("status")).toHaveTextContent("복원 완료: 1개 메모");
     });
 
     expect(screen.queryByDisplayValue("로컬 내용")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("서버 복원 텍스트")).toBeInTheDocument();
+  });
+
+  it("opens backup history and restores the selected backup snapshot", async () => {
+    const user = userEvent.setup();
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+
+    const olderMemo = createMemo({
+      id: "server-old",
+      now: "2026-01-01T03:00:00.000Z",
+      title: "이전서버메모",
+      plainText: "이전 백업 텍스트",
+    });
+    const selectedMemo = createMemo({
+      id: "server-selected",
+      now: "2026-01-02T03:00:00.000Z",
+      title: "선택서버메모",
+      plainText: "선택한 백업 텍스트",
+    });
+
+    mockSignInWithGoogle.mockResolvedValue({
+      uid: "user-1",
+      displayName: "테스터",
+      email: "test@example.com",
+      photoURL: "",
+    });
+    mockListBackupSnapshots.mockResolvedValue([
+      {
+        createdAt: "2026-01-02T03:10:00.000Z",
+        memoCount: 1,
+        payload: {
+          version: 1,
+          userId: "user-1",
+          createdAt: "2026-01-02T03:10:00.000Z",
+          memos: [selectedMemo],
+        },
+      },
+      {
+        createdAt: "2026-01-01T03:10:00.000Z",
+        memoCount: 1,
+        payload: {
+          version: 1,
+          userId: "user-1",
+          createdAt: "2026-01-01T03:10:00.000Z",
+          memos: [olderMemo],
+        },
+      },
+    ]);
+
+    render(<App />);
+    await createMemoFromAppMenu(user);
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "로컬 내용" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "구글 로그인" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "서버 복원" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
+    expect(mockListBackupSnapshots).toHaveBeenCalledWith(expect.anything(), "user-1");
+    expect(mockRestoreLatestBackup).not.toHaveBeenCalled();
+    expect(within(dialog).getByText("2026-01-02T03:10:00.000Z")).toBeInTheDocument();
+    expect(within(dialog).getAllByText("1개 메모")).toHaveLength(2);
+    expect(screen.getByDisplayValue("로컬 내용")).toBeInTheDocument();
+
+    await user.click(within(dialog).getAllByRole("button", { name: "복원" })[0]!);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("복원 완료: 1개 메모");
+    });
+    expect(screen.queryByDisplayValue("로컬 내용")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("선택한 백업 텍스트")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "백업 기록 선택" })).not.toBeInTheDocument();
   });
 
   it("복구된 로그인 세션이 있을 때 백업/복원 버튼이 활성화된다", async () => {

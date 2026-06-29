@@ -20,6 +20,7 @@ const MEMO_MENU_OPENED_EVENT = "h-memo:memo-menu-opened";
 
 type StickyMemoProps = {
   memo: Memo;
+  appVersion?: string;
   appMenuContent?: ReactNode;
   authStatus?: {
     state: "signed-in" | "signed-out" | "unavailable";
@@ -40,6 +41,7 @@ type StickyMemoProps = {
 
 export function StickyMemo({
   memo,
+  appVersion,
   appMenuContent,
   authStatus,
   onChange,
@@ -56,7 +58,7 @@ export function StickyMemo({
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const memoMenuRef = useRef<HTMLDetailsElement | null>(null);
-  const shouldShowSyncAction = Boolean(authStatus && onRequestSync);
+  const shouldShowSyncAction = Boolean(onRequestSync);
   const shouldShowWindowControls = Boolean(
     authStatus || onCloseMemo || onRequestWindowClose || shouldShowSyncAction
   );
@@ -204,7 +206,8 @@ export function StickyMemo({
           </div>
         </details>
         <div className="sticky-memo__titlebar-drag" data-tauri-drag-region>
-          H Memo
+          <span className="sticky-memo__app-title">H Memo</span>
+          {appVersion ? <span className="sticky-memo__app-version">{appVersion}</span> : null}
         </div>
         {shouldShowWindowControls ? (
           <div className="sticky-memo__window-controls" data-no-window-drag="true">

@@ -10,6 +10,7 @@ import {
   type BackedUpMemo,
   deleteBackedUpMemo,
   listBackedUpMemos,
+  listBackupSnapshots,
   restoreLatestBackup,
   signInWithGoogle,
   signOutUser,
@@ -82,6 +83,7 @@ vi.mock("@h-memo/memo-sync", async () => {
     getFirebaseAuth: vi.fn(),
     backupMemos: vi.fn(),
     completeGoogleRedirectSignIn: vi.fn(),
+    listBackupSnapshots: vi.fn(),
     restoreLatestBackup: vi.fn(),
     listBackedUpMemos: vi.fn(),
     deleteBackedUpMemo: vi.fn(),
@@ -172,6 +174,7 @@ beforeEach(() => {
   vi.mocked(restoreLatestBackup).mockResolvedValue(null);
   vi.mocked(listBackedUpMemos).mockResolvedValue([]);
   vi.mocked(deleteBackedUpMemo).mockResolvedValue(1);
+  vi.mocked(listBackupSnapshots).mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -673,15 +676,15 @@ describe("WebApp", () => {
     });
   });
 
-  it("restores memos from latest backup", async () => {
+  it("opens backup history and restores selected server backup", async () => {
     const user = userEvent.setup();
     vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
     vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
       callback(LOGGED_IN_USER);
       return vi.fn();
     });
-    vi.mocked(restoreLatestBackup).mockResolvedValue({
-      version: 1,
+    const restoredPayload = {
+      version: 1 as const,
       userId: "user-1",
       createdAt: "2026-05-13T10:05:00.000Z",
       memos: [
@@ -707,10 +710,17 @@ describe("WebApp", () => {
           createdAt: "2026-05-13T10:00:00.000Z",
           updatedAt: "2026-05-13T10:05:00.000Z",
           deletedAt: null,
-          syncState: "local-only",
+          syncState: "local-only" as const,
         },
       ],
-    });
+    };
+    vi.mocked(listBackupSnapshots).mockResolvedValue([
+      {
+        createdAt: restoredPayload.createdAt,
+        memoCount: restoredPayload.memos.length,
+        payload: restoredPayload,
+      },
+    ]);
 
     installLocalStorageStub({
       initialEntries: [
@@ -754,7 +764,15 @@ describe("WebApp", () => {
 
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
 
+    const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
+    expect(within(dialog).getByText("2026-05-13T10:05:00.000Z")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("삭제되어야 할 로컬 데이터")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "복원" }));
+
     await waitFor(() => {
+      expect(listBackupSnapshots).toHaveBeenCalledTimes(1);
+      expect(restoreLatestBackup).not.toHaveBeenCalled();
       expect(screen.queryByDisplayValue("삭제되어야 할 로컬 데이터")).not.toBeInTheDocument();
       expect(screen.getByDisplayValue("복원된 본문")).toBeInTheDocument();
     });

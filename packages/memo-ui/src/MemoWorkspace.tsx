@@ -6,6 +6,7 @@ import { SettingsPanel, type SettingsPanelProps } from "./SettingsPanel";
 type MemoWorkspaceShellProps = {
   appClassName: string;
   title: string;
+  appVersion?: string;
   memos: Memo[];
   managedMemos?: Memo[];
   actions?: ReactNode;
@@ -32,6 +33,7 @@ type MemoWorkspaceShellProps = {
 export function MemoWorkspace({
   appClassName,
   title,
+  appVersion,
   memos,
   managedMemos,
   onCreateMemo,
@@ -145,6 +147,7 @@ export function MemoWorkspace({
             <StickyMemo
               key={memo.id}
               memo={memo}
+              appVersion={appVersion}
               appMenuContent={index === 0 ? appMenuContent : undefined}
               authStatus={authStatus}
               onChange={onMemoChange}

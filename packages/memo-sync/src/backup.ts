@@ -24,6 +24,11 @@ export type BackedUpMemo = {
   memo: Memo;
   backupCreatedAt: string;
 };
+export type BackedUpSnapshot = {
+  createdAt: string;
+  memoCount: number;
+  payload: MemoBackupPayload;
+};
 
 export interface BackupGateway {
   saveBackup(userId: string, payload: MemoBackupPayload): Promise<string>;
@@ -223,6 +228,31 @@ export async function listBackedUpMemos(
   return [...newestMemoById.values()].sort((a, b) =>
     b.memo.updatedAt.localeCompare(a.memo.updatedAt)
   );
+}
+
+export async function listBackupSnapshots(
+  gateway: BackupGateway,
+  userId: string
+): Promise<BackedUpSnapshot[]> {
+  const backups = await gateway.loadBackups(userId);
+  const deletedMemoIds = await loadDeletedMemoIdSet(gateway, userId);
+  const snapshots: BackedUpSnapshot[] = [];
+
+  for (const backup of backups) {
+    const parsed = validateBackupPayload(backup, userId);
+    if (!parsed.ok) {
+      continue;
+    }
+
+    const payload = filterDeletedServerMemos(parsed.payload, deletedMemoIds);
+    snapshots.push({
+      createdAt: payload.createdAt,
+      memoCount: payload.memos.length,
+      payload,
+    });
+  }
+
+  return snapshots.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function deleteBackedUpMemo(

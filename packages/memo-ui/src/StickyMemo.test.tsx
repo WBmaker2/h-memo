@@ -185,6 +185,23 @@ describe("StickyMemo", () => {
     expect(onRequestWindowClose).toHaveBeenCalledTimes(1);
   });
 
+  it("renders the app version next to the title", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+
+    render(
+      <StickyMemo
+        memo={memo}
+        appVersion="v1.0.0"
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("H Memo")).toBeInTheDocument();
+    expect(screen.getByText("v1.0.0")).toBeInTheDocument();
+  });
+
   it("renders an icon-only sync button before the Google login indicator", async () => {
     const user = userEvent.setup();
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
@@ -193,11 +210,15 @@ describe("StickyMemo", () => {
     render(
       <StickyMemo
         memo={memo}
-        authStatus={{ state: "signed-in", label: "우주TV" }}
+        authStatus={{
+          state: "signed-in",
+          label: "우주TV",
+          photoUrl: "https://example.com/profile.png",
+        }}
         onChange={vi.fn()}
         onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
         onRequestSync={onRequestSync}
-        onCloseMemo={vi.fn()}
       />
     );
 
@@ -215,16 +236,37 @@ describe("StickyMemo", () => {
     expect(onRequestSync).toHaveBeenCalledTimes(1);
   });
 
-  it("disables the topbar sync button when server backup is not available", () => {
+  it("renders the topbar sync button whenever a sync handler is available", async () => {
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const onRequestSync = vi.fn();
 
     render(
       <StickyMemo
         memo={memo}
-        authStatus={{ state: "signed-out", label: "구글 로그인 안 됨" }}
         onChange={vi.fn()}
         onDelete={vi.fn()}
-        onRequestSync={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+        onRequestSync={onRequestSync}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "동기화" }));
+
+    expect(onRequestSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the topbar sync button when server backup is not available", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-1" });
+    const onRequestSync = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        authStatus={{ state: "signed-out", label: "구글 로그인 필요" }}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onRequestWindowClose={vi.fn()}
+        onRequestSync={onRequestSync}
         isSyncDisabled
       />
     );

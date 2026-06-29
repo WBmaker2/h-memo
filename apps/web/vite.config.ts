@@ -4,7 +4,7 @@ import { defineConfig } from "vite";
 const isGitHubPages = process.env.GITHUB_PAGES === "true";
 
 export default defineConfig({
-  base: isGitHubPages ? "/h-memo/" : "/",
+  base: process.env.H_MEMO_WEB_BASE_PATH ?? (isGitHubPages ? "/h-memo/" : "/"),
   plugins: [react()],
   server: {
     host: "127.0.0.1",
@@ -13,5 +13,6 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    setupFiles: ["../../vitest.setup.ts"],
   },
 });
