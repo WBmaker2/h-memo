@@ -79,9 +79,15 @@ Firebase Console → **Authentication** → **Settings** → **Authorized domain
 - 현재 활성 generation 포인터: `users/{uid}/backupState/current`
 - 서버 삭제 표시: `users/{uid}/serverMemoDeletes/{memoId}`
 
-현재 서버 메모 문서는 `userId`, `memoId`, 그리고 `generations.{snapshotId}`에 저장한 `snapshotId`, `memo`, 서버 시각 `savedAt`을 보관합니다. `backupState/current`은 `activeSnapshotId`와 서버 `activatedAt`을 보관하며, 앱은 이 포인터와 일치하는 generation만 현재 메모로 노출합니다. 스냅샷 메타데이터는 `schemaVersion: 2`, `userId`, 클라이언트 payload의 `createdAt`, `memoCount`, `state`, 서버 시각 `savedAt`을 저장합니다.
+### 이전 초기 구현 (역사적 기록)
 
-백업은 먼저 `state: "writing"` 메타데이터를 만든 뒤, 활성 메모를 최대 200개씩 처리합니다. 각 메모는 canonical generation과 불변 스냅샷 하위 문서에 기록되므로 한 청크는 최대 400개 write입니다. 이 중간 generation은 활성 포인터가 바뀌기 전까지 읽기 경로에 노출되지 않습니다. 모든 청크가 성공한 뒤에만 메타데이터를 `state: "complete"` 및 서버 `savedAt`으로 전환하고, 같은 batch에서 `backupState/current`을 새 snapshot으로 활성화합니다. 읽기 경로는 완료된 v2 스냅샷만 사용하며, 기록 표시와 정렬에는 서버 `savedAt`을 사용합니다.
+초기 Task 3 구현에서 사용한 canonical `generations.{snapshotId}` map과 그 안의 memo body는 역사적 설계 기록일 뿐입니다. 현재 저장 규약에서는 이 map이나 canonical memo body를 작성하지 않습니다.
+
+### 현재 canonical 규약 (기준)
+
+현재 서버 메모 문서는 정확히 `userId`, `memoId`, `active`, `pending`만 보관합니다. `active`와 `pending`은 `null` 또는 정확히 `snapshotId`와 서버 시각 `savedAt`만 가진 참조 map입니다. 실제 memo body는 오직 `backupSnapshots/{snapshotId}/memos/{memoId}`의 불변 문서에만 보관합니다. `backupState/current`은 `activeSnapshotId`와 서버 `activatedAt`을 보관하며, 앱은 활성 포인터와 일치하는 `active` 또는 `pending` 참조를 찾은 뒤 해당 불변 body를 검증하여 현재 메모를 노출합니다. 스냅샷 메타데이터는 `schemaVersion: 2`, `userId`, 클라이언트 payload의 `createdAt`, `memoCount`, `state`, 서버 시각 `savedAt`을 저장합니다.
+
+백업은 먼저 `state: "writing"` 메타데이터를 만든 뒤, 활성 메모를 최대 200개씩 처리합니다. 한 메모마다 canonical `pending` 참조와 불변 snapshot body를 같은 batch에 쓰므로 한 청크는 최대 400개 write입니다. 기존 활성 참조는 보존하고, 이전 실패 시 남은 `pending`은 다음 백업이 덮어써 canonical 문서 크기가 고정됩니다. 모든 청크가 성공한 뒤에만 메타데이터를 `state: "complete"` 및 서버 `savedAt`으로 전환하고, 같은 batch에서 `backupState/current`을 새 snapshot으로 활성화합니다. 따라서 body와 참조가 durable해지기 전에는 새 상태가 읽기 경로에 노출되지 않습니다. 정리 작업은 `pending`을 `active`로 옮길 수 있지만 정확성은 그 정리에 의존하지 않습니다. 읽기 경로는 완료된 v2 스냅샷만 사용하며, 기록 표시와 정렬에는 서버 `savedAt`을 사용합니다.
 
 `uid` 단위로 사용자를 격리해야 합니다.
 
@@ -89,7 +95,7 @@ Firebase Console → **Authentication** → **Settings** → **Authorized domain
 
 기존 inline 배열 기반 version-1 스냅샷은 읽기와 복원을 계속 지원하며, 서버 `savedAt`이 없으면 기존 클라이언트 `createdAt`을 기록 시간의 fallback으로 사용합니다. 새 백업은 v2만 작성합니다.
 
-`서버 메모 관리`는 활성 generation의 현재 메모만 조회합니다. 서버에서 메모를 삭제하면 현재 활성 `snapshotId`를 포함한 tombstone을 기록하고 그 generation의 canonical 메모만 transaction으로 제거하며, 과거 스냅샷은 변경하지 않습니다. 이후 백업이 완료되어 새 generation이 활성화되면 이전 generation tombstone은 포인터와 더 이상 일치하지 않아 원자적으로 비활성화됩니다. 따라서 snapshot body가 모두 durable해지기 전에는 재활성화가 일어나지 않습니다. 스냅샷 메타데이터와 하위 메모 문서는 삭제할 수 없고, 하위 메모 문서는 생성 후 수정할 수 없습니다.
+`서버 메모 관리`는 활성 snapshot의 검증된 참조/body만 조회합니다. 서버에서 메모를 삭제하면 transaction이 현재 활성 `snapshotId`를 포함한 tombstone을 기록하고, 그 snapshot과 일치하는 canonical 참조만 제거합니다. 과거 스냅샷 body는 변경하지 않습니다. Tombstone은 메모별로 유지되며, 활성 snapshot이 해당 메모의 유효한 canonical 참조와 body를 실제로 포함할 때만 논리적으로 해제됩니다. 따라서 A에서 X를 삭제한 뒤 B에 X가 없으면 X는 모든 기록에서 계속 숨겨지고, C에 X가 다시 포함되어 활성화된 뒤에만 X가 보입니다. `snapshotId`가 없는 legacy tombstone도 같은 규칙을 따릅니다. 물리적 tombstone 삭제는 선택 사항입니다. 스냅샷 메타데이터와 하위 메모 문서는 삭제할 수 없고, 하위 메모 문서는 생성 후 수정할 수 없습니다.
 
 ### 규칙 적용
 

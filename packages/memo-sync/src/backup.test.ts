@@ -617,13 +617,14 @@ describe("FirestoreBackupGateway driver contract", () => {
     expect(driver.read("users/user-1/memos/memo-0")).toMatchObject({
       userId: "user-1",
       memoId: "memo-0",
-      generations: {
-        [id]: {
-          snapshotId: id,
-          savedAt: expect.any(FakeTimestamp),
-        },
+      active: null,
+      pending: {
+        snapshotId: id,
+        savedAt: expect.any(FakeTimestamp),
       },
     });
+    expect(driver.read("users/user-1/memos/memo-0")).not.toHaveProperty("generations");
+    expect(driver.read("users/user-1/memos/memo-0")).not.toHaveProperty("memo");
     const currentMemos = await gateway.loadCurrentMemos("user-1");
     expect(currentMemos.map((entry) => entry.memo.id)).toHaveLength(201);
     expect(currentMemos[0]).toMatchObject({ snapshotId: id });
@@ -738,10 +739,8 @@ describe("FirestoreBackupGateway driver contract", () => {
     driver.seed("users/user-1/memos/memo-delete", {
       userId: "user-1",
       memoId: "memo-delete",
-      generations: {
-        "snapshot-a": { snapshotId: "snapshot-a", memo, savedAt: new FakeTimestamp("2026-05-13T09:00:00.000Z") },
-        "snapshot-b": { snapshotId: "snapshot-b", memo, savedAt: new FakeTimestamp("2026-05-13T09:01:00.000Z") },
-      },
+      active: { snapshotId: "snapshot-a", savedAt: new FakeTimestamp("2026-05-13T09:00:00.000Z") },
+      pending: { snapshotId: "snapshot-b", savedAt: new FakeTimestamp("2026-05-13T09:01:00.000Z") },
     });
     driver.onFirstTransactionRead = async () => {
       driver.seed("users/user-1/backupState/current", {
@@ -772,24 +771,38 @@ describe("FirestoreBackupGateway driver contract", () => {
     driver.seed("users/user-1/memos/future", {
       userId: "user-1",
       memoId: "future",
-      generations: {
-        "snapshot-current": {
-          snapshotId: "snapshot-current",
-          memo: clientFuture,
-          savedAt: new FakeTimestamp("2026-05-13T09:01:00.000Z"),
-        },
+      active: {
+        snapshotId: "snapshot-current",
+        savedAt: new FakeTimestamp("2026-05-13T09:01:00.000Z"),
       },
+      pending: null,
     });
     driver.seed("users/user-1/memos/past", {
       userId: "user-1",
       memoId: "past",
-      generations: {
-        "snapshot-current": {
-          snapshotId: "snapshot-current",
-          memo: clientPast,
-          savedAt: new FakeTimestamp("2026-05-13T09:02:00.000Z"),
-        },
+      active: {
+        snapshotId: "snapshot-current",
+        savedAt: new FakeTimestamp("2026-05-13T09:02:00.000Z"),
       },
+      pending: null,
+    });
+    driver.seed("users/user-1/backupSnapshots/snapshot-current", {
+      schemaVersion: 2,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memoCount: 2,
+      state: "complete",
+      savedAt: new FakeTimestamp("2026-05-13T09:03:00.000Z"),
+    });
+    driver.seed("users/user-1/backupSnapshots/snapshot-current/memos/future", {
+      userId: "user-1",
+      memoId: "future",
+      memo: clientFuture,
+    });
+    driver.seed("users/user-1/backupSnapshots/snapshot-current/memos/past", {
+      userId: "user-1",
+      memoId: "past",
+      memo: clientPast,
     });
 
     const memos = await listBackedUpMemos(gateway, "user-1");
@@ -835,5 +848,104 @@ describe("FirestoreBackupGateway driver contract", () => {
     });
 
     expect(await gateway.loadBackups("user-1")).toEqual([]);
+  });
+
+  it("keeps canonical documents bounded across repeated backups and a failed generation", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "memo-bounded", now: "2026-05-13T09:00:00.000Z" });
+
+    const first = snapshotId(await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memos: [memo],
+    }));
+    const second = snapshotId(await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:01:00.000Z",
+      memos: [{ ...memo, plainText: "second" }],
+    }));
+    const third = snapshotId(await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:02:00.000Z",
+      memos: [{ ...memo, plainText: "third" }],
+    }));
+    driver.failBatchCommit = driver.batchOperationCounts.length + 2;
+
+    await expect(gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:03:00.000Z",
+      memos: [{ ...memo, plainText: "failed fourth" }],
+    })).rejects.toThrow("forced batch failure");
+
+    const canonical = driver.read("users/user-1/memos/memo-bounded");
+    expect(canonical).toEqual(expect.objectContaining({
+      userId: "user-1",
+      memoId: "memo-bounded",
+      active: expect.objectContaining({ snapshotId: third }),
+      pending: expect.objectContaining({ snapshotId: "4" }),
+    }));
+    expect(Object.keys(canonical ?? {}).sort()).toEqual(["active", "memoId", "pending", "userId"]);
+    expect(canonical).not.toHaveProperty("memo");
+    expect(canonical).not.toHaveProperty("generations");
+    expect(first).not.toBe(second);
+    expect(second).not.toBe(third);
+    expect((await gateway.loadCurrentMemos("user-1")).map((entry) => entry.memo.plainText)).toEqual([
+      "third",
+    ]);
+  });
+
+  it("keeps per-memo and legacy tombstones effective until the active generation contains that memo", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "memo-tombstone", now: "2026-05-13T09:00:00.000Z" });
+    const legacyMemo = createMemo({ id: "memo-legacy-tombstone", now: "2026-05-13T09:00:00.000Z" });
+
+    await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memos: [memo, legacyMemo],
+    });
+    await gateway.deleteCurrentMemo("user-1", memo.id);
+    driver.seed("users/user-1/serverMemoDeletes/memo-legacy-tombstone", {
+      userId: "user-1",
+      memoId: legacyMemo.id,
+      deletedAt: new FakeTimestamp("2026-05-13T09:01:00.000Z"),
+    });
+
+    await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:02:00.000Z",
+      memos: [],
+    });
+
+    expect((await listBackupSnapshots(gateway, "user-1")).flatMap((snapshot) =>
+      snapshot.payload.memos.map((item) => item.id)
+    )).not.toContain(memo.id);
+    expect((await listBackupSnapshots(gateway, "user-1")).flatMap((snapshot) =>
+      snapshot.payload.memos.map((item) => item.id)
+    )).not.toContain(legacyMemo.id);
+
+    await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:03:00.000Z",
+      memos: [memo, legacyMemo],
+    });
+
+    expect((await gateway.loadCurrentMemos("user-1")).map((entry) => entry.memo.id).sort()).toEqual([
+      legacyMemo.id,
+      memo.id,
+    ]);
+    expect(await gateway.loadDeletedMemoIds("user-1")).toEqual([]);
+    expect((await listBackupSnapshots(gateway, "user-1")).flatMap((snapshot) =>
+      snapshot.payload.memos.map((item) => item.id)
+    )).toEqual(expect.arrayContaining([memo.id, legacyMemo.id]));
   });
 });

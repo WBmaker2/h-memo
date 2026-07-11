@@ -49,20 +49,58 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "savedAt"]);
     }
 
+    function hasValidCanonicalReference(reference) {
+      return reference == null || (
+        reference is map
+        && reference.keys().hasOnly(["snapshotId", "savedAt"])
+        && reference.keys().hasAll(["snapshotId", "savedAt"])
+        && reference.snapshotId is string
+        && reference.savedAt is timestamp
+      );
+    }
+
     function hasValidCanonicalMemoShape(uid, memoId) {
       return request.resource.data.keys().hasOnly([
           "userId",
           "memoId",
-          "generations"
+          "active",
+          "pending"
         ])
         && request.resource.data.keys().hasAll([
           "userId",
           "memoId",
-          "generations"
+          "active",
+          "pending"
         ])
         && request.resource.data.userId == uid
         && request.resource.data.memoId == memoId
-        && request.resource.data.generations is map;
+        && hasValidCanonicalReference(request.resource.data.active)
+        && hasValidCanonicalReference(request.resource.data.pending);
+    }
+
+    function hasValidCanonicalMemoTransition(uid, memoId) {
+      return hasValidCanonicalMemoShape(uid, memoId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["active", "pending"])
+        && (
+          (
+            request.resource.data.pending != null
+            && (
+              request.resource.data.active == resource.data.active
+              || request.resource.data.active == resource.data.pending
+              || request.resource.data.active == null
+            )
+          )
+          || (
+            request.resource.data.pending == null
+            && (
+              request.resource.data.active == resource.data.active
+              || (
+                resource.data.pending != null
+                && request.resource.data.active == resource.data.pending
+              )
+            )
+          )
+        );
     }
 
     function hasValidSnapshotMemoShape(uid, memoId) {
@@ -122,7 +160,8 @@ service cloud.firestore {
 
     match /users/{uid}/memos/{memoId} {
       allow read: if isOwner(uid);
-      allow create, update: if isOwner(uid) && hasValidCanonicalMemoShape(uid, memoId);
+      allow create: if isOwner(uid) && hasValidCanonicalMemoShape(uid, memoId);
+      allow update: if isOwner(uid) && hasValidCanonicalMemoTransition(uid, memoId);
       allow delete: if false;
     }
 

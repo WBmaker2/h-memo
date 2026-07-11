@@ -21,13 +21,26 @@ describe("Firestore backup rules", () => {
 
   it("allows owners to maintain canonical current memos with an owner-safe shape", () => {
     const rules = readFileSync(path.resolve("firestore.rules"), "utf8");
+    const canonicalRules = rules.slice(
+      rules.indexOf("function hasValidCanonicalReference(reference)"),
+      rules.indexOf("function hasValidSnapshotMemoShape(uid, memoId)")
+    );
 
     expect(rules).toContain("function hasValidCanonicalMemoShape(uid, memoId)");
     expect(rules).toContain("match /users/{uid}/memos/{memoId}");
     expect(rules).toContain("request.resource.data.userId == uid");
     expect(rules).toContain("request.resource.data.memoId == memoId");
-    expect(rules).toContain("request.resource.data.generations is map");
+    expect(rules).toContain("function hasValidCanonicalReference(reference)");
+    expect(rules).toContain("request.resource.data.active");
+    expect(rules).toContain("request.resource.data.pending");
+    expect(rules).toContain("reference.snapshotId is string");
+    expect(rules).toContain("reference.savedAt is timestamp");
     expect(rules).toContain("allow delete: if false;");
+    expect(canonicalRules).toContain('"active", "pending"');
+    expect(canonicalRules).toContain('affectedKeys().hasOnly(["active", "pending"])');
+    expect(canonicalRules).not.toContain('"memo"');
+    expect(canonicalRules).not.toContain('"generations"');
+    expect(rules).not.toContain('"generations"');
   });
 
   it("allows immutable owner-created schema-v2 snapshot memo documents", () => {

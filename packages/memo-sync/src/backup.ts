@@ -6,7 +6,6 @@ import {
 } from "@h-memo/memo-core";
 import {
   collection as firestoreCollection,
-  deleteField as firestoreDeleteField,
   doc as firestoreDoc,
   getDoc as firestoreGetDoc,
   getDocs as firestoreGetDocs,
@@ -73,7 +72,6 @@ export type FirestoreBackupDriver = {
     updater: (transaction: DriverTransaction) => Promise<T>
   ): Promise<T>;
   serverTimestamp(): unknown;
-  deleteField(): unknown;
 };
 
 const firebaseDriver: FirestoreBackupDriver = {
@@ -109,7 +107,6 @@ const firebaseDriver: FirestoreBackupDriver = {
       })
     ),
   serverTimestamp: () => firestoreServerTimestamp(),
-  deleteField: () => firestoreDeleteField(),
 };
 
 export interface BackupGateway {
@@ -222,6 +219,43 @@ function activeSnapshotIdFromState(snapshot: DriverDocumentSnapshot): string | n
     : null;
 }
 
+type CanonicalReference = {
+  snapshotId: string;
+  savedAt: unknown;
+};
+
+function readCanonicalReference(value: unknown): CanonicalReference | null {
+  if (!isRecord(value) || typeof value.snapshotId !== "string" || value.snapshotId === "") {
+    return null;
+  }
+
+  return normalizeFirestoreTimestamp(value.savedAt) === null
+    ? null
+    : { snapshotId: value.snapshotId, savedAt: value.savedAt };
+}
+
+function canonicalReferenceForSnapshot(
+  data: Record<string, unknown>,
+  snapshotId: string
+): CanonicalReference | null {
+  const pending = readCanonicalReference(data.pending);
+  if (pending?.snapshotId === snapshotId) {
+    return pending;
+  }
+
+  const active = readCanonicalReference(data.active);
+  return active?.snapshotId === snapshotId ? active : null;
+}
+
+function canonicalReferenceData(reference: CanonicalReference | null) {
+  return reference === null
+    ? null
+    : {
+        snapshotId: reference.snapshotId,
+        savedAt: reference.savedAt,
+      };
+}
+
 export class FirestoreBackupGateway implements BackupGateway {
   constructor(
     private readonly firestore: Firestore,
@@ -263,6 +297,15 @@ export class FirestoreBackupGateway implements BackupGateway {
     const snapshotRef = this.driver.doc(this.snapshotCollection(userId));
     const snapshotId = this.driver.id(snapshotRef);
 
+    const [activeState, existingCanonicalMemos] = await Promise.all([
+      this.driver.getDoc(this.activationDoc(userId)),
+      this.driver.getDocs(this.canonicalMemoCollection(userId)),
+    ]);
+    const activeSnapshotId = activeSnapshotIdFromState(activeState);
+    const existingCanonicalMemosById = new Map(
+      existingCanonicalMemos.docs.map((snapshot) => [snapshot.id, snapshot])
+    );
+
     await this.driver.setDoc(snapshotRef, {
       schemaVersion: 2,
       userId,
@@ -274,21 +317,29 @@ export class FirestoreBackupGateway implements BackupGateway {
     for (const memoChunk of chunkMemos(activeMemos)) {
       const memoBatch = this.driver.writeBatch(this.firestore);
       for (const memo of memoChunk) {
-        memoBatch.set(
-          this.canonicalMemoDoc(userId, memo.id),
-          {
+        const canonicalMemoRef = this.canonicalMemoDoc(userId, memo.id);
+        const existingCanonicalMemo = existingCanonicalMemosById.get(memo.id);
+        const previousActiveReference =
+          activeSnapshotId && existingCanonicalMemo
+            ? canonicalReferenceForSnapshot(existingCanonicalMemo.data(), activeSnapshotId)
+            : null;
+        const stagedReferences = {
+          active: canonicalReferenceData(previousActiveReference),
+          pending: {
+            snapshotId,
+            savedAt: this.driver.serverTimestamp(),
+          },
+        };
+
+        if (existingCanonicalMemo) {
+          memoBatch.update(canonicalMemoRef, stagedReferences);
+        } else {
+          memoBatch.set(canonicalMemoRef, {
             userId,
             memoId: memo.id,
-            generations: {
-              [snapshotId]: {
-                snapshotId,
-                memo,
-                savedAt: this.driver.serverTimestamp(),
-              },
-            },
-          },
-          { merge: true }
-        );
+            ...stagedReferences,
+          });
+        }
         memoBatch.set(this.driver.doc(snapshotRef, snapshotMemosCollection, memo.id), {
           userId,
           memoId: memo.id,
@@ -354,6 +405,9 @@ export class FirestoreBackupGateway implements BackupGateway {
     snapshot: DriverDocumentSnapshot,
     userId: string
   ): Promise<StoredBackupSnapshot | null> {
+    if (!snapshot.exists()) {
+      return null;
+    }
     const data = snapshot.data();
     const savedAt = normalizeFirestoreTimestamp(data.savedAt);
     if (
@@ -419,20 +473,28 @@ export class FirestoreBackupGateway implements BackupGateway {
       return [];
     }
 
+    const activeSnapshot = await this.loadCompleteSchemaV2Snapshot(
+      await this.driver.getDoc(this.driver.doc(this.snapshotCollection(userId), activeSnapshotId)),
+      userId
+    );
+    if (!activeSnapshot) {
+      return [];
+    }
+
+    const snapshotMemosById = new Map(
+      activeSnapshot.payload.memos.map((memo) => [memo.id, memo])
+    );
     const memoDocs = await this.driver.getDocs(this.canonicalMemoCollection(userId));
     const currentMemos: StoredCurrentMemo[] = [];
     for (const memoSnapshot of memoDocs.docs) {
       const data = memoSnapshot.data();
-      const generations = isRecord(data.generations) ? data.generations : null;
-      const generation: Record<string, unknown> | null = generations && isRecord(generations[activeSnapshotId])
-        ? generations[activeSnapshotId]
-        : null;
-      const memo = generation?.memo;
-      const savedAt = normalizeFirestoreTimestamp(generation?.savedAt);
+      const reference = canonicalReferenceForSnapshot(data, activeSnapshotId);
+      const memo = snapshotMemosById.get(memoSnapshot.id);
+      const savedAt = normalizeFirestoreTimestamp(reference?.savedAt);
       if (
         data.userId !== userId ||
         data.memoId !== memoSnapshot.id ||
-        generation?.snapshotId !== activeSnapshotId ||
+        reference?.snapshotId !== activeSnapshotId ||
         !isValidMemo(memo, userId) ||
         memo.id !== memoSnapshot.id ||
         savedAt === null
@@ -445,22 +507,23 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   async loadDeletedMemoIds(userId: string): Promise<string[]> {
-    const activeSnapshotId = activeSnapshotIdFromState(
-      await this.driver.getDoc(this.activationDoc(userId))
-    );
-    const querySnapshot = await this.driver.getDocs(this.deletedMemoCollection(userId));
+    const [currentMemos, querySnapshot] = await Promise.all([
+      this.loadCurrentMemos(userId),
+      this.driver.getDocs(this.deletedMemoCollection(userId)),
+    ]);
+    const activeMemoIds = new Set(currentMemos.map((entry) => entry.memo.id));
     return querySnapshot.docs
       .flatMap((snapshot) => {
         const data = snapshot.data();
-        const memoId = typeof data.memoId === "string" ? data.memoId : snapshot.id;
-        const tombstoneSnapshotId = typeof data.snapshotId === "string" ? data.snapshotId : null;
         if (
-          memoId.trim() === "" ||
-          (tombstoneSnapshotId !== null && tombstoneSnapshotId !== activeSnapshotId)
+          data.userId !== userId ||
+          data.memoId !== snapshot.id ||
+          snapshot.id.trim() === "" ||
+          activeMemoIds.has(snapshot.id)
         ) {
           return [];
         }
-        return [memoId];
+        return [snapshot.id];
       });
   }
 
@@ -482,9 +545,17 @@ export class FirestoreBackupGateway implements BackupGateway {
         deletedAt: this.driver.serverTimestamp(),
       });
       if (canonicalMemo.exists()) {
-        transaction.update(canonicalMemoRef, {
-          [`generations.${activeSnapshotId}`]: this.driver.deleteField(),
-        });
+        const data = canonicalMemo.data();
+        const active = readCanonicalReference(data.active);
+        const pending = readCanonicalReference(data.pending);
+        const activeMatches = active?.snapshotId === activeSnapshotId;
+        const pendingMatches = pending?.snapshotId === activeSnapshotId;
+        if (data.userId === userId && data.memoId === memoId && (activeMatches || pendingMatches)) {
+          transaction.update(canonicalMemoRef, {
+            active: activeMatches ? null : canonicalReferenceData(active),
+            pending: pendingMatches ? null : canonicalReferenceData(pending),
+          });
+        }
       }
       return 1;
     });
