@@ -4,6 +4,7 @@ dist-ssr/
 coverage/
 .playwright-mcp/
 .worktrees/
+.superpowers/
 h-memo-firebase-ready-menu.png
 .env
 .env.local
