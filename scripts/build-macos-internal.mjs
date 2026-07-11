@@ -59,7 +59,7 @@ function run(command, args) {
   }
 
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    throw new Error(`${command} exited with status ${result.status ?? 1}`);
   }
 }
 
@@ -85,7 +85,7 @@ function resolveMacArch() {
   return process.arch;
 }
 
-function createInternalDmg() {
+export function createInternalDmg() {
   const version = readVersion();
   const productName = readProductName();
   const appPath = path.join(desktopBundleRoot, "macos", `${productName}.app`);
@@ -101,24 +101,27 @@ function createInternalDmg() {
     `${productName}_${version}_${resolveMacArch()}_internal.dmg`
   );
 
-  rmSync(stagingDir, { recursive: true, force: true });
-  mkdirSync(stagingDir, { recursive: true });
-  cpSync(appPath, stagedAppPath, { recursive: true });
-  symlinkSync("/Applications", path.join(stagingDir, "Applications"));
+  try {
+    rmSync(stagingDir, { recursive: true, force: true });
+    mkdirSync(stagingDir, { recursive: true });
+    cpSync(appPath, stagedAppPath, { recursive: true });
+    symlinkSync("/Applications", path.join(stagingDir, "Applications"));
 
-  run("hdiutil", [
-    "create",
-    "-volname",
-    productName,
-    "-srcfolder",
-    stagingDir,
-    "-ov",
-    "-format",
-    "UDZO",
-    dmgPath,
-  ]);
+    run("hdiutil", [
+      "create",
+      "-volname",
+      productName,
+      "-srcfolder",
+      stagingDir,
+      "-ov",
+      "-format",
+      "UDZO",
+      dmgPath,
+    ]);
+  } finally {
+    rmSync(stagingDir, { recursive: true, force: true });
+  }
 
-  rmSync(stagingDir, { recursive: true, force: true });
   console.log(`Created internal macOS DMG: ${dmgPath}`);
 }
 
