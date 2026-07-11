@@ -24,9 +24,11 @@ import {
 import {
   closeWindow,
   closeMemoWindow,
+  claimCurrentMemoWindow,
   openMemoWindow,
   listenWindowBoundsChanged,
   readWindowBounds,
+  releaseCurrentMemoWindow,
   restoreWindowBounds,
   setWindowHeight,
   startWindowDrag,
@@ -561,6 +563,42 @@ export function App() {
 
     setActiveMemoId(visibleMemos[0]?.id ?? null);
   }, [activeMemoId, hasLoadedMemos, isTauri, visibleMemos]);
+
+  useEffect(() => {
+    if (!isTauri || !hasLoadedMemos || !activeMemoId) {
+      return;
+    }
+
+    let isCurrent = true;
+    let didClaim = false;
+    let released = false;
+    const memoId = activeMemoId;
+    const release = () => {
+      if (!didClaim || released) {
+        return;
+      }
+      released = true;
+      void releaseCurrentMemoWindow(memoId).catch((error) => {
+        setBackupStatus(`메모 창 소유권 해제 실패: ${getErrorMessage(error)}`);
+      });
+    };
+
+    void claimCurrentMemoWindow(memoId)
+      .then((claim) => {
+        didClaim = claim.claimed;
+        if (!isCurrent) {
+          release();
+        }
+      })
+      .catch((error) => {
+        setBackupStatus(`메모 창 소유권 확인 실패: ${getErrorMessage(error)}`);
+      });
+
+    return () => {
+      isCurrent = false;
+      release();
+    };
+  }, [activeMemoId, hasLoadedMemos, isTauri]);
 
   useEffect(() => {
     if (!isTauri || requestedMemoId || !hasLoadedMemos || openedRestoredMemoWindowsRef.current) {

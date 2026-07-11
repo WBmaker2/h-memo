@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   currentMonitor,
   getCurrentWindow,
@@ -15,6 +16,11 @@ export type WindowBounds = {
   y: number;
   width: number;
   height: number;
+};
+
+export type MemoWindowClaim = {
+  claimed: boolean;
+  windowLabel: string;
 };
 
 export function startWindowDrag() {
@@ -36,6 +42,28 @@ export function getMemoWindowLabel(memoId: string) {
 
 function getMemoWindowUrl(memoId: string) {
   return `index.html?memoId=${encodeURIComponent(memoId)}`;
+}
+
+async function focusMemoWindow(window: WebviewWindow) {
+  await window.unminimize();
+  await window.show();
+  await window.setFocus();
+}
+
+async function claimMemoWindow(memoId: string, windowLabel: string) {
+  return invoke<MemoWindowClaim>("claim_memo_window", { memoId, windowLabel });
+}
+
+async function releaseMemoWindow(memoId: string, windowLabel: string) {
+  await invoke("release_memo_window", { memoId, windowLabel });
+}
+
+export function claimCurrentMemoWindow(memoId: string) {
+  return claimMemoWindow(memoId, getCurrentWindow().label);
+}
+
+export function releaseCurrentMemoWindow(memoId: string) {
+  return releaseMemoWindow(memoId, getCurrentWindow().label);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -90,9 +118,16 @@ export async function openMemoWindow(memo: Memo) {
   const label = getMemoWindowLabel(memo.id);
   const existingWindow = await WebviewWindow.getByLabel(label);
   if (existingWindow) {
-    await existingWindow.unminimize();
-    await existingWindow.show();
-    await existingWindow.setFocus();
+    await focusMemoWindow(existingWindow);
+    return;
+  }
+
+  const claim = await claimMemoWindow(memo.id, label);
+  if (!claim.claimed) {
+    const owner = await WebviewWindow.getByLabel(claim.windowLabel);
+    if (owner) {
+      await focusMemoWindow(owner);
+    }
     return;
   }
 
@@ -106,23 +141,32 @@ export async function openMemoWindow(memo: Memo) {
         })
       : null;
 
-  const memoWindow = new WebviewWindow(label, {
-    url: getMemoWindowUrl(memo.id),
-    title: "H Memo",
-    width: memo.windowState.width,
-    height: memo.windowState.height,
-    x: safeBounds?.x ?? undefined,
-    y: safeBounds?.y ?? undefined,
-    resizable: true,
-    decorations: false,
-    visible: true,
-    focus: true,
-  });
+  try {
+    const memoWindow = new WebviewWindow(label, {
+      url: getMemoWindowUrl(memo.id),
+      title: "H Memo",
+      width: memo.windowState.width,
+      height: memo.windowState.height,
+      x: safeBounds?.x ?? undefined,
+      y: safeBounds?.y ?? undefined,
+      resizable: true,
+      decorations: false,
+      visible: true,
+      focus: true,
+    });
 
-  await new Promise<void>((resolve, reject) => {
-    void memoWindow.once("tauri://created", () => resolve());
-    void memoWindow.once("tauri://error", (event) => reject(event.payload));
-  });
+    await new Promise<void>((resolve, reject) => {
+      void memoWindow.once("tauri://created", () => resolve());
+      void memoWindow.once("tauri://error", (event) => reject(event.payload));
+    });
+  } catch (error) {
+    try {
+      await releaseMemoWindow(memo.id, label);
+    } catch {
+      // Preserve the window-construction failure as the actionable error.
+    }
+    throw error;
+  }
 }
 
 export async function closeMemoWindow(memoId: string) {

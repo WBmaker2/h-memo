@@ -37,6 +37,8 @@ const {
   mockCloseWindow,
   mockCloseMemoWindow,
   mockOpenMemoWindow,
+  mockClaimCurrentMemoWindow,
+  mockReleaseCurrentMemoWindow,
   mockReadWindowBounds,
   mockRestoreWindowBounds,
   mockSetWindowHeight,
@@ -71,6 +73,8 @@ const {
   const mockCloseWindow = vi.fn();
   const mockCloseMemoWindow = vi.fn();
   const mockOpenMemoWindow = vi.fn();
+  const mockClaimCurrentMemoWindow = vi.fn();
+  const mockReleaseCurrentMemoWindow = vi.fn();
   const mockRestoreWindowBounds = vi.fn();
   const mockSetWindowHeight = vi.fn();
   const mockListenWindowBoundsChanged = vi.fn();
@@ -221,6 +225,8 @@ const {
     mockCloseWindow,
     mockCloseMemoWindow,
     mockOpenMemoWindow,
+    mockClaimCurrentMemoWindow,
+    mockReleaseCurrentMemoWindow,
     mockReadWindowBounds,
     mockRestoreWindowBounds,
     mockSetWindowHeight,
@@ -326,6 +332,8 @@ vi.mock("./adapters/tauriWindow", () => ({
   closeWindow: () => mockCloseWindow(),
   closeMemoWindow: (memoId: string) => mockCloseMemoWindow(memoId),
   openMemoWindow: (memo: unknown) => mockOpenMemoWindow(memo),
+  claimCurrentMemoWindow: (memoId: string) => mockClaimCurrentMemoWindow(memoId),
+  releaseCurrentMemoWindow: (memoId: string) => mockReleaseCurrentMemoWindow(memoId),
   readWindowBounds: () => mockReadWindowBounds(),
   restoreWindowBounds: (bounds: unknown) => mockRestoreWindowBounds(bounds),
   setWindowHeight: (height: number) => mockSetWindowHeight(height),
@@ -451,6 +459,8 @@ beforeEach(() => {
   mockCloseWindow.mockReset();
   mockCloseMemoWindow.mockReset();
   mockOpenMemoWindow.mockReset();
+  mockClaimCurrentMemoWindow.mockReset();
+  mockReleaseCurrentMemoWindow.mockReset();
   mockReadWindowBounds.mockReset();
   mockRestoreWindowBounds.mockReset();
   mockSetWindowHeight.mockReset();
@@ -490,6 +500,8 @@ beforeEach(() => {
   mockCloseMemoWindow.mockResolvedValue(undefined);
   mockOpenMemoWindow.mockResolvedValue(undefined);
   mockReadWindowBounds.mockImplementation(async () => tauriWindowState.bounds);
+  mockClaimCurrentMemoWindow.mockResolvedValue({ claimed: true, windowLabel: "main" });
+  mockReleaseCurrentMemoWindow.mockResolvedValue(undefined);
   mockRestoreWindowBounds.mockResolvedValue(undefined);
   mockSetWindowHeight.mockResolvedValue(undefined);
   mockListenWindowBoundsChanged.mockImplementation(async (listener: () => void) => {
@@ -597,6 +609,49 @@ describe("desktop App", () => {
           plainText: "",
         })
       );
+    });
+  });
+
+  it("releases the previous active memo before claiming the replacement memo window", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const first = createMemo({
+      id: "memo-first",
+      now: "2026-07-11T09:00:00.000Z",
+      plainText: "첫 번째 메모",
+    });
+    const second = createMemo({
+      id: "memo-second",
+      now: "2026-07-11T09:01:00.000Z",
+      plainText: "두 번째 메모",
+    });
+    tauriRepositoryState.set(first.id, first);
+    tauriRepositoryState.set(second.id, second);
+
+    const { unmount } = render(<App />);
+
+    await waitFor(() => {
+      expect(mockClaimCurrentMemoWindow).toHaveBeenCalledWith("memo-first");
+      expect(tauriEventState.memoStoreListener).toEqual(expect.any(Function));
+    });
+
+    tauriRepositoryState.set(first.id, {
+      ...first,
+      deletedAt: "2026-07-11T09:02:00.000Z",
+    });
+    await act(async () => {
+      tauriEventState.memoStoreListener?.({ deletedMemoId: first.id });
+    });
+
+    await waitFor(() => {
+      expect(mockReleaseCurrentMemoWindow).toHaveBeenCalledWith("memo-first");
+      expect(mockClaimCurrentMemoWindow).toHaveBeenCalledWith("memo-second");
+    });
+
+    unmount();
+
+    await waitFor(() => {
+      expect(mockReleaseCurrentMemoWindow).toHaveBeenCalledWith("memo-second");
     });
   });
 

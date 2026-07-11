@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result as AnyhowResult};
@@ -19,7 +20,7 @@ use sha2::{Digest, Sha256};
 use tauri::{
   menu::{Menu, MenuItem},
   tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-  AppHandle, Emitter, Manager,
+  AppHandle, Emitter, Manager, State,
 };
 use tauri_plugin_dialog::DialogExt;
 use url::{form_urlencoded, Url};
@@ -50,6 +51,18 @@ struct MemoRecord {
   sync_state: String,
 }
 
+struct DatabaseState(Mutex<Connection>);
+
+#[derive(Default)]
+struct MemoWindowRegistry(Mutex<HashMap<String, String>>);
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoWindowClaim {
+  claimed: bool,
+  window_label: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GoogleOAuthTokens {
@@ -69,8 +82,15 @@ struct GoogleTokenResponse {
 }
 
 #[tauri::command]
-async fn list_memos(app: AppHandle) -> Result<Vec<MemoRecord>, String> {
-  let connection = open_db(&app).map_err(|error| error.to_string())?;
+fn list_memos(database: State<'_, DatabaseState>) -> Result<Vec<MemoRecord>, String> {
+  let connection = database
+    .0
+    .lock()
+    .map_err(|_| "database lock is unavailable".to_string())?;
+  list_memos_from_connection(&connection).map_err(|error| error.to_string())
+}
+
+fn list_memos_from_connection(connection: &Connection) -> AnyhowResult<Vec<MemoRecord>> {
   let mut statement = connection
     .prepare(
       r#"
@@ -79,25 +99,66 @@ async fn list_memos(app: AppHandle) -> Result<Vec<MemoRecord>, String> {
       ORDER BY updated_at DESC
       "#,
     )
-    .map_err(|error| error.to_string())?;
+    ?;
 
   let rows = statement
     .query_map([], parse_memo_row)
-    .map_err(|error| error.to_string())?;
+    ?;
 
   let memos = rows
     .collect::<Result<Vec<MemoRecord>, rusqlite::Error>>()
-    .map_err(|error| error.to_string())?;
+    ?;
 
   Ok(memos)
 }
 
 #[tauri::command]
-async fn save_memo(app: AppHandle, memo: MemoRecord) -> Result<MemoRecord, String> {
-  let connection = open_db(&app).map_err(|error| error.to_string())?;
+fn save_memo(database: State<'_, DatabaseState>, memo: MemoRecord) -> Result<MemoRecord, String> {
+  let connection = database
+    .0
+    .lock()
+    .map_err(|_| "database lock is unavailable".to_string())?;
   let updated = normalize_record(&memo);
   upsert_memo(&connection, &updated).map_err(|error| error.to_string())?;
   Ok(updated)
+}
+
+#[tauri::command]
+fn claim_memo_window(
+  app: AppHandle,
+  registry: State<'_, MemoWindowRegistry>,
+  memo_id: String,
+  window_label: String,
+) -> Result<MemoWindowClaim, String> {
+  loop {
+    let claim = {
+      let mut owners = registry
+        .0
+        .lock()
+        .map_err(|_| "memo window registry lock is unavailable".to_string())?;
+      owners.retain(|_, owner| app.get_webview_window(owner).is_some());
+      claim_memo_window_owner_locked(&mut owners, &memo_id, &window_label)
+    };
+
+    if claim.claimed {
+      return Ok(claim);
+    }
+
+    if let Some(window) = app.get_webview_window(&claim.window_label) {
+      focus_memo_window(&window)?;
+      return Ok(claim);
+    }
+  }
+}
+
+#[tauri::command]
+fn release_memo_window(
+  registry: State<'_, MemoWindowRegistry>,
+  memo_id: String,
+  window_label: String,
+) -> Result<(), String> {
+  release_memo_window_owner(&registry, &memo_id, &window_label);
+  Ok(())
 }
 
 #[tauri::command]
@@ -358,7 +419,7 @@ fn respond_to_browser(stream: &mut TcpStream, success: bool) -> AnyhowResult<()>
 fn respond_with_html(stream: &mut TcpStream, body: &str) -> AnyhowResult<()> {
   let response = format!(
     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-    body.as_bytes().len(),
+    body.len(),
     body
   );
   stream
@@ -425,7 +486,11 @@ fn show_main_window_inner(app: &AppHandle) -> Result<(), String> {
     .get_webview_window(WINDOW_LABEL)
     .ok_or_else(|| "main window not found".to_string())?;
 
-  window.unminimize().ok();
+  focus_memo_window(&window)
+}
+
+fn focus_memo_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+  window.unminimize().map_err(|error| error.to_string())?;
   window.show().map_err(|error| error.to_string())?;
   window.set_focus().map_err(|error| error.to_string())?;
   Ok(())
@@ -512,17 +577,62 @@ fn upsert_memo(connection: &Connection, memo: &MemoRecord) -> AnyhowResult<()> {
   Ok(())
 }
 
-fn open_db(app: &AppHandle) -> AnyhowResult<Connection> {
+#[cfg(test)]
+fn claim_memo_window_owner(
+  registry: &MemoWindowRegistry,
+  memo_id: &str,
+  window_label: &str,
+) -> MemoWindowClaim {
+  let mut owners = registry
+    .0
+    .lock()
+    .expect("memo window registry lock should not be poisoned");
+  claim_memo_window_owner_locked(&mut owners, memo_id, window_label)
+}
+
+fn claim_memo_window_owner_locked(
+  owners: &mut HashMap<String, String>,
+  memo_id: &str,
+  window_label: &str,
+) -> MemoWindowClaim {
+  match owners.get(memo_id) {
+    Some(owner) if owner != window_label => MemoWindowClaim {
+      claimed: false,
+      window_label: owner.clone(),
+    },
+    _ => {
+      owners.insert(memo_id.to_string(), window_label.to_string());
+      MemoWindowClaim {
+        claimed: true,
+        window_label: window_label.to_string(),
+      }
+    }
+  }
+}
+
+fn release_memo_window_owner(registry: &MemoWindowRegistry, memo_id: &str, window_label: &str) {
+  let mut owners = registry
+    .0
+    .lock()
+    .expect("memo window registry lock should not be poisoned");
+  if owners.get(memo_id).is_some_and(|owner| owner == window_label) {
+    owners.remove(memo_id);
+  }
+}
+
+fn open_database(app: &AppHandle) -> AnyhowResult<Connection> {
   let data_dir = app
     .path()
     .app_data_dir()
     .context("app data dir unavailable")?;
-  let mut db_path = PathBuf::from(data_dir);
+  let mut db_path = data_dir;
   db_path.push("h-memo.sqlite3");
 
-  std::fs::create_dir_all(&db_path.parent().context("invalid db path")?)?;
-  let connection = Connection::open(&db_path)?;
+  std::fs::create_dir_all(db_path.parent().context("invalid db path")?)?;
+  Connection::open(&db_path).context("failed to open memo database")
+}
 
+fn initialize_database(connection: &Connection) -> AnyhowResult<()> {
   connection.execute(
     r#"
     CREATE TABLE IF NOT EXISTS memos (
@@ -541,7 +651,10 @@ fn open_db(app: &AppHandle) -> AnyhowResult<Connection> {
     [],
   )?;
 
-  Ok(connection)
+  connection.pragma_update(None, "journal_mode", "WAL")?;
+  connection.busy_timeout(Duration::from_secs(5))?;
+
+  Ok(())
 }
 
 fn build_tray(app: &AppHandle) -> AnyhowResult<()> {
@@ -594,17 +707,22 @@ fn build_tray(app: &AppHandle) -> AnyhowResult<()> {
 }
 
 pub fn run() {
-  let _ = tauri::Builder::default()
+  tauri::Builder::default()
     .plugin(tauri_plugin_autostart::Builder::new().build())
     .plugin(tauri_plugin_dialog::init())
     .setup(|app| {
-      let app_handle = app.handle();
-      build_tray(app_handle)?;
+      let connection = open_database(app.handle())?;
+      initialize_database(&connection)?;
+      app.manage(DatabaseState(Mutex::new(connection)));
+      app.manage(MemoWindowRegistry::default());
+      build_tray(app.handle())?;
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
       list_memos,
       save_memo,
+      claim_memo_window,
+      release_memo_window,
       show_main_window,
       quit_app,
       export_text_file,
@@ -619,6 +737,100 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn test_memo(id: &str, plain_text: &str, updated_at: &str) -> MemoRecord {
+    MemoRecord {
+      id: id.to_string(),
+      title: String::new(),
+      plain_text: plain_text.to_string(),
+      rich_content: serde_json::json!({ "type": "doc", "content": [] }),
+      style: serde_json::json!({}),
+      window_state: serde_json::json!({}),
+      created_at: "2026-07-11T00:00:00Z".to_string(),
+      updated_at: updated_at.to_string(),
+      deleted_at: None,
+      sync_state: "queued".to_string(),
+    }
+  }
+
+  #[test]
+  fn database_initialization_configures_a_compatible_journal_and_busy_timeout() {
+    let connection = Connection::open_in_memory().expect("in-memory database should open");
+
+    initialize_database(&connection).expect("database should initialize");
+
+    let journal_mode: String = connection
+      .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+      .expect("journal mode should be readable");
+    let busy_timeout: u64 = connection
+      .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+      .expect("busy timeout should be readable");
+
+    assert!(matches!(journal_mode.as_str(), "wal" | "memory"));
+    assert_eq!(busy_timeout, 5_000);
+  }
+
+  #[test]
+  fn database_serial_upserts_return_the_newest_memo() {
+    let connection = Connection::open_in_memory().expect("in-memory database should open");
+    initialize_database(&connection).expect("database should initialize");
+    let first = test_memo("memo-1", "first", "2026-07-11T00:00:00Z");
+    let newest = test_memo("memo-1", "newest", "2026-07-11T00:01:00Z");
+
+    upsert_memo(&connection, &first).expect("first memo should save");
+    upsert_memo(&connection, &newest).expect("newer memo should save");
+
+    let memos = list_memos_from_connection(&connection).expect("memos should list");
+    assert_eq!(memos.len(), 1);
+    assert_eq!(memos[0].plain_text, "newest");
+    assert_eq!(memos[0].updated_at, "2026-07-11T00:01:00Z");
+  }
+
+  #[test]
+  fn window_registry_claims_an_unowned_memo() {
+    let registry = MemoWindowRegistry::default();
+
+    let claim = claim_memo_window_owner(&registry, "memo-1", "main");
+
+    assert!(claim.claimed);
+    assert_eq!(claim.window_label, "main");
+  }
+
+  #[test]
+  fn window_registry_allows_the_same_owner_to_reclaim_a_memo() {
+    let registry = MemoWindowRegistry::default();
+    claim_memo_window_owner(&registry, "memo-1", "main");
+
+    let claim = claim_memo_window_owner(&registry, "memo-1", "main");
+
+    assert!(claim.claimed);
+    assert_eq!(claim.window_label, "main");
+  }
+
+  #[test]
+  fn window_registry_rejects_a_different_owner() {
+    let registry = MemoWindowRegistry::default();
+    claim_memo_window_owner(&registry, "memo-1", "main");
+
+    let claim = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1");
+
+    assert!(!claim.claimed);
+    assert_eq!(claim.window_label, "main");
+  }
+
+  #[test]
+  fn window_registry_releases_only_its_current_owner() {
+    let registry = MemoWindowRegistry::default();
+    claim_memo_window_owner(&registry, "memo-1", "main");
+
+    release_memo_window_owner(&registry, "memo-1", "memo_memo-1");
+    let rejected = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1");
+    release_memo_window_owner(&registry, "memo-1", "main");
+    let claimed = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1");
+
+    assert!(!rejected.claimed);
+    assert!(claimed.claimed);
+  }
 
   #[test]
   fn parses_google_token_response_snake_case() {

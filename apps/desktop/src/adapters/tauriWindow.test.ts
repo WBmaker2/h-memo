@@ -11,6 +11,7 @@ const {
   mockUnminimize,
   mockShow,
   mockSetFocus,
+  mockInvoke,
   webviewWindowState,
 } = vi.hoisted(() => {
   const mockCurrentMonitor = vi.fn();
@@ -22,6 +23,7 @@ const {
   const mockUnminimize = vi.fn();
   const mockShow = vi.fn();
   const mockSetFocus = vi.fn();
+  const mockInvoke = vi.fn();
   const webviewWindowState: {
     createdOptions: Record<string, unknown> | null;
     createdHandlers: Map<string, (event?: { payload?: unknown }) => void>;
@@ -40,9 +42,14 @@ const {
     mockUnminimize,
     mockShow,
     mockSetFocus,
+    mockInvoke,
     webviewWindowState,
   };
 });
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: Parameters<typeof mockInvoke>) => mockInvoke(...args),
+}));
 
 vi.mock("@tauri-apps/api/window", () => {
   class PhysicalPosition {
@@ -146,6 +153,7 @@ describe("tauriWindow", () => {
       scaleFactor: 1,
     });
     mockGetByLabel.mockResolvedValue(null);
+    mockInvoke.mockResolvedValue({ claimed: true, windowLabel: "memo-window" });
   });
 
   it("keeps restored memo windows inside the current monitor", async () => {
@@ -204,6 +212,36 @@ describe("tauriWindow", () => {
       now: "2026-06-09T09:00:00.000Z",
     }));
 
+    expect(webviewWindowState.createdOptions).toBeNull();
+    expect(mockUnminimize).toHaveBeenCalledTimes(1);
+    expect(mockShow).toHaveBeenCalledTimes(1);
+    expect(mockSetFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it("focuses the registered main owner instead of creating a duplicate memo window", async () => {
+    const { openMemoWindow } = await import("./tauriWindow");
+    mockInvoke.mockResolvedValue({ claimed: false, windowLabel: "main" });
+    mockGetByLabel.mockImplementation((label: string) =>
+      Promise.resolve(
+        label === "main"
+          ? {
+              unminimize: mockUnminimize,
+              show: mockShow,
+              setFocus: mockSetFocus,
+            }
+          : null
+      )
+    );
+
+    await openMemoWindow(createMemo({
+      id: "memo-1",
+      now: "2026-07-11T09:00:00.000Z",
+    }));
+
+    expect(mockInvoke).toHaveBeenCalledWith("claim_memo_window", {
+      memoId: "memo-1",
+      windowLabel: "memo_memo-1",
+    });
     expect(webviewWindowState.createdOptions).toBeNull();
     expect(mockUnminimize).toHaveBeenCalledTimes(1);
     expect(mockShow).toHaveBeenCalledTimes(1);
