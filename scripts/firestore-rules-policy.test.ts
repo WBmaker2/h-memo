@@ -15,6 +15,8 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain("allow create: if isOwner(uid) && isWritingSchemaV2Snapshot(uid);");
     expect(rules).not.toContain("hasValidLegacyBackupSnapshotShape");
     expect(rules).toContain("allow delete: if false;");
+    expect(rules).toContain("resource.data.state == \"writing\"");
+    expect(rules).toContain("affectedKeys().hasOnly([\"state\", \"savedAt\"])");
   });
 
   it("allows owners to maintain canonical current memos with an owner-safe shape", () => {
@@ -24,8 +26,8 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain("match /users/{uid}/memos/{memoId}");
     expect(rules).toContain("request.resource.data.userId == uid");
     expect(rules).toContain("request.resource.data.memoId == memoId");
-    expect(rules).toContain("request.resource.data.memo.id == memoId");
-    expect(rules).toContain("request.resource.data.savedAt is timestamp");
+    expect(rules).toContain("request.resource.data.generations is map");
+    expect(rules).toContain("allow delete: if false;");
   });
 
   it("allows immutable owner-created schema-v2 snapshot memo documents", () => {
@@ -37,6 +39,11 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain("&& hasValidSnapshotMemoShape(uid, memoId)");
     expect(rules).toContain("request.resource.data.memo.id == memoId");
     expect(rules).toContain("allow update, delete: if false;");
+    const nestedMemoRules = rules.slice(
+      rules.indexOf("match /users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId}"),
+      rules.indexOf("match /users/{uid}/serverMemoDeletes/{memoId}")
+    );
+    expect(nestedMemoRules).not.toContain("get(");
   });
 
   it("allows owners to manage server memo delete markers", () => {
@@ -47,5 +54,17 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain("request.resource.data.memoId == memoId");
     expect(rules).toContain("allow create, update: if isOwner(uid)");
     expect(rules).toContain("allow delete: if isOwner(uid);");
+    expect(rules).toContain('"snapshotId"');
+    expect(rules).toContain("request.resource.data.snapshotId is string");
+  });
+
+  it("binds the active generation to a complete v2 snapshot without permitting legacy writes", () => {
+    const rules = readFileSync(path.resolve("firestore.rules"), "utf8");
+
+    expect(rules).toContain("match /users/{uid}/backupState/current");
+    expect(rules).toContain("function hasValidBackupActivationShape(uid)");
+    expect(rules).toContain("getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId))");
+    expect(rules).toContain(".data.state == \"complete\"");
+    expect(rules).not.toContain("hasValidLegacyBackupSnapshotShape");
   });
 });

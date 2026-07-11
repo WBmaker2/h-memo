@@ -5,15 +5,16 @@ import {
   type Memo,
 } from "@h-memo/memo-core";
 import {
-  collection,
-  doc,
-  getDocs,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  writeBatch,
+  collection as firestoreCollection,
+  deleteField as firestoreDeleteField,
+  doc as firestoreDoc,
+  getDoc as firestoreGetDoc,
+  getDocs as firestoreGetDocs,
+  runTransaction as firestoreRunTransaction,
+  serverTimestamp as firestoreServerTimestamp,
+  setDoc as firestoreSetDoc,
+  writeBatch as firestoreWriteBatch,
   type Firestore,
-  type QueryDocumentSnapshot,
 } from "firebase/firestore";
 
 export type MemoBackupPayload = BackupPayload;
@@ -21,6 +22,11 @@ export type StoredBackupSnapshot = {
   id: string;
   payload: MemoBackupPayload;
   savedAt: string;
+};
+export type StoredCurrentMemo = {
+  memo: Memo;
+  savedAt: string;
+  snapshotId: string;
 };
 export type BackedUpMemo = {
   memo: Memo;
@@ -32,16 +38,92 @@ export type BackedUpSnapshot = {
   payload: MemoBackupPayload;
 };
 
+type DriverDocumentSnapshot = {
+  id: string;
+  ref: unknown;
+  exists(): boolean;
+  data(): Record<string, unknown>;
+};
+type DriverQuerySnapshot = {
+  docs: DriverDocumentSnapshot[];
+  empty: boolean;
+};
+type DriverWriteBatch = {
+  set(ref: unknown, data: Record<string, unknown>, options?: { merge?: boolean }): void;
+  update(ref: unknown, data: Record<string, unknown>): void;
+  delete(ref: unknown): void;
+  commit(): Promise<void>;
+};
+type DriverTransaction = {
+  get(ref: unknown): Promise<DriverDocumentSnapshot>;
+  set(ref: unknown, data: Record<string, unknown>, options?: { merge?: boolean }): void;
+  update(ref: unknown, data: Record<string, unknown>): void;
+};
+
+export type FirestoreBackupDriver = {
+  collection(parent: unknown, ...segments: string[]): unknown;
+  doc(parent: unknown, ...segments: string[]): unknown;
+  id(ref: unknown): string;
+  getDoc(ref: unknown): Promise<DriverDocumentSnapshot>;
+  getDocs(ref: unknown): Promise<DriverQuerySnapshot>;
+  setDoc(ref: unknown, data: Record<string, unknown>, options?: { merge?: boolean }): Promise<void>;
+  writeBatch(firestore: unknown): DriverWriteBatch;
+  runTransaction<T>(
+    firestore: unknown,
+    updater: (transaction: DriverTransaction) => Promise<T>
+  ): Promise<T>;
+  serverTimestamp(): unknown;
+  deleteField(): unknown;
+};
+
+const firebaseDriver: FirestoreBackupDriver = {
+  collection: (parent, ...segments) =>
+    (firestoreCollection as unknown as (parent: unknown, ...paths: string[]) => unknown)(
+      parent,
+      ...segments
+    ),
+  doc: (parent, ...segments) =>
+    (firestoreDoc as unknown as (parent: unknown, ...paths: string[]) => unknown)(parent, ...segments),
+  id: (ref) => (ref as { id: string }).id,
+  getDoc: async (ref) => (await firestoreGetDoc(ref as never)) as unknown as DriverDocumentSnapshot,
+  getDocs: async (ref) => (await firestoreGetDocs(ref as never)) as unknown as DriverQuerySnapshot,
+  setDoc: async (ref, data, options) => {
+    await firestoreSetDoc(ref as never, data as never, options as never);
+  },
+  writeBatch: (firestore) => {
+    const batch = firestoreWriteBatch(firestore as Firestore);
+    return {
+      set: (ref, data, options) => batch.set(ref as never, data as never, options as never),
+      update: (ref, data) => batch.update(ref as never, data as never),
+      delete: (ref) => batch.delete(ref as never),
+      commit: () => batch.commit(),
+    };
+  },
+  runTransaction: (firestore, updater) =>
+    firestoreRunTransaction(firestore as Firestore, async (transaction) =>
+      updater({
+        get: async (ref) =>
+          (await transaction.get(ref as never)) as unknown as DriverDocumentSnapshot,
+        set: (ref, data, options) => transaction.set(ref as never, data as never, options as never),
+        update: (ref, data) => transaction.update(ref as never, data as never),
+      })
+    ),
+  serverTimestamp: () => firestoreServerTimestamp(),
+  deleteField: () => firestoreDeleteField(),
+};
+
 export interface BackupGateway {
   saveBackup(userId: string, payload: MemoBackupPayload): Promise<string>;
   loadLatestBackup(userId: string): Promise<unknown | null>;
   loadBackups(userId: string): Promise<unknown[]>;
-  loadCurrentMemos(userId: string): Promise<Memo[]>;
+  loadCurrentMemos(userId: string): Promise<StoredCurrentMemo[]>;
   loadDeletedMemoIds(userId: string): Promise<string[]>;
   deleteCurrentMemo(userId: string, memoId: string): Promise<number>;
 }
 
 const backupSnapshotsCollection = "backupSnapshots";
+const backupStateCollection = "backupState";
+const backupStateDocument = "current";
 const canonicalMemosCollection = "memos";
 const snapshotMemosCollection = "memos";
 const serverMemoDeletesCollection = "serverMemoDeletes";
@@ -130,34 +212,58 @@ function isValidMemo(memo: unknown, userId: string): memo is Memo {
   ).ok;
 }
 
+function activeSnapshotIdFromState(snapshot: DriverDocumentSnapshot): string | null {
+  if (!snapshot.exists()) {
+    return null;
+  }
+  const data = snapshot.data();
+  return typeof data.activeSnapshotId === "string" && data.activeSnapshotId !== ""
+    ? data.activeSnapshotId
+    : null;
+}
+
 export class FirestoreBackupGateway implements BackupGateway {
-  constructor(private readonly firestore: Firestore) {}
+  constructor(
+    private readonly firestore: Firestore,
+    private readonly driver: FirestoreBackupDriver = firebaseDriver
+  ) {}
 
   private snapshotCollection(userId: string) {
-    return collection(this.firestore, "users", userId, backupSnapshotsCollection);
+    return this.driver.collection(this.firestore, "users", userId, backupSnapshotsCollection);
+  }
+
+  private activationDoc(userId: string) {
+    return this.driver.doc(
+      this.firestore,
+      "users",
+      userId,
+      backupStateCollection,
+      backupStateDocument
+    );
   }
 
   private canonicalMemoCollection(userId: string) {
-    return collection(this.firestore, "users", userId, canonicalMemosCollection);
+    return this.driver.collection(this.firestore, "users", userId, canonicalMemosCollection);
   }
 
   private canonicalMemoDoc(userId: string, memoId: string) {
-    return doc(this.firestore, "users", userId, canonicalMemosCollection, memoId);
+    return this.driver.doc(this.firestore, "users", userId, canonicalMemosCollection, memoId);
   }
 
   private deletedMemoCollection(userId: string) {
-    return collection(this.firestore, "users", userId, serverMemoDeletesCollection);
+    return this.driver.collection(this.firestore, "users", userId, serverMemoDeletesCollection);
   }
 
   private deletedMemoDoc(userId: string, memoId: string) {
-    return doc(this.firestore, "users", userId, serverMemoDeletesCollection, memoId);
+    return this.driver.doc(this.firestore, "users", userId, serverMemoDeletesCollection, memoId);
   }
 
   async saveBackup(userId: string, payload: MemoBackupPayload): Promise<string> {
     const activeMemos = payload.memos.filter((memo) => memo.deletedAt === null);
-    const snapshotRef = doc(this.snapshotCollection(userId));
+    const snapshotRef = this.driver.doc(this.snapshotCollection(userId));
+    const snapshotId = this.driver.id(snapshotRef);
 
-    await setDoc(snapshotRef, {
+    await this.driver.setDoc(snapshotRef, {
       schemaVersion: 2,
       userId,
       createdAt: payload.createdAt,
@@ -166,35 +272,45 @@ export class FirestoreBackupGateway implements BackupGateway {
     });
 
     for (const memoChunk of chunkMemos(activeMemos)) {
-      const memoBatch = writeBatch(this.firestore);
+      const memoBatch = this.driver.writeBatch(this.firestore);
       for (const memo of memoChunk) {
-        memoBatch.set(this.canonicalMemoDoc(userId, memo.id), {
-          userId,
-          memoId: memo.id,
-          memo,
-          savedAt: serverTimestamp(),
-        });
-        memoBatch.set(doc(snapshotRef, snapshotMemosCollection, memo.id), {
+        memoBatch.set(
+          this.canonicalMemoDoc(userId, memo.id),
+          {
+            userId,
+            memoId: memo.id,
+            generations: {
+              [snapshotId]: {
+                snapshotId,
+                memo,
+                savedAt: this.driver.serverTimestamp(),
+              },
+            },
+          },
+          { merge: true }
+        );
+        memoBatch.set(this.driver.doc(snapshotRef, snapshotMemosCollection, memo.id), {
           userId,
           memoId: memo.id,
           memo,
         });
       }
       await memoBatch.commit();
-
-      const tombstoneBatch = writeBatch(this.firestore);
-      for (const memo of memoChunk) {
-        tombstoneBatch.delete(this.deletedMemoDoc(userId, memo.id));
-      }
-      await tombstoneBatch.commit();
     }
 
-    await updateDoc(snapshotRef, {
+    const activationBatch = this.driver.writeBatch(this.firestore);
+    activationBatch.update(snapshotRef, {
       state: "complete",
-      savedAt: serverTimestamp(),
+      savedAt: this.driver.serverTimestamp(),
     });
+    activationBatch.set(this.activationDoc(userId), {
+      userId,
+      activeSnapshotId: snapshotId,
+      activatedAt: this.driver.serverTimestamp(),
+    });
+    await activationBatch.commit();
 
-    return snapshotRef.path;
+    return `${(snapshotRef as { path?: string }).path ?? `users/${userId}/${backupSnapshotsCollection}/${snapshotId}`}`;
   }
 
   async loadLatestBackup(userId: string): Promise<unknown | null> {
@@ -202,7 +318,7 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   async loadBackups(userId: string): Promise<unknown[]> {
-    const snapshotDocs = await getDocs(this.snapshotCollection(userId));
+    const snapshotDocs = await this.driver.getDocs(this.snapshotCollection(userId));
     const storedSnapshots = await Promise.all(
       snapshotDocs.docs.map((snapshot) => this.loadStoredSnapshot(snapshot, userId))
     );
@@ -214,7 +330,7 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   private async loadStoredSnapshot(
-    snapshot: QueryDocumentSnapshot,
+    snapshot: DriverDocumentSnapshot,
     userId: string
   ): Promise<StoredBackupSnapshot | null> {
     const data = snapshot.data();
@@ -235,12 +351,13 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   private async loadCompleteSchemaV2Snapshot(
-    snapshot: QueryDocumentSnapshot,
+    snapshot: DriverDocumentSnapshot,
     userId: string
   ): Promise<StoredBackupSnapshot | null> {
     const data = snapshot.data();
     const savedAt = normalizeFirestoreTimestamp(data.savedAt);
     if (
+      data.schemaVersion !== 2 ||
       data.state !== "complete" ||
       data.userId !== userId ||
       typeof data.createdAt !== "string" ||
@@ -252,12 +369,26 @@ export class FirestoreBackupGateway implements BackupGateway {
       return null;
     }
 
-    const memoDocs = await getDocs(collection(snapshot.ref, snapshotMemosCollection));
-    const memos = memoDocs.docs
-      .map((memoSnapshot) => memoSnapshot.data().memo)
-      .filter((memo): memo is Memo => isValidMemo(memo, userId));
-    if (memos.length !== data.memoCount) {
+    const memoDocs = await this.driver.getDocs(
+      this.driver.collection(snapshot.ref, snapshotMemosCollection)
+    );
+    if (memoDocs.docs.length !== data.memoCount) {
       return null;
+    }
+
+    const memos: Memo[] = [];
+    for (const memoSnapshot of memoDocs.docs) {
+      const wrapper = memoSnapshot.data();
+      const memo = wrapper.memo;
+      if (
+        wrapper.userId !== userId ||
+        wrapper.memoId !== memoSnapshot.id ||
+        !isValidMemo(memo, userId) ||
+        memo.id !== memoSnapshot.id
+      ) {
+        return null;
+      }
+      memos.push(memo);
     }
 
     const parsed = validateBackupPayload(
@@ -280,33 +411,83 @@ export class FirestoreBackupGateway implements BackupGateway {
     };
   }
 
-  async loadCurrentMemos(userId: string): Promise<Memo[]> {
-    const memoDocs = await getDocs(this.canonicalMemoCollection(userId));
-    return memoDocs.docs
-      .map((snapshot) => snapshot.data().memo)
-      .filter((memo): memo is Memo => isValidMemo(memo, userId));
+  async loadCurrentMemos(userId: string): Promise<StoredCurrentMemo[]> {
+    const activeSnapshotId = activeSnapshotIdFromState(
+      await this.driver.getDoc(this.activationDoc(userId))
+    );
+    if (!activeSnapshotId) {
+      return [];
+    }
+
+    const memoDocs = await this.driver.getDocs(this.canonicalMemoCollection(userId));
+    const currentMemos: StoredCurrentMemo[] = [];
+    for (const memoSnapshot of memoDocs.docs) {
+      const data = memoSnapshot.data();
+      const generations = isRecord(data.generations) ? data.generations : null;
+      const generation: Record<string, unknown> | null = generations && isRecord(generations[activeSnapshotId])
+        ? generations[activeSnapshotId]
+        : null;
+      const memo = generation?.memo;
+      const savedAt = normalizeFirestoreTimestamp(generation?.savedAt);
+      if (
+        data.userId !== userId ||
+        data.memoId !== memoSnapshot.id ||
+        generation?.snapshotId !== activeSnapshotId ||
+        !isValidMemo(memo, userId) ||
+        memo.id !== memoSnapshot.id ||
+        savedAt === null
+      ) {
+        continue;
+      }
+      currentMemos.push({ memo, savedAt, snapshotId: activeSnapshotId });
+    }
+    return currentMemos;
   }
 
   async loadDeletedMemoIds(userId: string): Promise<string[]> {
-    const querySnapshot = await getDocs(this.deletedMemoCollection(userId));
+    const activeSnapshotId = activeSnapshotIdFromState(
+      await this.driver.getDoc(this.activationDoc(userId))
+    );
+    const querySnapshot = await this.driver.getDocs(this.deletedMemoCollection(userId));
     return querySnapshot.docs
-      .map((snapshot) => {
+      .flatMap((snapshot) => {
         const data = snapshot.data();
-        return typeof data.memoId === "string" ? data.memoId : snapshot.id;
-      })
-      .filter((memoId) => memoId.trim() !== "");
+        const memoId = typeof data.memoId === "string" ? data.memoId : snapshot.id;
+        const tombstoneSnapshotId = typeof data.snapshotId === "string" ? data.snapshotId : null;
+        if (
+          memoId.trim() === "" ||
+          (tombstoneSnapshotId !== null && tombstoneSnapshotId !== activeSnapshotId)
+        ) {
+          return [];
+        }
+        return [memoId];
+      });
   }
 
   async deleteCurrentMemo(userId: string, memoId: string): Promise<number> {
-    const batch = writeBatch(this.firestore);
-    batch.set(this.deletedMemoDoc(userId, memoId), {
-      userId,
-      memoId,
-      deletedAt: serverTimestamp(),
+    return this.driver.runTransaction(this.firestore, async (transaction) => {
+      const activeSnapshotId = activeSnapshotIdFromState(
+        await transaction.get(this.activationDoc(userId))
+      );
+      if (!activeSnapshotId) {
+        return 0;
+      }
+
+      const canonicalMemoRef = this.canonicalMemoDoc(userId, memoId);
+      const canonicalMemo = await transaction.get(canonicalMemoRef);
+      transaction.set(this.deletedMemoDoc(userId, memoId), {
+        userId,
+        memoId,
+        snapshotId: activeSnapshotId,
+        deletedAt: this.driver.serverTimestamp(),
+      });
+      if (canonicalMemo.exists()) {
+        transaction.update(canonicalMemoRef, {
+          [`generations.${activeSnapshotId}`]: this.driver.deleteField(),
+        });
+      }
+      return 1;
     });
-    batch.delete(this.canonicalMemoDoc(userId, memoId));
-    await batch.commit();
-    return 1;
   }
 }
 
@@ -372,12 +553,12 @@ export async function listBackedUpMemos(
   ]);
 
   return memos
-    .filter((memo) => memo.deletedAt === null && !deletedMemoIds.has(memo.id))
-    .map((memo) => ({
-      memo,
-      backupCreatedAt: memo.updatedAt,
+    .filter((entry) => entry.memo.deletedAt === null && !deletedMemoIds.has(entry.memo.id))
+    .map((entry) => ({
+      memo: entry.memo,
+      backupCreatedAt: entry.savedAt,
     }))
-    .sort((a, b) => b.memo.updatedAt.localeCompare(a.memo.updatedAt));
+    .sort((a, b) => b.backupCreatedAt.localeCompare(a.backupCreatedAt));
 }
 
 export async function listBackupSnapshots(
