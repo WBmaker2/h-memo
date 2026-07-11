@@ -20,7 +20,9 @@ export type WindowBounds = {
 
 export type MemoWindowClaim = {
   claimed: boolean;
+  shouldCreate: boolean;
   windowLabel: string;
+  claimToken: string | null;
 };
 
 export function startWindowDrag() {
@@ -54,16 +56,30 @@ async function claimMemoWindow(memoId: string, windowLabel: string) {
   return invoke<MemoWindowClaim>("claim_memo_window", { memoId, windowLabel });
 }
 
-async function releaseMemoWindow(memoId: string, windowLabel: string) {
-  await invoke("release_memo_window", { memoId, windowLabel });
+async function completeMemoWindow(memoId: string, windowLabel: string, claimToken: string) {
+  await invoke("complete_memo_window", { memoId, windowLabel, claimToken });
 }
 
-export function claimCurrentMemoWindow(memoId: string) {
-  return claimMemoWindow(memoId, getCurrentWindow().label);
+async function releaseMemoWindow(memoId: string, windowLabel: string, claimToken: string) {
+  await invoke("release_memo_window", { memoId, windowLabel, claimToken });
 }
 
-export function releaseCurrentMemoWindow(memoId: string) {
-  return releaseMemoWindow(memoId, getCurrentWindow().label);
+export async function claimCurrentMemoWindow(memoId: string) {
+  const windowLabel = getCurrentWindow().label;
+  const claim = await claimMemoWindow(memoId, windowLabel);
+  if (!claim.claimed || !claim.shouldCreate || !claim.claimToken) {
+    return claim;
+  }
+
+  await completeMemoWindow(memoId, windowLabel, claim.claimToken);
+  return {
+    ...claim,
+    shouldCreate: false,
+  };
+}
+
+export function releaseCurrentMemoWindow(memoId: string, claimToken: string) {
+  return releaseMemoWindow(memoId, getCurrentWindow().label, claimToken);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -123,14 +139,21 @@ export async function openMemoWindow(memo: Memo) {
   }
 
   const claim = await claimMemoWindow(memo.id, label);
-  if (!claim.claimed) {
-    const owner = await WebviewWindow.getByLabel(claim.windowLabel);
-    if (owner) {
-      await focusMemoWindow(owner);
+  if (!claim.shouldCreate) {
+    if (!claim.claimed) {
+      const owner = await WebviewWindow.getByLabel(claim.windowLabel);
+      if (owner) {
+        await focusMemoWindow(owner);
+      }
     }
     return;
   }
 
+  if (!claim.claimToken) {
+    throw new Error("Memo window reservation did not include a claim token.");
+  }
+
+  const claimToken = claim.claimToken;
   const safeBounds =
     memo.windowState.x !== null && memo.windowState.y !== null
       ? await resolveVisibleWindowBounds({
@@ -156,12 +179,14 @@ export async function openMemoWindow(memo: Memo) {
     });
 
     await new Promise<void>((resolve, reject) => {
-      void memoWindow.once("tauri://created", () => resolve());
+      void memoWindow.once("tauri://created", () => {
+        void completeMemoWindow(memo.id, label, claimToken).then(resolve, reject);
+      });
       void memoWindow.once("tauri://error", (event) => reject(event.payload));
     });
   } catch (error) {
     try {
-      await releaseMemoWindow(memo.id, label);
+      await releaseMemoWindow(memo.id, label, claimToken);
     } catch {
       // Preserve the window-construction failure as the actionable error.
     }

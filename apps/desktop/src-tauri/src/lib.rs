@@ -54,13 +54,27 @@ struct MemoRecord {
 struct DatabaseState(Mutex<Connection>);
 
 #[derive(Default)]
-struct MemoWindowRegistry(Mutex<HashMap<String, String>>);
+struct MemoWindowRegistry(Mutex<HashMap<String, MemoWindowOwner>>);
+
+#[derive(Debug, PartialEq)]
+enum MemoWindowOwnerState {
+  Pending,
+  Live,
+}
+
+struct MemoWindowOwner {
+  window_label: String,
+  claim_token: String,
+  state: MemoWindowOwnerState,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MemoWindowClaim {
   claimed: bool,
+  should_create: bool,
   window_label: String,
+  claim_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,24 +144,39 @@ fn claim_memo_window(
   memo_id: String,
   window_label: String,
 ) -> Result<MemoWindowClaim, String> {
-  loop {
-    let claim = {
-      let mut owners = registry
-        .0
-        .lock()
-        .map_err(|_| "memo window registry lock is unavailable".to_string())?;
-      owners.retain(|_, owner| app.get_webview_window(owner).is_some());
-      claim_memo_window_owner_locked(&mut owners, &memo_id, &window_label)
-    };
+  let claim = {
+    let mut owners = registry
+      .0
+      .lock()
+      .map_err(|_| "memo window registry lock is unavailable".to_string())?;
+    owners.retain(|_, owner| {
+      owner.state == MemoWindowOwnerState::Pending
+        || app.get_webview_window(&owner.window_label).is_some()
+    });
+    claim_memo_window_owner_locked(&mut owners, &memo_id, &window_label, &random_urlsafe(16))
+  };
 
-    if claim.claimed {
-      return Ok(claim);
-    }
-
+  if !claim.claimed {
     if let Some(window) = app.get_webview_window(&claim.window_label) {
       focus_memo_window(&window)?;
-      return Ok(claim);
     }
+    return Ok(claim);
+  }
+
+  Ok(claim)
+}
+
+#[tauri::command]
+fn complete_memo_window(
+  registry: State<'_, MemoWindowRegistry>,
+  memo_id: String,
+  window_label: String,
+  claim_token: String,
+) -> Result<(), String> {
+  if complete_memo_window_owner(&registry, &memo_id, &window_label, &claim_token) {
+    Ok(())
+  } else {
+    Err("memo window reservation is no longer pending".to_string())
   }
 }
 
@@ -156,8 +185,9 @@ fn release_memo_window(
   registry: State<'_, MemoWindowRegistry>,
   memo_id: String,
   window_label: String,
+  claim_token: String,
 ) -> Result<(), String> {
-  release_memo_window_owner(&registry, &memo_id, &window_label);
+  release_memo_window_owner(&registry, &memo_id, &window_label, &claim_token);
   Ok(())
 }
 
@@ -582,40 +612,96 @@ fn claim_memo_window_owner(
   registry: &MemoWindowRegistry,
   memo_id: &str,
   window_label: &str,
+  claim_token: &str,
 ) -> MemoWindowClaim {
   let mut owners = registry
     .0
     .lock()
     .expect("memo window registry lock should not be poisoned");
-  claim_memo_window_owner_locked(&mut owners, memo_id, window_label)
+  claim_memo_window_owner_locked(&mut owners, memo_id, window_label, claim_token)
 }
 
 fn claim_memo_window_owner_locked(
-  owners: &mut HashMap<String, String>,
+  owners: &mut HashMap<String, MemoWindowOwner>,
   memo_id: &str,
   window_label: &str,
+  claim_token: &str,
 ) -> MemoWindowClaim {
   match owners.get(memo_id) {
-    Some(owner) if owner != window_label => MemoWindowClaim {
+    Some(owner) if owner.window_label != window_label => MemoWindowClaim {
       claimed: false,
-      window_label: owner.clone(),
+      should_create: false,
+      window_label: owner.window_label.clone(),
+      claim_token: None,
     },
-    _ => {
-      owners.insert(memo_id.to_string(), window_label.to_string());
+    Some(owner) if owner.state == MemoWindowOwnerState::Pending => MemoWindowClaim {
+      claimed: true,
+      should_create: false,
+      window_label: owner.window_label.clone(),
+      claim_token: None,
+    },
+    Some(owner) => MemoWindowClaim {
+      claimed: true,
+      should_create: false,
+      window_label: owner.window_label.clone(),
+      claim_token: Some(owner.claim_token.clone()),
+    },
+    None => {
+      owners.insert(
+        memo_id.to_string(),
+        MemoWindowOwner {
+          window_label: window_label.to_string(),
+          claim_token: claim_token.to_string(),
+          state: MemoWindowOwnerState::Pending,
+        },
+      );
       MemoWindowClaim {
         claimed: true,
+        should_create: true,
         window_label: window_label.to_string(),
+        claim_token: Some(claim_token.to_string()),
       }
     }
   }
 }
 
-fn release_memo_window_owner(registry: &MemoWindowRegistry, memo_id: &str, window_label: &str) {
+fn complete_memo_window_owner(
+  registry: &MemoWindowRegistry,
+  memo_id: &str,
+  window_label: &str,
+  claim_token: &str,
+) -> bool {
   let mut owners = registry
     .0
     .lock()
     .expect("memo window registry lock should not be poisoned");
-  if owners.get(memo_id).is_some_and(|owner| owner == window_label) {
+  let Some(owner) = owners.get_mut(memo_id) else {
+    return false;
+  };
+  if owner.window_label != window_label
+    || owner.claim_token != claim_token
+    || owner.state != MemoWindowOwnerState::Pending
+  {
+    return false;
+  }
+
+  owner.state = MemoWindowOwnerState::Live;
+  true
+}
+
+fn release_memo_window_owner(
+  registry: &MemoWindowRegistry,
+  memo_id: &str,
+  window_label: &str,
+  claim_token: &str,
+) {
+  let mut owners = registry
+    .0
+    .lock()
+    .expect("memo window registry lock should not be poisoned");
+  if owners.get(memo_id).is_some_and(|owner| {
+    owner.window_label == window_label && owner.claim_token == claim_token
+  }) {
     owners.remove(memo_id);
   }
 }
@@ -722,6 +808,7 @@ pub fn run() {
       list_memos,
       save_memo,
       claim_memo_window,
+      complete_memo_window,
       release_memo_window,
       show_main_window,
       quit_app,
@@ -787,49 +874,71 @@ mod tests {
   }
 
   #[test]
-  fn window_registry_claims_an_unowned_memo() {
+  fn window_registry_creates_a_pending_reservation_for_an_unowned_memo() {
     let registry = MemoWindowRegistry::default();
 
-    let claim = claim_memo_window_owner(&registry, "memo-1", "main");
+    let claim = claim_memo_window_owner(&registry, "memo-1", "main", "token-1");
 
     assert!(claim.claimed);
+    assert!(claim.should_create);
     assert_eq!(claim.window_label, "main");
+    assert_eq!(claim.claim_token.as_deref(), Some("token-1"));
   }
 
   #[test]
-  fn window_registry_allows_the_same_owner_to_reclaim_a_memo() {
+  fn window_registry_prevents_a_second_pending_owner_from_creating_the_same_label() {
     let registry = MemoWindowRegistry::default();
-    claim_memo_window_owner(&registry, "memo-1", "main");
+    let first = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1", "token-1");
+    let second = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1", "token-2");
 
-    let claim = claim_memo_window_owner(&registry, "memo-1", "main");
+    assert!(first.should_create);
+    assert!(second.claimed);
+    assert!(!second.should_create);
+    assert_eq!(second.window_label, "memo_memo-1");
+    assert_eq!(second.claim_token, None);
+  }
+
+  #[test]
+  fn window_registry_transitions_a_matching_pending_token_to_live() {
+    let registry = MemoWindowRegistry::default();
+    claim_memo_window_owner(&registry, "memo-1", "main", "token-1");
+
+    complete_memo_window_owner(&registry, "memo-1", "main", "token-1");
+    let claim = claim_memo_window_owner(&registry, "memo-1", "main", "token-2");
 
     assert!(claim.claimed);
+    assert!(!claim.should_create);
     assert_eq!(claim.window_label, "main");
+    assert_eq!(claim.claim_token.as_deref(), Some("token-1"));
   }
 
   #[test]
   fn window_registry_rejects_a_different_owner() {
     let registry = MemoWindowRegistry::default();
-    claim_memo_window_owner(&registry, "memo-1", "main");
+    claim_memo_window_owner(&registry, "memo-1", "main", "token-1");
 
-    let claim = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1");
+    let claim = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1", "token-2");
 
     assert!(!claim.claimed);
+    assert!(!claim.should_create);
     assert_eq!(claim.window_label, "main");
+    assert_eq!(claim.claim_token, None);
   }
 
   #[test]
-  fn window_registry_releases_only_its_current_owner() {
+  fn window_registry_releases_only_the_matching_pending_token() {
     let registry = MemoWindowRegistry::default();
-    claim_memo_window_owner(&registry, "memo-1", "main");
+    claim_memo_window_owner(&registry, "memo-1", "memo_memo-1", "token-1");
 
-    release_memo_window_owner(&registry, "memo-1", "memo_memo-1");
-    let rejected = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1");
-    release_memo_window_owner(&registry, "memo-1", "main");
-    let claimed = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1");
+    release_memo_window_owner(&registry, "memo-1", "memo_memo-1", "token-2");
+    let blocked = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1", "token-3");
+    release_memo_window_owner(&registry, "memo-1", "memo_memo-1", "token-1");
+    let claimed = claim_memo_window_owner(&registry, "memo-1", "memo_memo-1", "token-4");
 
-    assert!(!rejected.claimed);
+    assert!(!blocked.should_create);
     assert!(claimed.claimed);
+    assert!(claimed.should_create);
+    assert_eq!(claimed.claim_token.as_deref(), Some("token-4"));
   }
 
   #[test]

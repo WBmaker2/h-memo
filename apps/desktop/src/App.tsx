@@ -83,6 +83,10 @@ type SyncServices = {
   firestore: Firestore;
   gateway: FirestoreBackupGateway;
 };
+type OwnedMemoWindow = {
+  memoId: string;
+  claimToken: string;
+};
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
@@ -145,6 +149,7 @@ export function App() {
   const repository = useMemo(() => createRepository(isTauri), [isTauri]);
   const [memos, setMemos] = useState<Memo[]>([]);
   const [activeMemoId, setActiveMemoId] = useState<string | null>(requestedMemoId);
+  const [ownedMemoId, setOwnedMemoId] = useState<string | null>(null);
   const [startupEnabled, setStartupEnabled] = useState(false);
   const [syncServicesInitialized, setSyncServicesInitialized] = useState(false);
   const buildFirebaseClientEnv = useMemo(() => getFirebaseClientEnv(), []);
@@ -201,6 +206,9 @@ export function App() {
   const [hasLoadedMemos, setHasLoadedMemos] = useState(false);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
+  const ownershipQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const ownershipGenerationRef = useRef(0);
+  const ownedMemoWindowRef = useRef<OwnedMemoWindow | null>(null);
   const memosRef = useRef<Memo[]>([]);
   const restoredMemoIdRef = useRef<string | null>(null);
   const boundsPersistTimerRef = useRef<number | null>(null);
@@ -549,8 +557,11 @@ export function App() {
     if (!activeMemoId) {
       return [];
     }
+    if (activeMemoId !== ownedMemoId) {
+      return [];
+    }
     return visibleMemos.filter((memo) => memo.id === activeMemoId);
-  }, [activeMemoId, isTauri, visibleMemos]);
+  }, [activeMemoId, isTauri, ownedMemoId, visibleMemos]);
 
   useEffect(() => {
     if (!isTauri || !hasLoadedMemos) {
@@ -564,41 +575,71 @@ export function App() {
     setActiveMemoId(visibleMemos[0]?.id ?? null);
   }, [activeMemoId, hasLoadedMemos, isTauri, visibleMemos]);
 
+  const queueMemoWindowOwnership = useCallback((memoId: string | null, generation: number) => {
+    const transition = async () => {
+      const previous = ownedMemoWindowRef.current;
+      if (previous && previous.memoId !== memoId) {
+        await releaseCurrentMemoWindow(previous.memoId, previous.claimToken);
+        if (ownedMemoWindowRef.current === previous) {
+          ownedMemoWindowRef.current = null;
+          setOwnedMemoId(null);
+        }
+      }
+
+      if (!memoId) {
+        return;
+      }
+
+      const currentOwner = ownedMemoWindowRef.current;
+      if (currentOwner?.memoId === memoId) {
+        if (generation === ownershipGenerationRef.current) {
+          setOwnedMemoId(memoId);
+        }
+        return;
+      }
+
+      const claim = await claimCurrentMemoWindow(memoId);
+      if (!claim.claimed || !claim.claimToken) {
+        if (generation === ownershipGenerationRef.current) {
+          setOwnedMemoId(null);
+        }
+        return;
+      }
+
+      if (generation !== ownershipGenerationRef.current) {
+        await releaseCurrentMemoWindow(memoId, claim.claimToken);
+        return;
+      }
+
+      ownedMemoWindowRef.current = { memoId, claimToken: claim.claimToken };
+      setOwnedMemoId(memoId);
+    };
+
+    const queued = ownershipQueueRef.current.then(transition, transition);
+    ownershipQueueRef.current = queued.catch((error) => {
+      setBackupStatus(`메모 창 소유권 처리 실패: ${getErrorMessage(error)}`);
+    });
+  }, []);
+
   useEffect(() => {
-    if (!isTauri || !hasLoadedMemos || !activeMemoId) {
+    if (!isTauri || !hasLoadedMemos) {
       return;
     }
 
-    let isCurrent = true;
-    let didClaim = false;
-    let released = false;
-    const memoId = activeMemoId;
-    const release = () => {
-      if (!didClaim || released) {
-        return;
-      }
-      released = true;
-      void releaseCurrentMemoWindow(memoId).catch((error) => {
-        setBackupStatus(`메모 창 소유권 해제 실패: ${getErrorMessage(error)}`);
-      });
-    };
+    const generation = ++ownershipGenerationRef.current;
+    queueMemoWindowOwnership(activeMemoId, generation);
+  }, [activeMemoId, hasLoadedMemos, isTauri, queueMemoWindowOwnership]);
 
-    void claimCurrentMemoWindow(memoId)
-      .then((claim) => {
-        didClaim = claim.claimed;
-        if (!isCurrent) {
-          release();
-        }
-      })
-      .catch((error) => {
-        setBackupStatus(`메모 창 소유권 확인 실패: ${getErrorMessage(error)}`);
-      });
+  useEffect(() => {
+    if (!isTauri) {
+      return;
+    }
 
     return () => {
-      isCurrent = false;
-      release();
+      const generation = ++ownershipGenerationRef.current;
+      queueMemoWindowOwnership(null, generation);
     };
-  }, [activeMemoId, hasLoadedMemos, isTauri]);
+  }, [isTauri, queueMemoWindowOwnership]);
 
   useEffect(() => {
     if (!isTauri || requestedMemoId || !hasLoadedMemos || openedRestoredMemoWindowsRef.current) {

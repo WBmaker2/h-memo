@@ -333,7 +333,8 @@ vi.mock("./adapters/tauriWindow", () => ({
   closeMemoWindow: (memoId: string) => mockCloseMemoWindow(memoId),
   openMemoWindow: (memo: unknown) => mockOpenMemoWindow(memo),
   claimCurrentMemoWindow: (memoId: string) => mockClaimCurrentMemoWindow(memoId),
-  releaseCurrentMemoWindow: (memoId: string) => mockReleaseCurrentMemoWindow(memoId),
+  releaseCurrentMemoWindow: (memoId: string, claimToken: string) =>
+    mockReleaseCurrentMemoWindow(memoId, claimToken),
   readWindowBounds: () => mockReadWindowBounds(),
   restoreWindowBounds: (bounds: unknown) => mockRestoreWindowBounds(bounds),
   setWindowHeight: (height: number) => mockSetWindowHeight(height),
@@ -500,7 +501,12 @@ beforeEach(() => {
   mockCloseMemoWindow.mockResolvedValue(undefined);
   mockOpenMemoWindow.mockResolvedValue(undefined);
   mockReadWindowBounds.mockImplementation(async () => tauriWindowState.bounds);
-  mockClaimCurrentMemoWindow.mockResolvedValue({ claimed: true, windowLabel: "main" });
+  mockClaimCurrentMemoWindow.mockResolvedValue({
+    claimed: true,
+    shouldCreate: false,
+    windowLabel: "main",
+    claimToken: "token-default",
+  });
   mockReleaseCurrentMemoWindow.mockResolvedValue(undefined);
   mockRestoreWindowBounds.mockResolvedValue(undefined);
   mockSetWindowHeight.mockResolvedValue(undefined);
@@ -553,6 +559,7 @@ beforeEach(() => {
 async function createMemoFromAppMenu(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByLabelText("앱 메뉴"));
   await user.click(screen.getByRole("button", { name: "새 메모" }));
+  await screen.findByLabelText("메모 내용");
 }
 
 describe("desktop App", () => {
@@ -644,14 +651,145 @@ describe("desktop App", () => {
     });
 
     await waitFor(() => {
-      expect(mockReleaseCurrentMemoWindow).toHaveBeenCalledWith("memo-first");
+      expect(mockReleaseCurrentMemoWindow).toHaveBeenCalledWith("memo-first", "token-default");
       expect(mockClaimCurrentMemoWindow).toHaveBeenCalledWith("memo-second");
     });
 
     unmount();
 
     await waitFor(() => {
-      expect(mockReleaseCurrentMemoWindow).toHaveBeenCalledWith("memo-second");
+      expect(mockReleaseCurrentMemoWindow).toHaveBeenCalledWith("memo-second", "token-default");
+    });
+  });
+
+  it("serializes rapid A to B to A ownership transitions by completion order", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const memoA = createMemo({
+      id: "memo-a",
+      now: "2026-07-11T09:00:00.000Z",
+      plainText: "A 메모",
+    });
+    const memoB = createMemo({
+      id: "memo-b",
+      now: "2026-07-11T09:01:00.000Z",
+      plainText: "B 메모",
+    });
+    const firstClaim = deferred<{
+      claimed: boolean;
+      shouldCreate: boolean;
+      windowLabel: string;
+      claimToken: string | null;
+    }>();
+    const secondClaim = deferred<{
+      claimed: boolean;
+      shouldCreate: boolean;
+      windowLabel: string;
+      claimToken: string | null;
+    }>();
+    const finalClaim = deferred<{
+      claimed: boolean;
+      shouldCreate: boolean;
+      windowLabel: string;
+      claimToken: string | null;
+    }>();
+    const releaseA = deferred<void>();
+    const releaseB = deferred<void>();
+    let aClaims = 0;
+    tauriRepositoryState.set(memoA.id, memoA);
+    tauriRepositoryState.set(memoB.id, memoB);
+    mockClaimCurrentMemoWindow.mockImplementation((memoId: string) => {
+      if (memoId === memoA.id) {
+        aClaims += 1;
+        return aClaims === 1 ? firstClaim.promise : finalClaim.promise;
+      }
+      return secondClaim.promise;
+    });
+    mockReleaseCurrentMemoWindow.mockImplementation((memoId: string) => {
+      if (memoId === memoA.id) {
+        return releaseA.promise;
+      }
+      if (memoId === memoB.id) {
+        return releaseB.promise;
+      }
+      return Promise.resolve();
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(mockClaimCurrentMemoWindow).toHaveBeenCalledWith(memoA.id));
+    firstClaim.resolve({
+      claimed: true,
+      shouldCreate: false,
+      windowLabel: "main",
+      claimToken: "token-a-1",
+    });
+    await waitFor(() => expect(screen.getByDisplayValue("A 메모")).toBeInTheDocument());
+
+    tauriRepositoryState.set(memoA.id, { ...memoA, deletedAt: "2026-07-11T09:02:00.000Z" });
+    await act(async () => {
+      tauriEventState.memoStoreListener?.({ deletedMemoId: memoA.id });
+    });
+    await waitFor(() => {
+      expect(mockReleaseCurrentMemoWindow).toHaveBeenCalledWith(memoA.id, "token-a-1");
+    });
+    expect(mockClaimCurrentMemoWindow).not.toHaveBeenCalledWith(memoB.id);
+
+    releaseA.resolve();
+    await waitFor(() => expect(mockClaimCurrentMemoWindow).toHaveBeenCalledWith(memoB.id));
+
+    tauriRepositoryState.set(memoA.id, memoA);
+    tauriRepositoryState.set(memoB.id, { ...memoB, deletedAt: "2026-07-11T09:03:00.000Z" });
+    await act(async () => {
+      tauriEventState.memoStoreListener?.({ deletedMemoId: memoB.id });
+    });
+    expect(mockClaimCurrentMemoWindow).toHaveBeenCalledTimes(2);
+
+    secondClaim.resolve({
+      claimed: true,
+      shouldCreate: false,
+      windowLabel: "main",
+      claimToken: "token-b-1",
+    });
+    await waitFor(() => {
+      expect(mockReleaseCurrentMemoWindow).toHaveBeenCalledWith(memoB.id, "token-b-1");
+    });
+    expect(mockClaimCurrentMemoWindow).toHaveBeenCalledTimes(2);
+
+    releaseB.resolve();
+    await waitFor(() => {
+      expect(mockClaimCurrentMemoWindow).toHaveBeenCalledTimes(3);
+      expect(mockClaimCurrentMemoWindow).toHaveBeenLastCalledWith(memoA.id);
+    });
+    finalClaim.resolve({
+      claimed: true,
+      shouldCreate: false,
+      windowLabel: "main",
+      claimToken: "token-a-2",
+    });
+  });
+
+  it("renders no memo when the current window claim is rejected", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const memo = createMemo({
+      id: "memo-owned-elsewhere",
+      now: "2026-07-11T09:00:00.000Z",
+      plainText: "다른 창 소유 메모",
+    });
+    tauriRepositoryState.set(memo.id, memo);
+    mockClaimCurrentMemoWindow.mockResolvedValue({
+      claimed: false,
+      shouldCreate: false,
+      windowLabel: "memo_memo-owned-elsewhere",
+      claimToken: null,
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mockClaimCurrentMemoWindow).toHaveBeenCalledWith(memo.id);
+      expect(screen.queryByLabelText("메모 내용")).not.toBeInTheDocument();
     });
   });
 
