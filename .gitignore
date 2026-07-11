@@ -3,6 +3,7 @@ dist/
 dist-ssr/
 coverage/
 .playwright-mcp/
+.worktrees/
 h-memo-firebase-ready-menu.png
 .env
 .env.local
