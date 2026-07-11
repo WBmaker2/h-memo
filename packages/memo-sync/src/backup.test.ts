@@ -156,15 +156,17 @@ class FakeFirestoreDriver {
         this.usedTransactionReadHook = true;
         await this.onFirstTransactionRead();
       }
-      const conflicted = [...reads].some(
-        ([path, version]) => (this.versions.get(path) ?? 0) !== version
-      );
-      if (conflicted) {
+      const hasConflict = () =>
+        [...reads].some(([path, version]) => (this.versions.get(path) ?? 0) !== version);
+      if (hasConflict()) {
+        continue;
+      }
+      await this.beforeTransactionCommit?.(operations);
+      if (hasConflict()) {
         continue;
       }
       this.transactionCommitCount += 1;
       this.transactionOperationCounts.push(operations.length);
-      await this.beforeTransactionCommit?.(operations);
       if (this.failTransactionCommit === this.transactionCommitCount) {
         throw new Error(`forced transaction failure ${this.transactionCommitCount}`);
       }
@@ -1047,5 +1049,70 @@ describe("FirestoreBackupGateway driver contract", () => {
     expect((await gateway.loadCurrentMemos("user-1")).map((entry) => entry.memo.id)).toEqual([
       priorMemo.id,
     ]);
+  });
+
+  it("retries staging after a concurrent deletion without restoring its stale active reference", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "memo-stale-read", now: "2026-05-13T09:00:00.000Z" });
+    const priorPath = await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memos: [memo],
+    });
+    let deletedDuringStaging = false;
+    driver.beforeTransactionCommit = async (operations) => {
+      const stagesMemo = operations.some(
+        (operation) =>
+          operation.ref.path === "users/user-1/backupSnapshots/2/memos/memo-stale-read"
+      );
+      if (!stagesMemo || deletedDuringStaging) {
+        return;
+      }
+
+      deletedDuringStaging = true;
+      await gateway.deleteCurrentMemo("user-1", memo.id);
+      driver.failTransactionCommit = driver.transactionCommitCount + 2;
+    };
+
+    await expect(
+      gateway.saveBackup("user-1", {
+        version: 1,
+        userId: "user-1",
+        createdAt: "2026-05-13T09:01:00.000Z",
+        memos: [{ ...memo, plainText: "staged after delete" }],
+      })
+    ).rejects.toThrow("forced transaction failure");
+
+    expect(deletedDuringStaging).toBe(true);
+    expect(driver.read("users/user-1/backupState/current")).toMatchObject({
+      activeSnapshotId: snapshotId(priorPath),
+      pendingSnapshotId: "2",
+    });
+    expect(driver.read("users/user-1/memos/memo-stale-read")).toMatchObject({
+      active: null,
+      pending: { snapshotId: "2" },
+    });
+    expect((await gateway.loadCurrentMemos("user-1")).map((entry) => entry.memo.id)).toEqual([]);
+    expect(await gateway.loadDeletedMemoIds("user-1")).toEqual([memo.id]);
+  });
+
+  it("rejects duplicate active memo IDs before writing backup state", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "memo-duplicate", now: "2026-05-13T09:00:00.000Z" });
+
+    await expect(
+      gateway.saveBackup("user-1", {
+        version: 1,
+        userId: "user-1",
+        createdAt: "2026-05-13T09:01:00.000Z",
+        memos: [memo, { ...memo, plainText: "duplicate" }],
+      })
+    ).rejects.toThrow("Duplicate active memo ID");
+
+    expect(driver.docs).toEqual(new Map());
+    expect(driver.transactionOperationCounts).toEqual([]);
   });
 });

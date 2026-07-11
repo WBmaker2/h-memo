@@ -242,6 +242,16 @@ function assertPendingSnapshotLease(
   }
 }
 
+function assertUniqueActiveMemoIds(memos: Memo[]) {
+  const memoIds = new Set<string>();
+  for (const memo of memos) {
+    if (memoIds.has(memo.id)) {
+      throw new Error(`Duplicate active memo ID: ${memo.id}`);
+    }
+    memoIds.add(memo.id);
+  }
+}
+
 type CanonicalReference = {
   snapshotId: string;
   savedAt: unknown;
@@ -317,6 +327,7 @@ export class FirestoreBackupGateway implements BackupGateway {
 
   async saveBackup(userId: string, payload: MemoBackupPayload): Promise<string> {
     const activeMemos = payload.memos.filter((memo) => memo.deletedAt === null);
+    assertUniqueActiveMemoIds(activeMemos);
     const snapshotRef = this.driver.doc(this.snapshotCollection(userId));
     const snapshotId = this.driver.id(snapshotRef);
 
@@ -346,13 +357,6 @@ export class FirestoreBackupGateway implements BackupGateway {
       }
     );
 
-    const existingCanonicalMemos = await this.driver.getDocs(
-      this.canonicalMemoCollection(userId)
-    );
-    const existingCanonicalMemosById = new Map(
-      existingCanonicalMemos.docs.map((snapshot) => [snapshot.id, snapshot])
-    );
-
     for (const memoChunk of chunkMemos(activeMemos)) {
       await this.driver.runTransaction(this.firestore, async (transaction) => {
         assertPendingSnapshotLease(
@@ -361,11 +365,15 @@ export class FirestoreBackupGateway implements BackupGateway {
           snapshotId
         );
 
-        for (const memo of memoChunk) {
+        const canonicalMemos = await Promise.all(
+          memoChunk.map((memo) => transaction.get(this.canonicalMemoDoc(userId, memo.id)))
+        );
+
+        for (const [index, memo] of memoChunk.entries()) {
           const canonicalMemoRef = this.canonicalMemoDoc(userId, memo.id);
-          const existingCanonicalMemo = existingCanonicalMemosById.get(memo.id);
+          const existingCanonicalMemo = canonicalMemos[index]!;
           const previousActiveReference =
-            activeSnapshotId && existingCanonicalMemo
+            activeSnapshotId && existingCanonicalMemo.exists()
               ? canonicalReferenceForSnapshot(existingCanonicalMemo.data(), activeSnapshotId)
               : null;
           const stagedReferences = {
@@ -376,7 +384,7 @@ export class FirestoreBackupGateway implements BackupGateway {
             },
           };
 
-          if (existingCanonicalMemo) {
+          if (existingCanonicalMemo.exists()) {
             transaction.update(canonicalMemoRef, stagedReferences);
           } else {
             transaction.set(canonicalMemoRef, {
