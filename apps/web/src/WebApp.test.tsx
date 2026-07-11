@@ -686,7 +686,7 @@ describe("WebApp", () => {
     const restoredPayload = {
       version: 1 as const,
       userId: "user-1",
-      createdAt: "2026-05-13T10:05:00.000Z",
+      createdAt: "2030-05-13T10:05:00.000Z",
       memos: [
         {
           id: "restored-memo",
@@ -716,7 +716,7 @@ describe("WebApp", () => {
     };
     vi.mocked(listBackupSnapshots).mockResolvedValue([
       {
-        createdAt: restoredPayload.createdAt,
+        createdAt: "2026-05-13T10:05:00.000Z",
         memoCount: restoredPayload.memos.length,
         payload: restoredPayload,
       },
@@ -766,6 +766,7 @@ describe("WebApp", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
     expect(within(dialog).getByText("2026-05-13T10:05:00.000Z")).toBeInTheDocument();
+    expect(within(dialog).queryByText("2030-05-13T10:05:00.000Z")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("삭제되어야 할 로컬 데이터")).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "복원" }));

@@ -2116,7 +2116,7 @@ describe("desktop App", () => {
         payload: {
           version: 1,
           userId: "user-1",
-          createdAt: "2026-01-02T03:10:00.000Z",
+          createdAt: "2030-01-02T03:10:00.000Z",
           memos: [selectedMemo],
         },
       },
@@ -2126,7 +2126,7 @@ describe("desktop App", () => {
         payload: {
           version: 1,
           userId: "user-1",
-          createdAt: "2026-01-01T03:10:00.000Z",
+          createdAt: "2020-01-01T03:10:00.000Z",
           memos: [olderMemo],
         },
       },
@@ -2149,6 +2149,7 @@ describe("desktop App", () => {
     expect(mockListBackupSnapshots).toHaveBeenCalledWith(expect.anything(), "user-1");
     expect(mockRestoreLatestBackup).not.toHaveBeenCalled();
     expect(within(dialog).getByText("2026-01-02T03:10:00.000Z")).toBeInTheDocument();
+    expect(within(dialog).queryByText("2030-01-02T03:10:00.000Z")).not.toBeInTheDocument();
     expect(within(dialog).getAllByText("1개 메모")).toHaveLength(2);
     expect(screen.getByDisplayValue("로컬 내용")).toBeInTheDocument();
 

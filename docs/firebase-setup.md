@@ -71,16 +71,24 @@ Firebase Console → **Authentication** → **Settings** → **Authorized domain
 
 ## 5) Firestore 경로 및 규칙
 
-백업 문서는 현재 코드에서 아래 경로를 사용합니다.
+백업 문서는 아래 v2 경로를 사용합니다.
 
-- `users/{uid}/backupSnapshots/{snapshotId}`
-- `users/{uid}/serverMemoDeletes/{memoId}`
+- 현재 서버 메모: `users/{uid}/memos/{memoId}`
+- 스냅샷 메타데이터: `users/{uid}/backupSnapshots/{snapshotId}`
+- 불변 스냅샷 메모: `users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId}`
+- 서버 삭제 표시: `users/{uid}/serverMemoDeletes/{memoId}`
+
+현재 서버 메모 문서는 `userId`, `memoId`, `memo`, 서버 시각 `savedAt`을 저장합니다. 스냅샷 메타데이터는 `schemaVersion: 2`, `userId`, 클라이언트 payload의 `createdAt`, `memoCount`, `state`, 서버 시각 `savedAt`을 저장합니다.
+
+백업은 먼저 `state: "writing"` 메타데이터를 만든 뒤, 활성 메모를 최대 200개씩 처리합니다. 각 메모 청크는 현재 메모와 스냅샷 하위 문서를 함께 기록하고, 해당 메모의 기존 삭제 표시를 지웁니다. 모든 청크가 성공한 뒤에만 메타데이터를 `state: "complete"` 및 서버 `savedAt`으로 전환합니다. 읽기 경로는 완료된 v2 스냅샷만 사용하며, 기록 표시와 정렬에는 서버 `savedAt`을 사용합니다.
 
 `uid` 단위로 사용자를 격리해야 합니다.
 
 저장 규칙은 저장소 루트의 `firestore.rules`에 정리되어 있고, Firebase CLI는 `firebase.json`의 `firestore.rules` 매핑을 사용합니다.
 
-현재 앱은 백업 스냅샷을 새 문서로 추가하고, `서버 메모 관리`에서 특정 메모를 삭제할 때는 기존 스냅샷의 `memos` 배열을 줄인 뒤 `serverMemoDeletes`에 삭제 표시를 남깁니다. 이 삭제 표시가 있어야 예전 백업 스냅샷에 남은 메모가 `서버 복원`으로 다시 나타나지 않습니다. 스냅샷 문서 자체 삭제는 허용하지 않습니다.
+기존 inline 배열 기반 version-1 스냅샷은 읽기와 복원을 계속 지원하며, 서버 `savedAt`이 없으면 기존 클라이언트 `createdAt`을 기록 시간의 fallback으로 사용합니다. 새 백업은 v2만 작성합니다.
+
+`서버 메모 관리`는 현재 메모 문서만 조회합니다. 서버에서 메모를 삭제하면 tombstone을 기록하고 현재 메모 문서만 제거하며, 과거 스냅샷은 변경하지 않습니다. tombstone이 있는 메모는 과거 스냅샷에서도 복원되지 않지만, 이후 활성 메모의 백업이 완료되면 해당 tombstone은 제거됩니다. 스냅샷 메타데이터와 하위 메모 문서는 삭제할 수 없고, 하위 메모 문서는 생성 후 수정할 수 없습니다.
 
 ### 규칙 적용
 

@@ -10,52 +10,98 @@ import {
   restoreLatestBackup,
 } from "./backup";
 
+type StoredPayload = MemoBackupPayload & {
+  id: string;
+  savedAt?: string;
+};
+
 class FakeBackupGateway implements BackupGateway {
-  private snapshots: Array<{ path: string; payload: MemoBackupPayload }> = [];
+  private snapshots: StoredPayload[] = [];
+  private currentMemosByUser = new Map<string, Map<string, MemoBackupPayload["memos"][number]>>();
   private deletedMemoIdsByUser = new Map<string, Set<string>>();
+  private savedAtQueue: string[] = [];
   private counter = 1;
 
+  currentMemoLoadCount = 0;
+  snapshotLoadCount = 0;
+  legacySnapshotMutationCount = 0;
+
+  queueServerSavedAt(savedAt: string) {
+    this.savedAtQueue.push(savedAt);
+  }
+
+  addIncompleteSnapshot(userId: string, createdAt: string) {
+    this.snapshots.push({
+      id: `writing-${this.counter++}`,
+      schemaVersion: 2,
+      userId,
+      createdAt,
+      memoCount: 0,
+      state: "writing",
+    } as unknown as StoredPayload);
+  }
+
+  currentMemoIds(userId: string) {
+    return [...(this.currentMemosByUser.get(userId)?.keys() ?? [])];
+  }
+
+  snapshotMemoIds() {
+    return this.snapshots.flatMap((snapshot) => snapshot.memos.map((memo) => memo.id));
+  }
+
   async saveBackup(userId: string, payload: MemoBackupPayload): Promise<string> {
-    const path = `users/${userId}/backupSnapshots/${this.counter}`;
-    this.snapshots.push({ path, payload });
-    this.counter += 1;
+    const id = String(this.counter++);
+    const path = `users/${userId}/backupSnapshots/${id}`;
+    const savedAt = this.savedAtQueue.shift() ?? payload.createdAt;
+    this.snapshots.push({ ...payload, id, savedAt });
+
+    const currentMemos = this.currentMemosByUser.get(userId) ?? new Map();
     for (const memo of payload.memos) {
-      if (memo.deletedAt === null) {
-        this.deletedMemoIdsByUser.get(userId)?.delete(memo.id);
+      if (memo.deletedAt !== null) {
+        continue;
       }
+      currentMemos.set(memo.id, memo);
+      this.deletedMemoIdsByUser.get(userId)?.delete(memo.id);
     }
+    this.currentMemosByUser.set(userId, currentMemos);
     return path;
   }
 
   async loadLatestBackup(userId: string): Promise<unknown | null> {
-    const filtered = this.snapshots.filter((snapshot) =>
-      snapshot.path.startsWith(`users/${userId}/backupSnapshots/`)
-    );
-    const latest = filtered[filtered.length - 1];
-    return latest ? latest.payload : null;
+    const matching = this.snapshots.filter((snapshot) => snapshot.userId === userId);
+    return matching[matching.length - 1] ?? null;
   }
 
   async loadBackups(userId: string): Promise<unknown[]> {
-    return this.snapshots
-      .filter((snapshot) => snapshot.path.startsWith(`users/${userId}/backupSnapshots/`))
-      .map((snapshot) => snapshot.payload)
-      .reverse();
+    this.snapshotLoadCount += 1;
+    return this.snapshots.filter((snapshot) => snapshot.userId === userId).reverse();
+  }
+
+  async loadCurrentMemos(userId: string): Promise<MemoBackupPayload["memos"]> {
+    this.currentMemoLoadCount += 1;
+    return [...(this.currentMemosByUser.get(userId)?.values() ?? [])];
   }
 
   async loadDeletedMemoIds(userId: string): Promise<string[]> {
     return [...(this.deletedMemoIdsByUser.get(userId) ?? new Set<string>())];
   }
 
-  async deleteMemoFromBackups(userId: string, memoId: string): Promise<number> {
+  async deleteCurrentMemo(userId: string, memoId: string): Promise<number> {
     const deletedMemoIds = this.deletedMemoIdsByUser.get(userId) ?? new Set<string>();
     deletedMemoIds.add(memoId);
     this.deletedMemoIdsByUser.set(userId, deletedMemoIds);
+    this.currentMemosByUser.get(userId)?.delete(memoId);
     return 1;
+  }
+
+  async deleteMemoFromBackups(): Promise<number> {
+    this.legacySnapshotMutationCount += 1;
+    throw new Error("immutable snapshot history must not be rewritten");
   }
 }
 
 describe("memo-sync backup", () => {
-  it("백업 저장 시 버전이 포함된 payload를 저장하고 예상 경로를 반환한다", async () => {
+  it("stores a version-1 local payload while returning the snapshot path", async () => {
     const gateway = new FakeBackupGateway();
     const memos = [createMemo({ id: "memo-1", now: "2026-05-13T09:00:00.000Z" })];
 
@@ -73,7 +119,7 @@ describe("memo-sync backup", () => {
     expect(result.payload.memos).toEqual(memos);
   });
 
-  it("복구 시 최신 백업 payload를 검증 후 반환한다", async () => {
+  it("restores the latest complete backup after validating its version-1 payload", async () => {
     const gateway = new FakeBackupGateway();
     const userId = "user-1";
 
@@ -97,41 +143,136 @@ describe("memo-sync backup", () => {
     expect(restored?.memos[0]?.id).toBe("memo-new");
   });
 
-  it("시간대별 백업 스냅샷 목록을 최신순으로 반환하고 서버 삭제 표시를 적용한다", async () => {
+  it("orders backup history by normalized server savedAt instead of skewed client createdAt", async () => {
     const gateway = new FakeBackupGateway();
     const userId = "user-1";
-    const keepMemo = createMemo({
-      id: "memo-keep",
-      now: "2026-05-13T09:00:00.000Z",
-      plainText: "계속 유지할 메모",
-    });
-    const removedMemo = createMemo({
-      id: "memo-removed",
-      now: "2026-05-13T09:01:00.000Z",
-      plainText: "서버에서 삭제할 메모",
-    });
-
-    await backupMemos(gateway, userId, [keepMemo, removedMemo], "2026-05-13T09:02:00.000Z");
+    gateway.queueServerSavedAt("2026-05-13T09:10:00.000Z");
     await backupMemos(
       gateway,
       userId,
-      [{ ...keepMemo, plainText: "나중 백업", updatedAt: "2026-05-13T09:10:00.000Z" }],
-      "2026-05-13T09:11:00.000Z"
+      [createMemo({ id: "memo-client-future", now: "2030-01-01T00:00:00.000Z" })],
+      "2030-01-01T00:00:00.000Z"
     );
-    await deleteBackedUpMemo(gateway, userId, "memo-removed");
+    gateway.queueServerSavedAt("2026-05-13T09:20:00.000Z");
+    await backupMemos(
+      gateway,
+      userId,
+      [createMemo({ id: "memo-client-past", now: "2020-01-01T00:00:00.000Z" })],
+      "2020-01-01T00:00:00.000Z"
+    );
 
     const snapshots = await listBackupSnapshots(gateway, userId);
 
-    expect(snapshots).toHaveLength(2);
-    expect(snapshots[0]?.createdAt).toBe("2026-05-13T09:11:00.000Z");
-    expect(snapshots[0]?.memoCount).toBe(1);
-    expect(snapshots[0]?.payload.memos.map((memo) => memo.id)).toEqual(["memo-keep"]);
-    expect(snapshots[1]?.createdAt).toBe("2026-05-13T09:02:00.000Z");
-    expect(snapshots[1]?.memoCount).toBe(1);
-    expect(snapshots[1]?.payload.memos.map((memo) => memo.id)).toEqual(["memo-keep"]);
+    expect(snapshots.map((snapshot) => snapshot.createdAt)).toEqual([
+      "2026-05-13T09:20:00.000Z",
+      "2026-05-13T09:10:00.000Z",
+    ]);
+    expect(snapshots.map((snapshot) => snapshot.payload.createdAt)).toEqual([
+      "2020-01-01T00:00:00.000Z",
+      "2030-01-01T00:00:00.000Z",
+    ]);
   });
 
-  it("최신 payload가 잘못되면 에러를 던진다", async () => {
+  it("ignores an incomplete schema-v2 snapshot when restoring the latest backup", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    await backupMemos(
+      gateway,
+      userId,
+      [createMemo({ id: "memo-complete", now: "2026-05-13T09:00:00.000Z" })],
+      "2026-05-13T09:01:00.000Z"
+    );
+    gateway.addIncompleteSnapshot(userId, "2026-05-13T09:02:00.000Z");
+
+    const restored = await restoreLatestBackup(gateway, userId);
+
+    expect(restored?.memos.map((memo) => memo.id)).toEqual(["memo-complete"]);
+  });
+
+  it("lists canonical current memos without scanning historical snapshots", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const memo = createMemo({ id: "memo-current", now: "2026-05-13T09:00:00.000Z" });
+    await backupMemos(gateway, userId, [memo], "2026-05-13T09:01:00.000Z");
+    await backupMemos(
+      gateway,
+      userId,
+      [{ ...memo, plainText: "newer canonical value", updatedAt: "2026-05-13T09:02:00.000Z" }],
+      "2026-05-13T09:03:00.000Z"
+    );
+
+    const backedUpMemos = await listBackedUpMemos(gateway, userId);
+
+    expect(backedUpMemos).toHaveLength(1);
+    expect(backedUpMemos[0]?.memo.plainText).toBe("newer canonical value");
+    expect(gateway.currentMemoLoadCount).toBe(1);
+    expect(gateway.snapshotLoadCount).toBe(0);
+  });
+
+  it("deletes only the canonical memo, writes a tombstone, and leaves immutable history intact", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const keepMemo = createMemo({ id: "memo-keep", now: "2026-05-13T09:00:00.000Z" });
+    const removeMemo = createMemo({ id: "memo-remove", now: "2026-05-13T09:01:00.000Z" });
+    await backupMemos(gateway, userId, [keepMemo, removeMemo], "2026-05-13T09:02:00.000Z");
+    const historicalMemoIds = gateway.snapshotMemoIds();
+
+    const deletedCount = await deleteBackedUpMemo(gateway, userId, "memo-remove");
+
+    expect(deletedCount).toBe(1);
+    expect(gateway.currentMemoIds(userId)).toEqual(["memo-keep"]);
+    expect(await gateway.loadDeletedMemoIds(userId)).toEqual(["memo-remove"]);
+    expect(gateway.snapshotMemoIds()).toEqual(historicalMemoIds);
+    expect(gateway.legacySnapshotMutationCount).toBe(0);
+  });
+
+  it("keeps tombstoned memos out of a complete historical restore", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const keepMemo = createMemo({ id: "memo-keep", now: "2026-05-13T09:00:00.000Z" });
+    const removeMemo = createMemo({ id: "memo-remove", now: "2026-05-13T09:01:00.000Z" });
+    await backupMemos(gateway, userId, [keepMemo, removeMemo], "2026-05-13T09:02:00.000Z");
+
+    await deleteBackedUpMemo(gateway, userId, "memo-remove");
+    const restored = await restoreLatestBackup(gateway, userId);
+
+    expect(restored?.memos.map((memo) => memo.id)).toEqual(["memo-keep"]);
+  });
+
+  it("clears a memo tombstone after a later successful active backup", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const memo = createMemo({ id: "memo-restore", now: "2026-05-13T09:00:00.000Z" });
+    await backupMemos(gateway, userId, [memo], "2026-05-13T09:01:00.000Z");
+    await deleteBackedUpMemo(gateway, userId, "memo-restore");
+
+    await backupMemos(
+      gateway,
+      userId,
+      [{ ...memo, plainText: "backed up again", updatedAt: "2026-05-13T09:02:00.000Z" }],
+      "2026-05-13T09:03:00.000Z"
+    );
+
+    expect(await gateway.loadDeletedMemoIds(userId)).toEqual([]);
+    expect((await listBackedUpMemos(gateway, userId)).map((item) => item.memo.id)).toEqual([
+      "memo-restore",
+    ]);
+  });
+
+  it("restores an inline version-1 legacy snapshot with its client createdAt fallback", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    const memo = createMemo({ id: "legacy-memo", now: "2026-05-13T09:00:00.000Z" });
+    await backupMemos(gateway, userId, [memo], "2026-05-13T09:01:00.000Z");
+
+    const restored = await restoreLatestBackup(gateway, userId);
+    const snapshots = await listBackupSnapshots(gateway, userId);
+
+    expect(restored?.memos.map((item) => item.id)).toEqual(["legacy-memo"]);
+    expect(snapshots[0]?.createdAt).toBe("2026-05-13T09:01:00.000Z");
+  });
+
+  it("rejects an invalid backup payload", async () => {
     class InvalidPayloadGateway implements BackupGateway {
       async saveBackup(): Promise<string> {
         return "";
@@ -147,6 +288,10 @@ describe("memo-sync backup", () => {
       }
 
       async loadBackups(): Promise<unknown[]> {
+        return [await this.loadLatestBackup()];
+      }
+
+      async loadCurrentMemos(): Promise<MemoBackupPayload["memos"]> {
         return [];
       }
 
@@ -154,121 +299,13 @@ describe("memo-sync backup", () => {
         return [];
       }
 
-      async deleteMemoFromBackups(): Promise<number> {
+      async deleteCurrentMemo(): Promise<number> {
         return 0;
       }
     }
 
-    const gateway = new InvalidPayloadGateway();
-    await expect(restoreLatestBackup(gateway, "user-1")).rejects.toThrow(
+    await expect(restoreLatestBackup(new InvalidPayloadGateway(), "user-1")).rejects.toThrow(
       "지원하지 않는 백업 버전입니다."
     );
-  });
-
-  it("서버 백업 목록에서 메모별 최신본을 모아 반환한다", async () => {
-    const gateway = new FakeBackupGateway();
-    const userId = "user-1";
-    const olderMemo = createMemo({
-      id: "memo-keep",
-      now: "2026-05-13T09:00:00.000Z",
-      plainText: "이전 내용",
-    });
-    const newerMemo = {
-      ...olderMemo,
-      plainText: "최신 내용",
-      updatedAt: "2026-05-13T09:10:00.000Z",
-    };
-    const deletedMemo = createMemo({
-      id: "memo-deleted",
-      now: "2026-05-13T09:05:00.000Z",
-      plainText: "삭제됐지만 백업된 메모",
-    });
-
-    await backupMemos(gateway, userId, [olderMemo], "2026-05-13T09:01:00.000Z");
-    await backupMemos(
-      gateway,
-      userId,
-      [{ ...deletedMemo, deletedAt: "2026-05-13T09:06:00.000Z" }, newerMemo],
-      "2026-05-13T09:11:00.000Z"
-    );
-
-    const backedUpMemos = await listBackedUpMemos(gateway, userId);
-
-    expect(backedUpMemos).toHaveLength(2);
-    expect(backedUpMemos[0]?.memo.id).toBe("memo-keep");
-    expect(backedUpMemos[0]?.memo.plainText).toBe("최신 내용");
-    expect(backedUpMemos[1]?.memo.id).toBe("memo-deleted");
-    expect(backedUpMemos[1]?.backupCreatedAt).toBe("2026-05-13T09:11:00.000Z");
-  });
-
-  it("서버 삭제한 메모를 서버 백업 목록에서 제외한다", async () => {
-    const gateway = new FakeBackupGateway();
-    const userId = "user-1";
-    const keepMemo = createMemo({ id: "memo-keep", now: "2026-05-13T09:00:00.000Z" });
-    const removeMemo = createMemo({ id: "memo-remove", now: "2026-05-13T09:01:00.000Z" });
-
-    await backupMemos(gateway, userId, [keepMemo, removeMemo], "2026-05-13T09:02:00.000Z");
-    await backupMemos(gateway, userId, [removeMemo], "2026-05-13T09:03:00.000Z");
-
-    const updatedCount = await deleteBackedUpMemo(gateway, userId, "memo-remove");
-    const backedUpMemos = await listBackedUpMemos(gateway, userId);
-
-    expect(updatedCount).toBe(1);
-    expect(backedUpMemos.map((item) => item.memo.id)).toEqual(["memo-keep"]);
-  });
-
-  it("서버 삭제한 메모는 최신 전체 복원에서도 제외한다", async () => {
-    const gateway = new FakeBackupGateway();
-    const userId = "user-1";
-    const keepMemo = createMemo({ id: "memo-keep", now: "2026-05-13T09:00:00.000Z" });
-    const removeMemo = createMemo({ id: "memo-remove", now: "2026-05-13T09:01:00.000Z" });
-
-    await backupMemos(gateway, userId, [keepMemo, removeMemo], "2026-05-13T09:02:00.000Z");
-
-    await deleteBackedUpMemo(gateway, userId, "memo-remove");
-    const restored = await restoreLatestBackup(gateway, userId);
-
-    expect(restored?.memos.map((memo) => memo.id)).toEqual(["memo-keep"]);
-  });
-
-  it("보이는 로컬 메모를 다시 백업하면 서버 삭제 표시를 해제한다", async () => {
-    const gateway = new FakeBackupGateway();
-    const userId = "user-1";
-    const memo = createMemo({ id: "memo-restore", now: "2026-05-13T09:00:00.000Z" });
-
-    await backupMemos(gateway, userId, [memo], "2026-05-13T09:01:00.000Z");
-    await deleteBackedUpMemo(gateway, userId, "memo-restore");
-    expect(await listBackedUpMemos(gateway, userId)).toEqual([]);
-
-    await backupMemos(
-      gateway,
-      userId,
-      [{ ...memo, plainText: "다시 백업", updatedAt: "2026-05-13T09:02:00.000Z" }],
-      "2026-05-13T09:03:00.000Z"
-    );
-
-    const backedUpMemos = await listBackedUpMemos(gateway, userId);
-    expect(backedUpMemos.map((item) => item.memo.id)).toEqual(["memo-restore"]);
-  });
-
-  it("내용이 비어 있고 로컬 삭제 기록이 있는 서버 메모도 id 기준으로 제거한다", async () => {
-    const gateway = new FakeBackupGateway();
-    const userId = "user-1";
-    const blankDeletedMemo = {
-      ...createMemo({
-        id: "memo-blank",
-        now: "2026-05-13T09:00:00.000Z",
-        plainText: "",
-      }),
-      deletedAt: "2026-05-13T09:05:00.000Z",
-    };
-
-    await backupMemos(gateway, userId, [blankDeletedMemo], "2026-05-13T09:06:00.000Z");
-
-    const updatedCount = await deleteBackedUpMemo(gateway, userId, "memo-blank");
-    const backedUpMemos = await listBackedUpMemos(gateway, userId);
-
-    expect(updatedCount).toBe(1);
-    expect(backedUpMemos).toEqual([]);
   });
 });

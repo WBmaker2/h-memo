@@ -6,34 +6,84 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid == uid;
     }
 
-    function hasValidBackupSnapshotShape(uid) {
+    function hasValidSchemaV2SnapshotShape(uid) {
       return request.resource.data.keys().hasOnly([
-          "version",
+          "schemaVersion",
           "userId",
           "createdAt",
-          "memos",
+          "memoCount",
+          "state",
           "savedAt"
         ])
         && request.resource.data.keys().hasAll([
-          "version",
+          "schemaVersion",
           "userId",
           "createdAt",
-          "memos"
+          "memoCount",
+          "state"
         ])
-        && request.resource.data.version == 1
+        && request.resource.data.schemaVersion == 2
         && request.resource.data.userId == uid
         && request.resource.data.createdAt is string
-        && request.resource.data.memos is list
+        && request.resource.data.memoCount is int
+        && request.resource.data.memoCount >= 0
+        && (request.resource.data.state == "writing" || request.resource.data.state == "complete")
         && (
           !request.resource.data.keys().hasAny(["savedAt"])
           || request.resource.data.savedAt is timestamp
         );
     }
 
-    function onlyReducesSnapshotMemos() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(["memos"])
-        && request.resource.data.memos is list
-        && request.resource.data.memos.size() <= resource.data.memos.size();
+    function isWritingSchemaV2Snapshot(uid) {
+      return hasValidSchemaV2SnapshotShape(uid)
+        && request.resource.data.state == "writing"
+        && !request.resource.data.keys().hasAny(["savedAt"]);
+    }
+
+    function isCompletingSchemaV2Snapshot(uid) {
+      return hasValidSchemaV2SnapshotShape(uid)
+        && resource.data.schemaVersion == 2
+        && resource.data.state == "writing"
+        && request.resource.data.state == "complete"
+        && request.resource.data.savedAt is timestamp
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "savedAt"]);
+    }
+
+    function hasValidCanonicalMemoShape(uid, memoId) {
+      return request.resource.data.keys().hasOnly([
+          "userId",
+          "memoId",
+          "memo",
+          "savedAt"
+        ])
+        && request.resource.data.keys().hasAll([
+          "userId",
+          "memoId",
+          "memo",
+          "savedAt"
+        ])
+        && request.resource.data.userId == uid
+        && request.resource.data.memoId == memoId
+        && request.resource.data.memo is map
+        && request.resource.data.memo.id == memoId
+        && request.resource.data.savedAt is timestamp;
+    }
+
+    function hasValidSnapshotMemoShape(uid, memoId) {
+      return request.resource.data.keys().hasOnly([
+          "userId",
+          "memoId",
+          "memo"
+        ])
+        && request.resource.data.keys().hasAll([
+          "userId",
+          "memoId",
+          "memo"
+        ])
+        && request.resource.data.userId == uid
+        && request.resource.data.memoId == memoId
+        && request.resource.data.memo is map
+        && request.resource.data.memo.id == memoId;
     }
 
     function hasValidServerMemoDeleteShape(uid, memoId) {
@@ -52,13 +102,26 @@ service cloud.firestore {
         && request.resource.data.deletedAt is timestamp;
     }
 
+    match /users/{uid}/memos/{memoId} {
+      allow read: if isOwner(uid);
+      allow create, update: if isOwner(uid) && hasValidCanonicalMemoShape(uid, memoId);
+      allow delete: if isOwner(uid);
+    }
+
     match /users/{uid}/backupSnapshots/{snapshotId} {
       allow read: if isOwner(uid);
-      allow create: if isOwner(uid) && hasValidBackupSnapshotShape(uid);
-      allow update: if isOwner(uid)
-        && hasValidBackupSnapshotShape(uid)
-        && onlyReducesSnapshotMemos();
+      allow create: if isOwner(uid) && isWritingSchemaV2Snapshot(uid);
+      allow update: if isOwner(uid) && isCompletingSchemaV2Snapshot(uid);
       allow delete: if false;
+    }
+
+    match /users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid)
+        && hasValidSnapshotMemoShape(uid, memoId)
+        && get(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(snapshotId)).data.schemaVersion == 2
+        && get(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(snapshotId)).data.state == "writing";
+      allow update, delete: if false;
     }
 
     match /users/{uid}/serverMemoDeletes/{memoId} {

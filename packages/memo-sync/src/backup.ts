@@ -5,21 +5,23 @@ import {
   type Memo,
 } from "@h-memo/memo-core";
 import {
-  addDoc,
   collection,
-  deleteDoc,
   doc,
   getDocs,
-  limit,
-  orderBy,
-  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  writeBatch,
   type Firestore,
+  type QueryDocumentSnapshot,
 } from "firebase/firestore";
 
 export type MemoBackupPayload = BackupPayload;
+export type StoredBackupSnapshot = {
+  id: string;
+  payload: MemoBackupPayload;
+  savedAt: string;
+};
 export type BackedUpMemo = {
   memo: Memo;
   backupCreatedAt: string;
@@ -34,18 +36,113 @@ export interface BackupGateway {
   saveBackup(userId: string, payload: MemoBackupPayload): Promise<string>;
   loadLatestBackup(userId: string): Promise<unknown | null>;
   loadBackups(userId: string): Promise<unknown[]>;
+  loadCurrentMemos(userId: string): Promise<Memo[]>;
   loadDeletedMemoIds(userId: string): Promise<string[]>;
-  deleteMemoFromBackups(userId: string, memoId: string): Promise<number>;
+  deleteCurrentMemo(userId: string, memoId: string): Promise<number>;
 }
 
-const backupCollection = "backupSnapshots";
+const backupSnapshotsCollection = "backupSnapshots";
+const canonicalMemosCollection = "memos";
+const snapshotMemosCollection = "memos";
 const serverMemoDeletesCollection = "serverMemoDeletes";
+const maxMemosPerBatch = 200;
+
+type FirestoreTimestamp = {
+  toDate(): Date;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+function normalizeFirestoreTimestamp(value: unknown): string | null {
+  if (typeof value === "string") {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+
+  if (isRecord(value) && typeof value.toDate === "function") {
+    const date = (value as unknown as FirestoreTimestamp).toDate();
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : null;
+  }
+
+  return null;
+}
+
+function isIncompleteSchemaV2Snapshot(value: unknown) {
+  return isRecord(value) && value.schemaVersion === 2 && value.state !== "complete";
+}
+
+function toStoredBackupSnapshot(
+  value: unknown,
+  userId: string
+): StoredBackupSnapshot | null {
+  if (isIncompleteSchemaV2Snapshot(value)) {
+    return null;
+  }
+
+  const record = isRecord(value) ? value : null;
+  const payloadValue = record && "payload" in record ? record.payload : value;
+  const parsed = validateBackupPayload(payloadValue, userId);
+  if (!parsed.ok) {
+    throw new Error(parsed.reason);
+  }
+
+  const savedAt = normalizeFirestoreTimestamp(record?.savedAt) ?? parsed.payload.createdAt;
+  return {
+    id: typeof record?.id === "string" ? record.id : "",
+    payload: parsed.payload,
+    savedAt,
+  };
+}
+
+function sortStoredSnapshots(snapshots: StoredBackupSnapshot[]) {
+  return [...snapshots].sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+}
+
+async function loadStoredBackupSnapshots(
+  gateway: BackupGateway,
+  userId: string
+): Promise<StoredBackupSnapshot[]> {
+  const snapshots = (await gateway.loadBackups(userId))
+    .map((snapshot) => toStoredBackupSnapshot(snapshot, userId))
+    .filter((snapshot): snapshot is StoredBackupSnapshot => snapshot !== null);
+  return sortStoredSnapshots(snapshots);
+}
+
+function chunkMemos<T>(memos: T[]) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < memos.length; index += maxMemosPerBatch) {
+    chunks.push(memos.slice(index, index + maxMemosPerBatch));
+  }
+  return chunks;
+}
+
+function isValidMemo(memo: unknown, userId: string): memo is Memo {
+  return validateBackupPayload(
+    {
+      version: 1,
+      userId,
+      createdAt: "",
+      memos: [memo],
+    },
+    userId
+  ).ok;
+}
 
 export class FirestoreBackupGateway implements BackupGateway {
   constructor(private readonly firestore: Firestore) {}
 
-  private collection(userId: string) {
-    return collection(this.firestore, "users", userId, backupCollection);
+  private snapshotCollection(userId: string) {
+    return collection(this.firestore, "users", userId, backupSnapshotsCollection);
+  }
+
+  private canonicalMemoCollection(userId: string) {
+    return collection(this.firestore, "users", userId, canonicalMemosCollection);
+  }
+
+  private canonicalMemoDoc(userId: string, memoId: string) {
+    return doc(this.firestore, "users", userId, canonicalMemosCollection, memoId);
   }
 
   private deletedMemoCollection(userId: string) {
@@ -57,42 +154,137 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   async saveBackup(userId: string, payload: MemoBackupPayload): Promise<string> {
-    const ref = await addDoc(this.collection(userId), {
-      ...payload,
+    const activeMemos = payload.memos.filter((memo) => memo.deletedAt === null);
+    const snapshotRef = doc(this.snapshotCollection(userId));
+
+    await setDoc(snapshotRef, {
+      schemaVersion: 2,
+      userId,
+      createdAt: payload.createdAt,
+      memoCount: activeMemos.length,
+      state: "writing",
+    });
+
+    for (const memoChunk of chunkMemos(activeMemos)) {
+      const memoBatch = writeBatch(this.firestore);
+      for (const memo of memoChunk) {
+        memoBatch.set(this.canonicalMemoDoc(userId, memo.id), {
+          userId,
+          memoId: memo.id,
+          memo,
+          savedAt: serverTimestamp(),
+        });
+        memoBatch.set(doc(snapshotRef, snapshotMemosCollection, memo.id), {
+          userId,
+          memoId: memo.id,
+          memo,
+        });
+      }
+      await memoBatch.commit();
+
+      const tombstoneBatch = writeBatch(this.firestore);
+      for (const memo of memoChunk) {
+        tombstoneBatch.delete(this.deletedMemoDoc(userId, memo.id));
+      }
+      await tombstoneBatch.commit();
+    }
+
+    await updateDoc(snapshotRef, {
+      state: "complete",
       savedAt: serverTimestamp(),
     });
 
-    await Promise.all(
-      payload.memos
-        .filter((memo) => memo.deletedAt === null)
-        .map((memo) => deleteDoc(this.deletedMemoDoc(userId, memo.id)))
-    );
-
-    return ref.path;
+    return snapshotRef.path;
   }
 
   async loadLatestBackup(userId: string): Promise<unknown | null> {
-    const snapshotQuery = query(
-      this.collection(userId),
-      orderBy("savedAt", "desc"),
-      limit(1)
-    );
-    const querySnapshot = await getDocs(snapshotQuery);
-    if (querySnapshot.empty) {
-      return null;
-    }
-
-    const latest = querySnapshot.docs[0];
-    return latest.data();
+    return (await this.loadBackups(userId))[0] ?? null;
   }
 
   async loadBackups(userId: string): Promise<unknown[]> {
-    const snapshotQuery = query(
-      this.collection(userId),
-      orderBy("savedAt", "desc")
+    const snapshotDocs = await getDocs(this.snapshotCollection(userId));
+    const storedSnapshots = await Promise.all(
+      snapshotDocs.docs.map((snapshot) => this.loadStoredSnapshot(snapshot, userId))
     );
-    const querySnapshot = await getDocs(snapshotQuery);
-    return querySnapshot.docs.map((snapshot) => snapshot.data());
+    return sortStoredSnapshots(
+      storedSnapshots.filter(
+        (snapshot): snapshot is StoredBackupSnapshot => snapshot !== null
+      )
+    );
+  }
+
+  private async loadStoredSnapshot(
+    snapshot: QueryDocumentSnapshot,
+    userId: string
+  ): Promise<StoredBackupSnapshot | null> {
+    const data = snapshot.data();
+    if (data.schemaVersion === 2) {
+      return this.loadCompleteSchemaV2Snapshot(snapshot, userId);
+    }
+
+    const parsed = validateBackupPayload(data, userId);
+    if (!parsed.ok) {
+      return null;
+    }
+
+    return {
+      id: snapshot.id,
+      payload: parsed.payload,
+      savedAt: normalizeFirestoreTimestamp(data.savedAt) ?? parsed.payload.createdAt,
+    };
+  }
+
+  private async loadCompleteSchemaV2Snapshot(
+    snapshot: QueryDocumentSnapshot,
+    userId: string
+  ): Promise<StoredBackupSnapshot | null> {
+    const data = snapshot.data();
+    const savedAt = normalizeFirestoreTimestamp(data.savedAt);
+    if (
+      data.state !== "complete" ||
+      data.userId !== userId ||
+      typeof data.createdAt !== "string" ||
+      typeof data.memoCount !== "number" ||
+      !Number.isInteger(data.memoCount) ||
+      data.memoCount < 0 ||
+      savedAt === null
+    ) {
+      return null;
+    }
+
+    const memoDocs = await getDocs(collection(snapshot.ref, snapshotMemosCollection));
+    const memos = memoDocs.docs
+      .map((memoSnapshot) => memoSnapshot.data().memo)
+      .filter((memo): memo is Memo => isValidMemo(memo, userId));
+    if (memos.length !== data.memoCount) {
+      return null;
+    }
+
+    const parsed = validateBackupPayload(
+      {
+        version: 1,
+        userId,
+        createdAt: data.createdAt,
+        memos,
+      },
+      userId
+    );
+    if (!parsed.ok) {
+      return null;
+    }
+
+    return {
+      id: snapshot.id,
+      payload: parsed.payload,
+      savedAt,
+    };
+  }
+
+  async loadCurrentMemos(userId: string): Promise<Memo[]> {
+    const memoDocs = await getDocs(this.canonicalMemoCollection(userId));
+    return memoDocs.docs
+      .map((snapshot) => snapshot.data().memo)
+      .filter((memo): memo is Memo => isValidMemo(memo, userId));
   }
 
   async loadDeletedMemoIds(userId: string): Promise<string[]> {
@@ -105,38 +297,16 @@ export class FirestoreBackupGateway implements BackupGateway {
       .filter((memoId) => memoId.trim() !== "");
   }
 
-  async deleteMemoFromBackups(userId: string, memoId: string): Promise<number> {
-    await setDoc(this.deletedMemoDoc(userId, memoId), {
+  async deleteCurrentMemo(userId: string, memoId: string): Promise<number> {
+    const batch = writeBatch(this.firestore);
+    batch.set(this.deletedMemoDoc(userId, memoId), {
       userId,
       memoId,
       deletedAt: serverTimestamp(),
     });
-
-    const snapshotQuery = query(
-      this.collection(userId),
-      orderBy("savedAt", "desc")
-    );
-    const querySnapshot = await getDocs(snapshotQuery);
-    let updatedSnapshots = 0;
-
-    await Promise.all(
-      querySnapshot.docs.map(async (snapshot) => {
-        const data = snapshot.data();
-        const memos = Array.isArray(data.memos) ? data.memos : [];
-        const nextMemos = memos.filter((memo) => {
-          return !memo || typeof memo !== "object" || (memo as { id?: unknown }).id !== memoId;
-        });
-
-        if (nextMemos.length === memos.length) {
-          return;
-        }
-
-        await updateDoc(snapshot.ref, { memos: nextMemos });
-        updatedSnapshots += 1;
-      })
-    );
-
-    return Math.max(updatedSnapshots, 1);
+    batch.delete(this.canonicalMemoDoc(userId, memoId));
+    await batch.commit();
+    return 1;
   }
 }
 
@@ -183,76 +353,50 @@ export async function restoreLatestBackup(
   gateway: BackupGateway,
   userId: string
 ): Promise<MemoBackupPayload | null> {
-  const latest = await gateway.loadLatestBackup(userId);
-  if (latest === null) {
+  const latest = (await loadStoredBackupSnapshots(gateway, userId))[0];
+  if (!latest) {
     return null;
   }
 
-  const parsed = validateBackupPayload(latest, userId);
-  if (!parsed.ok) {
-    throw new Error(parsed.reason);
-  }
-
   const deletedMemoIds = await loadDeletedMemoIdSet(gateway, userId);
-  return filterDeletedServerMemos(parsed.payload, deletedMemoIds);
+  return filterDeletedServerMemos(latest.payload, deletedMemoIds);
 }
 
 export async function listBackedUpMemos(
   gateway: BackupGateway,
   userId: string
 ): Promise<BackedUpMemo[]> {
-  const backups = await gateway.loadBackups(userId);
-  const deletedMemoIds = await loadDeletedMemoIdSet(gateway, userId);
-  const newestMemoById = new Map<string, BackedUpMemo>();
+  const [memos, deletedMemoIds] = await Promise.all([
+    gateway.loadCurrentMemos(userId),
+    loadDeletedMemoIdSet(gateway, userId),
+  ]);
 
-  for (const backup of backups) {
-    const parsed = validateBackupPayload(backup, userId);
-    if (!parsed.ok) {
-      continue;
-    }
-
-    for (const memo of parsed.payload.memos) {
-      if (deletedMemoIds.has(memo.id)) {
-        continue;
-      }
-      if (newestMemoById.has(memo.id)) {
-        continue;
-      }
-      newestMemoById.set(memo.id, {
-        memo,
-        backupCreatedAt: parsed.payload.createdAt,
-      });
-    }
-  }
-
-  return [...newestMemoById.values()].sort((a, b) =>
-    b.memo.updatedAt.localeCompare(a.memo.updatedAt)
-  );
+  return memos
+    .filter((memo) => memo.deletedAt === null && !deletedMemoIds.has(memo.id))
+    .map((memo) => ({
+      memo,
+      backupCreatedAt: memo.updatedAt,
+    }))
+    .sort((a, b) => b.memo.updatedAt.localeCompare(a.memo.updatedAt));
 }
 
 export async function listBackupSnapshots(
   gateway: BackupGateway,
   userId: string
 ): Promise<BackedUpSnapshot[]> {
-  const backups = await gateway.loadBackups(userId);
-  const deletedMemoIds = await loadDeletedMemoIdSet(gateway, userId);
-  const snapshots: BackedUpSnapshot[] = [];
+  const [backups, deletedMemoIds] = await Promise.all([
+    loadStoredBackupSnapshots(gateway, userId),
+    loadDeletedMemoIdSet(gateway, userId),
+  ]);
 
-  for (const backup of backups) {
-    const parsed = validateBackupPayload(backup, userId);
-    if (!parsed.ok) {
-      continue;
-    }
-
-    const payload = filterDeletedServerMemos(parsed.payload, deletedMemoIds);
-    snapshots.push({
-      createdAt: payload.createdAt,
+  return backups.map((backup) => {
+    const payload = filterDeletedServerMemos(backup.payload, deletedMemoIds);
+    return {
+      createdAt: backup.savedAt,
       memoCount: payload.memos.length,
       payload,
-    });
-  }
-
-  return snapshots.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    };
+  });
 }
 
 export async function deleteBackedUpMemo(
@@ -260,5 +404,5 @@ export async function deleteBackedUpMemo(
   userId: string,
   memoId: string
 ): Promise<number> {
-  return gateway.deleteMemoFromBackups(userId, memoId);
+  return gateway.deleteCurrentMemo(userId, memoId);
 }
