@@ -80,4 +80,16 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain(".data.state == \"complete\"");
     expect(rules).not.toContain("hasValidLegacyBackupSnapshotShape");
   });
+
+  it("requires a bounded per-user pending lease before staging or activation", () => {
+    const rules = readFileSync(path.resolve("firestore.rules"), "utf8");
+
+    expect(rules).toContain("function hasValidBackupStateShape(uid)");
+    expect(rules).toContain('"pendingSnapshotId"');
+    expect(rules).toContain("request.resource.data.pendingSnapshotId is string");
+    expect(rules).toContain("request.resource.data.activeSnapshotId == resource.data.activeSnapshotId");
+    expect(rules).toContain("resource.data.pendingSnapshotId is string");
+    expect(rules).toContain("request.resource.data.activeSnapshotId == resource.data.pendingSnapshotId");
+    expect(rules).toContain("request.resource.data.pendingSnapshotId == null");
+  });
 });

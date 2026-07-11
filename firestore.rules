@@ -139,19 +139,53 @@ service cloud.firestore {
         && request.resource.data.deletedAt is timestamp;
     }
 
-    function hasValidBackupActivationShape(uid) {
+    function hasValidBackupStateShape(uid) {
       return request.resource.data.keys().hasOnly([
           "userId",
           "activeSnapshotId",
+          "pendingSnapshotId",
           "activatedAt"
         ])
         && request.resource.data.keys().hasAll([
           "userId",
           "activeSnapshotId",
+          "pendingSnapshotId",
           "activatedAt"
         ])
         && request.resource.data.userId == uid
-        && request.resource.data.activeSnapshotId is string
+        && (
+          request.resource.data.activeSnapshotId == null
+          || request.resource.data.activeSnapshotId is string
+        )
+        && (
+          request.resource.data.pendingSnapshotId == null
+          || request.resource.data.pendingSnapshotId is string
+        )
+        && (
+          request.resource.data.activatedAt == null
+          || request.resource.data.activatedAt is timestamp
+        );
+    }
+
+    function hasValidInitialBackupLease(uid) {
+      return hasValidBackupStateShape(uid)
+        && request.resource.data.activeSnapshotId == null
+        && request.resource.data.pendingSnapshotId is string
+        && request.resource.data.activatedAt == null;
+    }
+
+    function hasValidPendingBackupLease(uid) {
+      return hasValidBackupStateShape(uid)
+        && request.resource.data.pendingSnapshotId is string
+        && request.resource.data.activeSnapshotId == resource.data.activeSnapshotId
+        && request.resource.data.activatedAt == resource.data.activatedAt;
+    }
+
+    function hasValidBackupActivationShape(uid) {
+      return hasValidBackupStateShape(uid)
+        && resource.data.pendingSnapshotId is string
+        && request.resource.data.activeSnapshotId == resource.data.pendingSnapshotId
+        && request.resource.data.pendingSnapshotId == null
         && request.resource.data.activatedAt is timestamp
         && getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.schemaVersion == 2
         && getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.userId == uid
@@ -180,7 +214,11 @@ service cloud.firestore {
 
     match /users/{uid}/backupState/current {
       allow read: if isOwner(uid);
-      allow create, update: if isOwner(uid) && hasValidBackupActivationShape(uid);
+      allow create: if isOwner(uid) && hasValidInitialBackupLease(uid);
+      allow update: if isOwner(uid) && (
+        hasValidPendingBackupLease(uid)
+        || hasValidBackupActivationShape(uid)
+      );
       allow delete: if false;
     }
 

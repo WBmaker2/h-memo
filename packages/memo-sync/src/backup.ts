@@ -219,6 +219,29 @@ function activeSnapshotIdFromState(snapshot: DriverDocumentSnapshot): string | n
     : null;
 }
 
+function activatedAtFromState(snapshot: DriverDocumentSnapshot): unknown | null {
+  if (!snapshot.exists()) {
+    return null;
+  }
+
+  const activatedAt = snapshot.data().activatedAt;
+  return normalizeFirestoreTimestamp(activatedAt) === null ? null : activatedAt;
+}
+
+function assertPendingSnapshotLease(
+  snapshot: DriverDocumentSnapshot,
+  userId: string,
+  snapshotId: string
+) {
+  if (
+    !snapshot.exists() ||
+    snapshot.data().userId !== userId ||
+    snapshot.data().pendingSnapshotId !== snapshotId
+  ) {
+    throw new Error(`Backup ${snapshotId} was superseded by a newer backup`);
+  }
+}
+
 type CanonicalReference = {
   snapshotId: string;
   savedAt: unknown;
@@ -297,69 +320,107 @@ export class FirestoreBackupGateway implements BackupGateway {
     const snapshotRef = this.driver.doc(this.snapshotCollection(userId));
     const snapshotId = this.driver.id(snapshotRef);
 
-    const [activeState, existingCanonicalMemos] = await Promise.all([
-      this.driver.getDoc(this.activationDoc(userId)),
-      this.driver.getDocs(this.canonicalMemoCollection(userId)),
-    ]);
-    const activeSnapshotId = activeSnapshotIdFromState(activeState);
+    const activeSnapshotId = await this.driver.runTransaction(
+      this.firestore,
+      async (transaction) => {
+        const activeState = await transaction.get(this.activationDoc(userId));
+        if (activeState.exists() && activeState.data().userId !== userId) {
+          throw new Error("Backup state belongs to a different user");
+        }
+
+        const priorActiveSnapshotId = activeSnapshotIdFromState(activeState);
+        transaction.set(snapshotRef, {
+          schemaVersion: 2,
+          userId,
+          createdAt: payload.createdAt,
+          memoCount: activeMemos.length,
+          state: "writing",
+        });
+        transaction.set(this.activationDoc(userId), {
+          userId,
+          activeSnapshotId: priorActiveSnapshotId,
+          pendingSnapshotId: snapshotId,
+          activatedAt: activatedAtFromState(activeState),
+        });
+        return priorActiveSnapshotId;
+      }
+    );
+
+    const existingCanonicalMemos = await this.driver.getDocs(
+      this.canonicalMemoCollection(userId)
+    );
     const existingCanonicalMemosById = new Map(
       existingCanonicalMemos.docs.map((snapshot) => [snapshot.id, snapshot])
     );
 
-    await this.driver.setDoc(snapshotRef, {
-      schemaVersion: 2,
-      userId,
-      createdAt: payload.createdAt,
-      memoCount: activeMemos.length,
-      state: "writing",
-    });
-
     for (const memoChunk of chunkMemos(activeMemos)) {
-      const memoBatch = this.driver.writeBatch(this.firestore);
-      for (const memo of memoChunk) {
-        const canonicalMemoRef = this.canonicalMemoDoc(userId, memo.id);
-        const existingCanonicalMemo = existingCanonicalMemosById.get(memo.id);
-        const previousActiveReference =
-          activeSnapshotId && existingCanonicalMemo
-            ? canonicalReferenceForSnapshot(existingCanonicalMemo.data(), activeSnapshotId)
-            : null;
-        const stagedReferences = {
-          active: canonicalReferenceData(previousActiveReference),
-          pending: {
-            snapshotId,
-            savedAt: this.driver.serverTimestamp(),
-          },
-        };
+      await this.driver.runTransaction(this.firestore, async (transaction) => {
+        assertPendingSnapshotLease(
+          await transaction.get(this.activationDoc(userId)),
+          userId,
+          snapshotId
+        );
 
-        if (existingCanonicalMemo) {
-          memoBatch.update(canonicalMemoRef, stagedReferences);
-        } else {
-          memoBatch.set(canonicalMemoRef, {
+        for (const memo of memoChunk) {
+          const canonicalMemoRef = this.canonicalMemoDoc(userId, memo.id);
+          const existingCanonicalMemo = existingCanonicalMemosById.get(memo.id);
+          const previousActiveReference =
+            activeSnapshotId && existingCanonicalMemo
+              ? canonicalReferenceForSnapshot(existingCanonicalMemo.data(), activeSnapshotId)
+              : null;
+          const stagedReferences = {
+            active: canonicalReferenceData(previousActiveReference),
+            pending: {
+              snapshotId,
+              savedAt: this.driver.serverTimestamp(),
+            },
+          };
+
+          if (existingCanonicalMemo) {
+            transaction.update(canonicalMemoRef, stagedReferences);
+          } else {
+            transaction.set(canonicalMemoRef, {
+              userId,
+              memoId: memo.id,
+              ...stagedReferences,
+            });
+          }
+          transaction.set(this.driver.doc(snapshotRef, snapshotMemosCollection, memo.id), {
             userId,
             memoId: memo.id,
-            ...stagedReferences,
+            memo,
           });
         }
-        memoBatch.set(this.driver.doc(snapshotRef, snapshotMemosCollection, memo.id), {
-          userId,
-          memoId: memo.id,
-          memo,
-        });
-      }
-      await memoBatch.commit();
+      });
     }
 
-    const activationBatch = this.driver.writeBatch(this.firestore);
-    activationBatch.update(snapshotRef, {
-      state: "complete",
-      savedAt: this.driver.serverTimestamp(),
+    await this.driver.runTransaction(this.firestore, async (transaction) => {
+      assertPendingSnapshotLease(
+        await transaction.get(this.activationDoc(userId)),
+        userId,
+        snapshotId
+      );
+      const snapshot = await transaction.get(snapshotRef);
+      if (
+        !snapshot.exists() ||
+        snapshot.data().schemaVersion !== 2 ||
+        snapshot.data().userId !== userId ||
+        snapshot.data().state !== "writing"
+      ) {
+        throw new Error(`Backup ${snapshotId} is no longer writable`);
+      }
+
+      transaction.update(snapshotRef, {
+        state: "complete",
+        savedAt: this.driver.serverTimestamp(),
+      });
+      transaction.set(this.activationDoc(userId), {
+        userId,
+        activeSnapshotId: snapshotId,
+        pendingSnapshotId: null,
+        activatedAt: this.driver.serverTimestamp(),
+      });
     });
-    activationBatch.set(this.activationDoc(userId), {
-      userId,
-      activeSnapshotId: snapshotId,
-      activatedAt: this.driver.serverTimestamp(),
-    });
-    await activationBatch.commit();
 
     return `${(snapshotRef as { path?: string }).path ?? `users/${userId}/${backupSnapshotsCollection}/${snapshotId}`}`;
   }

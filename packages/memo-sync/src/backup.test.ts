@@ -54,12 +54,17 @@ function cloneValue<T>(value: T): T {
 class FakeFirestoreDriver {
   readonly docs = new Map<string, Record<string, unknown>>();
   readonly batchOperationCounts: number[] = [];
+  readonly transactionOperationCounts: number[] = [];
   private readonly versions = new Map<string, number>();
   private nextDocument = 1;
   private nextTimestamp = 1;
   private batchCommits = 0;
+  transactionCommitCount = 0;
   failBatchCommit: number | null = null;
+  failTransactionCommit: number | null = null;
   beforeBatchCommit: ((operations: DriverOperation[]) => Promise<void>) | null = null;
+  beforeTransactionCommit: ((operations: DriverOperation[]) => Promise<void>) | null = null;
+  afterTransactionCommit: ((operations: DriverOperation[]) => Promise<void>) | null = null;
   onFirstTransactionRead: (() => Promise<void>) | null = null;
   private usedTransactionReadHook = false;
 
@@ -157,7 +162,14 @@ class FakeFirestoreDriver {
       if (conflicted) {
         continue;
       }
+      this.transactionCommitCount += 1;
+      this.transactionOperationCounts.push(operations.length);
+      await this.beforeTransactionCommit?.(operations);
+      if (this.failTransactionCommit === this.transactionCommitCount) {
+        throw new Error(`forced transaction failure ${this.transactionCommitCount}`);
+      }
       this.apply(operations);
+      await this.afterTransactionCommit?.(operations);
       return result;
     }
     throw new Error("transaction retry limit reached");
@@ -589,7 +601,7 @@ describe("FirestoreBackupGateway driver contract", () => {
     return path.split("/").at(-1)!;
   }
 
-  it("writes more than 200 memos in bounded batches and activates only after the snapshot is complete", async () => {
+  it("writes more than 200 memos in bounded transactions and activates only after the snapshot is complete", async () => {
     const driver = new FakeFirestoreDriver();
     const gateway = createGateway(driver);
     const memos = Array.from({ length: 201 }, (_, index) =>
@@ -604,8 +616,8 @@ describe("FirestoreBackupGateway driver contract", () => {
     });
     const id = snapshotId(path);
 
-    expect(driver.batchOperationCounts.slice(0, 2)).toEqual([400, 2]);
-    expect(driver.batchOperationCounts.every((count) => count <= 400)).toBe(true);
+    expect(driver.transactionOperationCounts).toEqual([2, 400, 2, 2]);
+    expect(driver.transactionOperationCounts.every((count) => count <= 400)).toBe(true);
     expect(driver.read(`users/user-1/backupSnapshots/${id}`)).toMatchObject({
       schemaVersion: 2,
       state: "complete",
@@ -642,7 +654,7 @@ describe("FirestoreBackupGateway driver contract", () => {
       memos: [previous],
     });
     await gateway.deleteCurrentMemo("user-1", previous.id);
-    driver.failBatchCommit = driver.batchOperationCounts.length + 2;
+    driver.failTransactionCommit = driver.transactionCommitCount + 3;
 
     await expect(
       gateway.saveBackup("user-1", {
@@ -653,7 +665,7 @@ describe("FirestoreBackupGateway driver contract", () => {
           createMemo({ id: `memo-new-${index}`, now: "2026-05-13T09:05:00.000Z" })
         ),
       })
-    ).rejects.toThrow("forced batch failure");
+    ).rejects.toThrow("forced transaction failure");
 
     expect(driver.read("users/user-1/backupState/current")).toMatchObject({
       activeSnapshotId: snapshotId(firstPath),
@@ -672,7 +684,7 @@ describe("FirestoreBackupGateway driver contract", () => {
       createdAt: "2026-05-13T09:00:00.000Z",
       memos: [previous],
     });
-    driver.failBatchCommit = driver.batchOperationCounts.length + 2;
+    driver.failTransactionCommit = driver.transactionCommitCount + 3;
 
     await expect(
       gateway.saveBackup("user-1", {
@@ -681,7 +693,7 @@ describe("FirestoreBackupGateway driver contract", () => {
         createdAt: "2026-05-13T09:05:00.000Z",
         memos: [createMemo({ id: "memo-next", now: "2026-05-13T09:05:00.000Z" })],
       })
-    ).rejects.toThrow("forced batch failure");
+    ).rejects.toThrow("forced transaction failure");
 
     expect(driver.read("users/user-1/backupState/current")).toMatchObject({
       activeSnapshotId: snapshotId(previousPath),
@@ -703,9 +715,12 @@ describe("FirestoreBackupGateway driver contract", () => {
       memos: [memo],
     });
     let deletedDuringActivation = false;
-    driver.beforeBatchCommit = async (operations) => {
+    driver.beforeTransactionCommit = async (operations) => {
       const activatesGeneration = operations.some(
-        (operation) => operation.ref.path === "users/user-1/backupState/current"
+        (operation) =>
+          operation.ref.path === "users/user-1/backupState/current" &&
+          operation.data?.activeSnapshotId === "2" &&
+          operation.data?.pendingSnapshotId === null
       );
       if (activatesGeneration && !deletedDuringActivation) {
         deletedDuringActivation = true;
@@ -721,6 +736,7 @@ describe("FirestoreBackupGateway driver contract", () => {
     });
 
     expect(snapshotId(secondPath)).not.toBe(snapshotId(firstPath));
+    expect(deletedDuringActivation).toBe(true);
     expect((await gateway.loadCurrentMemos("user-1")).map((entry) => entry.memo.plainText)).toEqual([
       "reactivated",
     ]);
@@ -734,6 +750,7 @@ describe("FirestoreBackupGateway driver contract", () => {
     driver.seed("users/user-1/backupState/current", {
       userId: "user-1",
       activeSnapshotId: "snapshot-a",
+      pendingSnapshotId: null,
       activatedAt: new FakeTimestamp("2026-05-13T09:00:00.000Z"),
     });
     driver.seed("users/user-1/memos/memo-delete", {
@@ -746,6 +763,7 @@ describe("FirestoreBackupGateway driver contract", () => {
       driver.seed("users/user-1/backupState/current", {
         userId: "user-1",
         activeSnapshotId: "snapshot-b",
+        pendingSnapshotId: null,
         activatedAt: new FakeTimestamp("2026-05-13T09:01:00.000Z"),
       });
     };
@@ -873,14 +891,14 @@ describe("FirestoreBackupGateway driver contract", () => {
       createdAt: "2026-05-13T09:02:00.000Z",
       memos: [{ ...memo, plainText: "third" }],
     }));
-    driver.failBatchCommit = driver.batchOperationCounts.length + 2;
+    driver.failTransactionCommit = driver.transactionCommitCount + 3;
 
     await expect(gateway.saveBackup("user-1", {
       version: 1,
       userId: "user-1",
       createdAt: "2026-05-13T09:03:00.000Z",
       memos: [{ ...memo, plainText: "failed fourth" }],
-    })).rejects.toThrow("forced batch failure");
+    })).rejects.toThrow("forced transaction failure");
 
     const canonical = driver.read("users/user-1/memos/memo-bounded");
     expect(canonical).toEqual(expect.objectContaining({
@@ -947,5 +965,87 @@ describe("FirestoreBackupGateway driver contract", () => {
     expect((await listBackupSnapshots(gateway, "user-1")).flatMap((snapshot) =>
       snapshot.payload.memos.map((item) => item.id)
     )).toEqual(expect.arrayContaining([memo.id, legacyMemo.id]));
+  });
+
+  it("clears the pending lease only when its backup activates", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "memo-lease", now: "2026-05-13T09:00:00.000Z" });
+
+    const path = await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memos: [memo],
+    });
+
+    expect(driver.read("users/user-1/backupState/current")).toMatchObject({
+      activeSnapshotId: snapshotId(path),
+      pendingSnapshotId: null,
+    });
+    expect(driver.transactionOperationCounts).toEqual([2, 2, 2]);
+    expect(driver.read(`users/user-1/backupSnapshots/${snapshotId(path)}/memos/${memo.id}`)).toMatchObject({
+      memoId: memo.id,
+    });
+  });
+
+  it("keeps the prior generation authoritative when a newer lease supersedes an older backup", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const priorMemo = createMemo({ id: "memo-prior", now: "2026-05-13T09:00:00.000Z" });
+    const priorPath = await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memos: [priorMemo],
+    });
+    let newerBackupStarted = false;
+    driver.afterTransactionCommit = async (operations) => {
+      const acquiredOlderLease = operations.some(
+        (operation) =>
+          operation.ref.path === "users/user-1/backupState/current" &&
+          operation.data?.pendingSnapshotId === "2"
+      );
+      if (!acquiredOlderLease || newerBackupStarted) {
+        return;
+      }
+
+      newerBackupStarted = true;
+      driver.failTransactionCommit = driver.transactionCommitCount + 3;
+      await expect(
+        gateway.saveBackup("user-1", {
+          version: 1,
+          userId: "user-1",
+          createdAt: "2026-05-13T09:02:00.000Z",
+          memos: [
+            createMemo({ id: "memo-newer", now: "2026-05-13T09:02:00.000Z" }),
+          ],
+        })
+      ).rejects.toThrow("forced transaction failure");
+    };
+
+    await expect(
+      gateway.saveBackup("user-1", {
+        version: 1,
+        userId: "user-1",
+        createdAt: "2026-05-13T09:01:00.000Z",
+        memos: [
+          createMemo({ id: "memo-older", now: "2026-05-13T09:01:00.000Z" }),
+        ],
+      })
+    ).rejects.toThrow("superseded");
+
+    expect(newerBackupStarted).toBe(true);
+    expect(driver.read("users/user-1/backupState/current")).toMatchObject({
+      activeSnapshotId: snapshotId(priorPath),
+      pendingSnapshotId: "3",
+    });
+    expect(driver.read("users/user-1/backupSnapshots/2/memos/memo-older")).toBeUndefined();
+    expect(driver.read("users/user-1/backupSnapshots/3/memos/memo-newer")).toMatchObject({
+      memoId: "memo-newer",
+    });
+    expect((await gateway.loadCurrentMemos("user-1")).map((entry) => entry.memo.id)).toEqual([
+      priorMemo.id,
+    ]);
   });
 });
