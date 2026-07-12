@@ -1479,6 +1479,139 @@ describe("desktop App", () => {
     expect(tauriRepositoryState.get(remotelySavedMemo.id)).toEqual(remotelySavedMemo);
   });
 
+  it("applies a locked store event before unlocking after acquire window lookup failure", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const initialMemo = createMemo({
+      id: "memo-acquire-failure-event",
+      now: "2026-07-13T13:00:00.000Z",
+      plainText: "획득 실패 전 메모",
+    });
+    const remoteMemo = {
+      ...initialMemo,
+      plainText: "inactive lease 중 원격 저장",
+      updatedAt: "2026-07-13T13:01:00.000Z",
+    };
+    tauriRepositoryState.set(initialMemo.id, initialMemo);
+    mockImportJsonFile.mockResolvedValue({
+      status: "loaded",
+      contents: JSON.stringify({
+        version: 1,
+        userId: "local",
+        createdAt: "2026-07-13T13:02:00.000Z",
+        memos: [initialMemo],
+      }),
+    });
+    const liveWindowLookup = deferred<string[]>();
+    mockListLiveWindowLabels.mockImplementation(() => liveWindowLookup.promise);
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("획득 실패 전 메모")).toBeInTheDocument();
+      expect(tauriEventState.memoStoreListener).toEqual(expect.any(Function));
+    });
+
+    await user.click(screen.getByRole("button", { name: "JSON 복원" }));
+    await waitFor(() => {
+      expect(mockListLiveWindowLabels).toHaveBeenCalledTimes(1);
+      expect(screen.getByDisplayValue("획득 실패 전 메모")).toHaveAttribute("readonly");
+      expect(nativeLeaseState.lease).toEqual(
+        expect.objectContaining({ operationActive: false })
+      );
+    });
+
+    tauriRepositoryState.set(remoteMemo.id, remoteMemo);
+    act(() => {
+      tauriEventState.memoStoreListener?.({ memoId: remoteMemo.id });
+    });
+    liveWindowLookup.reject(new Error("window lookup failed"));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("inactive lease 중 원격 저장")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "JSON 복원 실패: window lookup failed"
+      );
+    });
+    expect(screen.getByDisplayValue("inactive lease 중 원격 저장")).not.toHaveAttribute(
+      "readonly"
+    );
+    expect(nativeLeaseState.lease).toBeNull();
+  });
+
+  it("re-reads acquire-failure state when a store event arrives during cleanup reload", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const initialMemo = createMemo({
+      id: "memo-acquire-failure-reread",
+      now: "2026-07-13T13:10:00.000Z",
+      plainText: "cleanup reload 전 메모",
+    });
+    const firstReadMemo = {
+      ...initialMemo,
+      plainText: "첫 cleanup read",
+      updatedAt: "2026-07-13T13:11:00.000Z",
+    };
+    const finalMemo = {
+      ...initialMemo,
+      plainText: "두 번째 cleanup read",
+      updatedAt: "2026-07-13T13:12:00.000Z",
+    };
+    tauriRepositoryState.set(initialMemo.id, initialMemo);
+    mockImportJsonFile.mockResolvedValue({
+      status: "loaded",
+      contents: JSON.stringify({
+        version: 1,
+        userId: "local",
+        createdAt: "2026-07-13T13:13:00.000Z",
+        memos: [initialMemo],
+      }),
+    });
+    mockNotifyRestoreLockRequested.mockRejectedValue(new Error("ACK setup failed"));
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("cleanup reload 전 메모")).toBeInTheDocument();
+      expect(tauriEventState.memoStoreListener).toEqual(expect.any(Function));
+    });
+
+    const firstCleanupRead = deferred<any[]>();
+    mockListMemos.mockReset();
+    mockListMemos.mockImplementation(async () => {
+      if (mockListMemos.mock.calls.length === 1) {
+        return firstCleanupRead.promise;
+      }
+      return [...tauriRepositoryState.values()];
+    });
+
+    await user.click(screen.getByRole("button", { name: "JSON 복원" }));
+    await waitFor(() => {
+      expect(mockListMemos).toHaveBeenCalledTimes(1);
+      expect(screen.getByDisplayValue("cleanup reload 전 메모")).toHaveAttribute(
+        "readonly"
+      );
+    });
+
+    tauriRepositoryState.set(finalMemo.id, finalMemo);
+    act(() => {
+      tauriEventState.memoStoreListener?.({ memoId: finalMemo.id });
+    });
+    firstCleanupRead.resolve([firstReadMemo]);
+
+    await waitFor(() => {
+      expect(mockListMemos).toHaveBeenCalledTimes(2);
+      expect(screen.getByDisplayValue("두 번째 cleanup read")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "JSON 복원 실패: ACK setup failed"
+      );
+    });
+    expect(screen.queryByDisplayValue("첫 cleanup read")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("두 번째 cleanup read")).not.toHaveAttribute(
+      "readonly"
+    );
+  });
+
   it("rolls back a desktop restore when a remote window rejects store application", async () => {
     const user = userEvent.setup();
     setTauriRuntime(true);

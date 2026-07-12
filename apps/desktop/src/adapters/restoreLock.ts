@@ -1289,16 +1289,6 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       "복원 잠금 해제 공유가 시간 초과되었습니다."
     );
 
-  const releaseInactiveNativeLease = async (token: string) => {
-    if (!nativeLease) {
-      return null;
-    }
-    return runBoundedCleanup(
-      () => nativeLease.release(token, owner),
-      "복원 잠금 lease 해제가 시간 초과되었습니다."
-    );
-  };
-
   const isNativeLeaseGone = async (token: string) => {
     const current = await readNativeLease();
     return !current || current.token !== token || current.owner !== owner;
@@ -1725,7 +1715,6 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     activeLeaseFailureToken = token;
     activeLeaseFailureGeneration = generation;
     let pending = false;
-    let nativeLeaseAcquired = false;
 
     try {
       // lockLocal synchronously flips the caller's persistence barrier before its queue drain.
@@ -1739,7 +1728,6 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         if (acquired.token !== token || acquired.owner !== owner) {
           throw new Error("복원 잠금 lease 소유자 확인에 실패했습니다.");
         }
-        nativeLeaseAcquired = true;
         startLeaseRenewal(token, generation);
       }
 
@@ -1775,41 +1763,42 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       pending = false;
       return token;
     } catch (error) {
-      const cleanupErrors: unknown[] = [];
       if (pending) {
         clearPending(token);
       }
       clearLeaseRenewal();
-      if (nativeLeaseAcquired) {
-        const nativeReleaseError = await releaseInactiveNativeLease(token);
-        if (nativeReleaseError) {
-          cleanupErrors.push(nativeReleaseError);
-        }
-      }
       const failedAcquireGeneration = ++nextStoreApplyGeneration;
-      const broadcastError = await broadcastRelease(
+      localFinalApplyGeneration = failedAcquireGeneration;
+      const recovery = {
         token,
-        failedAcquireGeneration
-      );
-      if (broadcastError) {
-        cleanupErrors.push(broadcastError);
+        finalApplyGeneration: failedAcquireGeneration,
+        nativeFinished: !nativeLease?.finish,
+        applyComplete: true,
+        notificationComplete: false,
+        notificationBypassedAfterNativeAbsence: false,
+        notificationError: null,
+        nativeComplete: !nativeLease,
+        postRemovalVerificationComplete: !options.applyStore,
+        retryAttempt: 0,
+      };
+      pendingLocalRecovery = recovery;
+      const cleanupErrors = await attemptRecoveryCleanup(recovery);
+      for (const cleanupError of cleanupErrors) {
+        reportProtocolError(cleanupError);
       }
-      localToken = null;
-      localExpectedWindowLabels = null;
-      localOperationActivated = false;
-      activeLeaseOwnershipFailure = null;
-      if (activeLeaseFailureToken === token && activeLeaseFailureGeneration === generation) {
-        activeLeaseFailureToken = null;
-        activeLeaseFailureGeneration = 0;
+      const acquireFailure =
+        cleanupErrors.length > 0
+          ? aggregateErrors(
+              "복원 잠금 획득 실패와 정리 실패가 함께 발생했습니다",
+              [error, ...cleanupErrors]
+            )
+          : error;
+      if (!isRecoveryComplete(recovery)) {
+        scheduleNativeCleanupRetry(token);
+        throw acquireFailure;
       }
-      options.unlockLocal(token);
-      if (cleanupErrors.length > 0) {
-        throw aggregateErrors(
-          "복원 잠금 획득 실패와 정리 실패가 함께 발생했습니다",
-          [error, ...cleanupErrors]
-        );
-      }
-      throw error;
+      finalizeLocalRelease(token);
+      throw acquireFailure;
     }
   };
 

@@ -1442,7 +1442,192 @@ describe("restore lock coordinator", () => {
     }
   });
 
-  it("aggregates acquire failure with inactive lease and release event cleanup failures", async () => {
+  it("applies authoritative owner state after native cleanup when acquire setup fails without an event", async () => {
+    const events: string[] = [];
+    let lease: {
+      token: string;
+      owner: string;
+      expiresAtMs: number;
+      operationActive: boolean;
+    } | null = null;
+    const nativeLease = {
+      acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+        events.push("native-acquire");
+        lease = {
+          token,
+          owner,
+          expiresAtMs: Date.now() + ttlMs,
+          operationActive: false,
+        };
+        return lease;
+      }),
+      current: vi.fn(async () => lease),
+      renew: vi.fn(),
+      activate: vi.fn(),
+      finish: vi.fn(async (_token: string, _owner: string, cleanupTtlMs: number) => {
+        if (!lease) {
+          throw new Error("lease missing");
+        }
+        events.push("native-finish");
+        lease.expiresAtMs = Date.now() + cleanupTtlMs;
+        return lease;
+      }),
+      release: vi.fn(async () => {
+        events.push("native-release");
+        lease = null;
+        return true;
+      }),
+    };
+    const applyStore = vi.fn(async () => {
+      events.push("owner-apply");
+    });
+    const coordinator = createRestoreLockCoordinator({
+      getCurrentWindowLabel: () => "main",
+      listLiveWindowLabels: async () => {
+        events.push("list-live");
+        throw new Error("window lookup failed");
+      },
+      notifyLockRequested: async () => {},
+      listenLockRequested: async () => () => {},
+      notifyLockAcknowledged: async () => {},
+      listenLockAcknowledged: async () => () => {},
+      notifyLockReleased: async () => {
+        events.push("notify-release");
+      },
+      listenLockReleased: async () => () => {},
+      applyStore,
+      nativeLease,
+      lockLocal: async () => {
+        events.push("local-lock");
+      },
+      unlockLocal: () => {
+        events.push("local-unlock");
+      },
+    });
+
+    await expect(coordinator.acquire()).rejects.toThrow("window lookup failed");
+
+    expect(applyStore).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      "local-lock",
+      "native-acquire",
+      "list-live",
+      "native-finish",
+      "notify-release",
+      "native-release",
+      "owner-apply",
+      "local-unlock",
+    ]);
+    await coordinator.stop();
+  });
+
+  it("keeps an acquire-failure lock closed until a timed-out owner apply recovers", async () => {
+    vi.useFakeTimers();
+    try {
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = null;
+      let locallyLocked = false;
+      const firstApply = deferred<void>();
+      const applyStore = vi.fn(async (_payload: { generation: number }) => {
+        if (applyStore.mock.calls.length === 1) {
+          await firstApply.promise;
+        }
+      });
+      const unlockLocal = vi.fn(() => {
+        locallyLocked = false;
+      });
+      const nativeLease = {
+        acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          lease = {
+            token,
+            owner,
+            expiresAtMs: Date.now() + ttlMs,
+            operationActive: false,
+          };
+          return lease;
+        }),
+        current: vi.fn(async () => lease),
+        renew: vi.fn(),
+        activate: vi.fn(),
+        finish: vi.fn(async (_token: string, _owner: string, cleanupTtlMs: number) => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.expiresAtMs = Date.now() + cleanupTtlMs;
+          return lease;
+        }),
+        release: vi.fn(async () => {
+          lease = null;
+          return true;
+        }),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => {
+          throw new Error("window lookup failed");
+        },
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        applyStore,
+        nativeLease,
+        lockLocal: async () => {
+          locallyLocked = true;
+        },
+        unlockLocal,
+        bridgeTimeoutMs: 5,
+        cleanupTimeoutMs: 5,
+        cleanupRetryIntervalMs: 10,
+      });
+
+      const acquireResult = coordinator.acquire().then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error })
+      );
+      await flushMicrotasks(50);
+      await vi.advanceTimersByTimeAsync(5);
+      const outcome = await acquireResult;
+
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.error).toHaveProperty(
+          "message",
+          expect.stringContaining("window lookup failed")
+        );
+        expect(outcome.error).toHaveProperty(
+          "message",
+          expect.stringContaining("native lease 제거 후 최종 메모 상태 적용")
+        );
+      }
+      expect(nativeLease.release).toHaveBeenCalledTimes(1);
+      expect(applyStore).toHaveBeenCalledTimes(1);
+      expect(locallyLocked).toBe(true);
+      expect(unlockLocal).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(10);
+      await flushMicrotasks(50);
+
+      expect(applyStore).toHaveBeenCalledTimes(2);
+      expect(applyStore.mock.calls[0]?.[0].generation).not.toBe(
+        applyStore.mock.calls[1]?.[0].generation
+      );
+      expect(unlockLocal).toHaveBeenCalledTimes(1);
+      expect(locallyLocked).toBe(false);
+      firstApply.resolve();
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aggregates acquire failure with release notification failure after native absence", async () => {
     const nativeLease = {
       acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => ({
         token,
@@ -1483,14 +1668,12 @@ describe("restore lock coordinator", () => {
       );
       expect(error).toHaveProperty(
         "message",
-        expect.stringContaining("inactive lease release failed")
-      );
-      expect(error).toHaveProperty(
-        "message",
         expect.stringContaining("acquire release event failed")
       );
       return true;
     });
+    expect(nativeLease.current).toHaveBeenCalled();
+    expect(nativeLease.release).not.toHaveBeenCalled();
   });
 
   it("bounds a hung native activation before the restore callback starts", async () => {
