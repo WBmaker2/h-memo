@@ -202,7 +202,7 @@ function isValidMemo(memo: unknown, userId: string): memo is Memo {
     {
       version: 1,
       userId,
-      createdAt: "",
+      createdAt: "1970-01-01T00:00:00.000Z",
       memos: [memo],
     },
     userId

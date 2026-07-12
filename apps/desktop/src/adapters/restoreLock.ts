@@ -15,12 +15,14 @@ export type RestoreLockLease = {
   token: string;
   owner: string;
   expiresAtMs: number;
+  operationActive: boolean;
 };
 
 export type RestoreLockLeaseAdapter = {
   acquire: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
   current: () => Promise<RestoreLockLease | null>;
   renew: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
+  activate: (token: string, owner: string) => Promise<RestoreLockLease>;
   release: (token: string, owner: string) => Promise<boolean>;
 };
 
@@ -70,6 +72,8 @@ export function createTauriRestoreLockLeaseAdapter(): RestoreLockLeaseAdapter {
     current: () => invoke<RestoreLockLease | null>("current_restore_lock_lease"),
     renew: (token, owner, ttlMs) =>
       invoke<RestoreLockLease>("renew_restore_lock_lease", { token, owner, ttlMs }),
+    activate: (token, owner) =>
+      invoke<RestoreLockLease>("activate_restore_lock_lease", { token, owner }),
     release: (token, owner) =>
       invoke<boolean>("release_restore_lock_lease", { token, owner }),
   };
@@ -85,6 +89,7 @@ function toError(error: unknown, fallback: string) {
 
 export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOptions) {
   const pendingAcknowledgements = new Map<string, PendingAcknowledgements>();
+  const pendingRemoteAcquires = new Map<string, () => void>();
   const cleanups: Array<() => void> = [];
   const nativeLease = options.nativeLease;
   const owner = options.getCurrentWindowLabel();
@@ -101,6 +106,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let remoteLeaseExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   let activeLeaseFailureReject: ((error: unknown) => void) | null = null;
   let activeOperation: Promise<unknown> | null = null;
+  let runQueue: Promise<void> = Promise.resolve();
   let stopping = false;
   let stopPromise: Promise<void> | null = null;
 
@@ -155,6 +161,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
     remoteToken = null;
     clearRemoteLeaseWatch();
+    const resolveAcquire = pendingRemoteAcquires.get(token);
+    pendingRemoteAcquires.delete(token);
+    resolveAcquire?.();
     options.unlockLocal(token);
   };
 
@@ -188,28 +197,44 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       const current = await nativeLease.current();
       if (!current || current.token !== token) {
         unlockRemote(token);
+      } else if (current.operationActive) {
+        if (remoteLeaseExpiryTimer) {
+          clearTimeout(remoteLeaseExpiryTimer);
+          remoteLeaseExpiryTimer = null;
+        }
       } else {
-        scheduleRemoteLeaseExpiry(token, current.expiresAtMs);
+        scheduleRemoteLeaseExpiry(token, current.expiresAtMs, current.operationActive);
       }
     } catch (error) {
       reportProtocolError(error);
     }
   };
 
-  const scheduleRemoteLeaseExpiry = (token: string, expiresAtMs = Date.now() + leaseTtlMs) => {
+  const scheduleRemoteLeaseExpiry = (
+    token: string,
+    expiresAtMs = Date.now() + leaseTtlMs,
+    operationActive = false
+  ) => {
     if (remoteLeaseExpiryTimer) {
       clearTimeout(remoteLeaseExpiryTimer);
+      remoteLeaseExpiryTimer = null;
+    }
+    if (operationActive) {
+      return;
     }
     const remainingMs = Math.max(leasePollIntervalMs, expiresAtMs - Date.now());
     remoteLeaseExpiryTimer = setTimeout(() => {
       if (remoteToken === token) {
-        reportProtocolError(new Error("복원 잠금 lease가 만료되었습니다."));
-        unlockRemote(token);
+        void checkRemoteLease(token);
       }
     }, remainingMs + leasePollIntervalMs);
   };
 
-  const startRemoteLeaseWatch = (token: string, expiresAtMs?: number) => {
+  const startRemoteLeaseWatch = (
+    token: string,
+    expiresAtMs?: number,
+    operationActive = false
+  ) => {
     if (!nativeLease) {
       return;
     }
@@ -217,17 +242,24 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     remoteLeasePollTimer = setInterval(() => {
       void checkRemoteLease(token);
     }, leasePollIntervalMs);
-    scheduleRemoteLeaseExpiry(token, expiresAtMs);
+    scheduleRemoteLeaseExpiry(token, expiresAtMs, operationActive);
   };
 
   const acquireRemoteLock = async (token: string, lease?: RestoreLockLease) => {
     remoteToken = token;
-    startRemoteLeaseWatch(token, lease?.expiresAtMs);
+    startRemoteLeaseWatch(token, lease?.expiresAtMs, lease?.operationActive ?? false);
+    const releaseSignal = new Promise<void>((resolve) => {
+      pendingRemoteAcquires.set(token, resolve);
+    });
     try {
-      await options.lockLocal(token);
+      await Promise.race([
+        Promise.resolve().then(() => options.lockLocal(token)),
+        releaseSignal,
+      ]);
       if (remoteToken !== token) {
         return;
       }
+      pendingRemoteAcquires.delete(token);
       void options
         .notifyLockAcknowledged({
           token,
@@ -236,10 +268,15 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         })
         .catch(reportProtocolError);
     } catch (error) {
-      if (remoteToken === token) {
+      const ownsToken = remoteToken === token;
+      pendingRemoteAcquires.delete(token);
+      if (ownsToken) {
         remoteToken = null;
         clearRemoteLeaseWatch();
         options.unlockLocal(token);
+      }
+      if (!ownsToken) {
+        return;
       }
       try {
         await options.notifyLockAcknowledged({
@@ -492,7 +529,22 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
   };
 
-  const run = async <T,>(operation: (token: string) => Promise<T>): Promise<T> => {
+  const activateNativeLease = async (token: string) => {
+    if (!nativeLease) {
+      return;
+    }
+
+    const activated = await nativeLease.activate(token, owner);
+    if (
+      activated.token !== token ||
+      activated.owner !== owner ||
+      !activated.operationActive
+    ) {
+      throw new Error("복원 잠금 operation lease 활성화에 실패했습니다.");
+    }
+  };
+
+  const beginRun = async <T,>(operation: (token: string) => Promise<T>) => {
     await start();
     if (stopping) {
       throw new Error("복원 잠금 coordinator가 종료되었습니다.");
@@ -517,6 +569,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     const completion = (async () => {
       try {
         token = await acquire();
+        await activateNativeLease(token);
         return await operation(token);
       } finally {
         if (token) {
@@ -541,7 +594,31 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     );
     void completion.catch(() => {});
 
-    return Promise.race([completion, leaseFailure]);
+    return {
+      result: Promise.race([completion, leaseFailure]),
+      completion,
+    };
+  };
+
+  const run = <T,>(operation: (token: string) => Promise<T>): Promise<T> => {
+    let resolveResult!: (value: T | PromiseLike<T>) => void;
+    let rejectResult!: (reason?: unknown) => void;
+    const result = new Promise<T>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    const previousRun = runQueue;
+    const lifecycle = previousRun.then(async () => {
+      try {
+        const started = await beginRun(operation);
+        started.result.then(resolveResult, rejectResult);
+        await started.completion.catch(() => {});
+      } catch (error) {
+        rejectResult(error);
+      }
+    });
+    runQueue = lifecycle.catch(() => {});
+    return result;
   };
 
   const stop = async () => {
@@ -550,17 +627,16 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
 
     stopping = true;
+    if (remoteToken) {
+      const token = remoteToken;
+      unlockRemote(token);
+    }
     stopPromise = (async () => {
-      if (activeOperation) {
-        await activeOperation.catch(() => {});
-      }
+      await runQueue.catch(() => {});
+      await activeOperation?.catch(() => {});
       if (localToken) {
         const token = localToken;
         await release(token);
-      }
-      if (remoteToken) {
-        const token = remoteToken;
-        unlockRemote(token);
       }
       for (const cleanup of cleanups.splice(0)) {
         cleanup();

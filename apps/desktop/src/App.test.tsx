@@ -173,7 +173,12 @@ const {
 
   const tauriRepositoryState = new Map<string, any>();
   const nativeLeaseState: {
-    lease: { token: string; owner: string; expiresAtMs: number } | null;
+    lease: {
+      token: string;
+      owner: string;
+      expiresAtMs: number;
+      operationActive: boolean;
+    } | null;
   } = {
     lease: null,
   };
@@ -612,7 +617,11 @@ beforeEach(() => {
   mockNotifyRestoreSafetyChanged.mockResolvedValue(undefined);
   mockInvoke.mockImplementation(async (command: string, args?: Record<string, any>) => {
     if (command === "current_restore_lock_lease") {
-      if (nativeLeaseState.lease && nativeLeaseState.lease.expiresAtMs <= Date.now()) {
+      if (
+        nativeLeaseState.lease &&
+        !nativeLeaseState.lease.operationActive &&
+        nativeLeaseState.lease.expiresAtMs <= Date.now()
+      ) {
         nativeLeaseState.lease = null;
       }
       return nativeLeaseState.lease;
@@ -627,6 +636,7 @@ beforeEach(() => {
         token,
         owner,
         expiresAtMs: Date.now() + Number(args?.ttlMs ?? 10_000),
+        operationActive: false,
       };
       return nativeLeaseState.lease;
     }
@@ -641,6 +651,19 @@ beforeEach(() => {
         throw new Error("복원 잠금 lease가 없습니다.");
       }
       nativeLeaseState.lease.expiresAtMs = Date.now() + Number(args?.ttlMs ?? 10_000);
+      return nativeLeaseState.lease;
+    }
+    if (command === "activate_restore_lock_lease") {
+      const token = String(args?.token ?? "");
+      const owner = String(args?.owner ?? "");
+      if (
+        !nativeLeaseState.lease ||
+        nativeLeaseState.lease.token !== token ||
+        nativeLeaseState.lease.owner !== owner
+      ) {
+        throw new Error("복원 잠금 lease가 없습니다.");
+      }
+      nativeLeaseState.lease.operationActive = true;
       return nativeLeaseState.lease;
     }
     if (command === "release_restore_lock_lease") {
@@ -2156,6 +2179,7 @@ describe("desktop App", () => {
       token: "remote-lock-token",
       owner: "main",
       expiresAtMs: Date.now() + 10_000,
+      operationActive: false,
     };
 
     fireEvent.change(screen.getByLabelText("메모 내용"), {
@@ -2217,6 +2241,7 @@ describe("desktop App", () => {
       token: "startup-lease-token",
       owner: "other-window",
       expiresAtMs: Date.now() + 10_000,
+      operationActive: false,
     };
 
     render(<App />);
@@ -3283,6 +3308,7 @@ describe("desktop App", () => {
       token: "confirmation-restore-lock",
       owner: "other-window",
       expiresAtMs: Date.now() + 10_000,
+      operationActive: false,
     };
     await act(async () => {
       await tauriEventState.restoreLockRequestedListener?.({ token: "confirmation-restore-lock" });

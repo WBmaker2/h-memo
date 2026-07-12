@@ -61,6 +61,7 @@ struct RestoreLockLease {
   token: String,
   owner: String,
   expires_at: SystemTime,
+  operation_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -69,6 +70,7 @@ struct RestoreLockLeaseRecord {
   token: String,
   owner: String,
   expires_at_ms: u64,
+  operation_active: bool,
 }
 
 #[derive(Default)]
@@ -236,6 +238,19 @@ fn renew_restore_lock_lease(
 }
 
 #[tauri::command]
+fn activate_restore_lock_lease(
+  state: State<'_, RestoreLockLeaseState>,
+  token: String,
+  owner: String,
+) -> Result<RestoreLockLeaseRecord, String> {
+  let mut lease = state
+    .0
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  activate_restore_lock_lease_inner(&mut lease, &token, &owner, SystemTime::now())
+}
+
+#[tauri::command]
 fn release_restore_lock_lease(
   state: State<'_, RestoreLockLeaseState>,
   token: String,
@@ -275,6 +290,7 @@ fn acquire_restore_lock_lease_inner(
     token: token.to_string(),
     owner: owner.to_string(),
     expires_at: expires_at(now, ttl_ms),
+    operation_active: false,
   };
   let record = to_restore_lock_lease_record(&next);
   *lease = Some(next);
@@ -304,6 +320,23 @@ fn renew_restore_lock_lease_inner(
     .filter(|current| current.token == token && current.owner == owner)
     .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
   current.expires_at = expires_at(now, ttl_ms);
+  Ok(to_restore_lock_lease_record(current))
+}
+
+fn activate_restore_lock_lease_inner(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  now: SystemTime,
+) -> Result<RestoreLockLeaseRecord, String> {
+  validate_restore_lock_identity(token, owner)?;
+  prune_restore_lock_lease(lease, now);
+
+  let current = lease
+    .as_mut()
+    .filter(|current| current.token == token && current.owner == owner)
+    .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
+  current.operation_active = true;
   Ok(to_restore_lock_lease_record(current))
 }
 
@@ -338,7 +371,7 @@ fn expires_at(now: SystemTime, ttl_ms: u64) -> SystemTime {
 fn prune_restore_lock_lease(lease: &mut Option<RestoreLockLease>, now: SystemTime) {
   if lease
     .as_ref()
-    .is_some_and(|current| current.expires_at <= now)
+    .is_some_and(|current| current.expires_at <= now && !current.operation_active)
   {
     *lease = None;
   }
@@ -353,6 +386,7 @@ fn to_restore_lock_lease_record(lease: &RestoreLockLease) -> RestoreLockLeaseRec
       .duration_since(UNIX_EPOCH)
       .unwrap_or_default()
       .as_millis() as u64,
+    operation_active: lease.operation_active,
   }
 }
 
@@ -1080,6 +1114,7 @@ pub fn run() {
       acquire_restore_lock_lease,
       current_restore_lock_lease,
       renew_restore_lock_lease,
+      activate_restore_lock_lease,
       release_restore_lock_lease,
       claim_memo_window,
       complete_memo_window,
@@ -1328,6 +1363,71 @@ mod tests {
     assert!(ensure_no_live_restore_lock(&mut lease, lease_time(4_050)).is_err());
     ensure_no_live_restore_lock(&mut lease, lease_time(4_101))
       .expect("claims should resume after the lease expires");
+  }
+
+  #[test]
+  fn active_restore_operation_remains_authoritative_after_lease_expiry() {
+    let connection = Connection::open_in_memory().expect("in-memory database should open");
+    initialize_database(&connection).expect("database should initialize");
+    let mut lease = None;
+    let initial = test_memo("memo-active-operation", "initial", "2026-07-12T09:00:00Z");
+    let replacement = test_memo("memo-active-operation", "replacement", "2026-07-12T09:01:00Z");
+
+    save_memo_inner(
+      &connection,
+      &mut lease,
+      &initial,
+      None,
+      lease_time(5_000),
+    )
+    .expect("ordinary save should work before the lease");
+    acquire_restore_lock_lease_inner(
+      &mut lease,
+      "active-token",
+      "main",
+      100,
+      lease_time(5_000),
+    )
+    .expect("lease should be acquired");
+    activate_restore_lock_lease_inner(&mut lease, "active-token", "main", lease_time(5_050))
+      .expect("operation should become active");
+
+    let current = current_restore_lock_lease_inner(&mut lease, lease_time(5_500))
+      .expect("active lease should survive ttl expiry");
+    assert!(current.operation_active);
+    assert!(save_memo_inner(
+      &connection,
+      &mut lease,
+      &replacement,
+      None,
+      lease_time(5_500),
+    )
+    .is_err());
+    save_memo_inner(
+      &connection,
+      &mut lease,
+      &replacement,
+      Some("active-token"),
+      lease_time(5_500),
+    )
+    .expect("matching token should remain controlled while operation is active");
+    assert!(ensure_no_live_restore_lock(&mut lease, lease_time(5_500)).is_err());
+
+    assert!(release_restore_lock_lease_inner(
+      &mut lease,
+      "active-token",
+      "main",
+      lease_time(5_600),
+    ));
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(5_600)).is_none());
+    save_memo_inner(
+      &connection,
+      &mut lease,
+      &replacement,
+      None,
+      lease_time(5_601),
+    )
+    .expect("ordinary saves should resume after matching release");
   }
 
   #[test]

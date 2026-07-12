@@ -92,6 +92,18 @@ describe("restoreSafety", () => {
     expect(restoreSafety.loadRestoreSafetyPoint(storage)).toBeNull();
   });
 
+  it("rejects a safety point whose nested memo timestamp is not parseable", () => {
+    const point = createSafetyPoint();
+    point.payload = {
+      ...point.payload,
+      memos: [{ ...point.payload.memos[0], updatedAt: "not-a-date" }],
+    };
+
+    const storage = createStorage(JSON.stringify(point));
+
+    expect(restoreSafety.loadRestoreSafetyPoint(storage)).toBeNull();
+  });
+
   it("reports storage quota errors instead of continuing", () => {
     const storage = createStorage();
     storage.setItem = () => {

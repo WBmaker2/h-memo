@@ -9,6 +9,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
 }
 
+function isParseableDate(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    !Number.isNaN(Date.parse(value))
+  );
+}
+
 function isValidMemoShape(memo: unknown): memo is Memo {
   if (!isObject(memo)) {
     return false;
@@ -25,10 +33,10 @@ function isValidMemoShape(memo: unknown): memo is Memo {
   if (typeof candidate.plainText !== "string") {
     return false;
   }
-  if (typeof candidate.createdAt !== "string") {
+  if (!isParseableDate(candidate.createdAt)) {
     return false;
   }
-  if (typeof candidate.updatedAt !== "string") {
+  if (!isParseableDate(candidate.updatedAt)) {
     return false;
   }
   if (typeof candidate.syncState !== "string" || !SYNC_STATES.includes(candidate.syncState)) {
@@ -38,7 +46,7 @@ function isValidMemoShape(memo: unknown): memo is Memo {
     return false;
   }
 
-  if (!(candidate.deletedAt === null || typeof candidate.deletedAt === "string")) {
+  if (!(candidate.deletedAt === null || isParseableDate(candidate.deletedAt))) {
     return false;
   }
 
@@ -137,7 +145,7 @@ function validateBackupPayloadShape(
     return { ok: false, reason: "메모 목록이 없습니다." };
   }
 
-  if (typeof candidate.createdAt !== "string") {
+  if (!isParseableDate(candidate.createdAt)) {
     return { ok: false, reason: INVALID_MEMO_REASON };
   }
 
