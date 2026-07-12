@@ -693,8 +693,15 @@ beforeEach(() => {
       const token = String(args?.token ?? "");
       const owner = String(args?.owner ?? "");
       const requestDeadlineMs = Number(args?.requestDeadlineMs ?? 0);
+      const requestWindowMs = Number(args?.requestWindowMs ?? 0);
+      if (requestWindowMs <= 0 || requestWindowMs > 30_000) {
+        throw new Error("복원 잠금 acquire 요청 허용 시간이 유효하지 않습니다.");
+      }
       if (requestDeadlineMs <= Date.now()) {
         throw new Error("복원 잠금 acquire 요청 마감시각이 지났습니다.");
+      }
+      if (requestDeadlineMs - Date.now() > requestWindowMs + 250) {
+        throw new Error("복원 잠금 acquire 요청 마감시각이 허용 범위보다 너무 멉니다.");
       }
       if (nativeLeaseState.lease && nativeLeaseState.lease.token !== token) {
         throw new Error("다른 복원 작업이 이미 진행 중입니다.");

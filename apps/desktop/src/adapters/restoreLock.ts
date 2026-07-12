@@ -36,9 +36,14 @@ export type RestoreLockLeaseAdapter = {
     token: string,
     owner: string,
     ttlMs: number,
-    requestDeadlineMs: number
+    requestDeadlineMs: number,
+    requestWindowMs: number
   ) => Promise<RestoreLockLease>;
-  cancelAcquire?: (token: string, requestDeadlineMs: number) => Promise<void>;
+  cancelAcquire?: (
+    token: string,
+    requestDeadlineMs: number,
+    requestWindowMs: number
+  ) => Promise<void>;
   current: () => Promise<RestoreLockLease | null>;
   renew: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
   activate: (token: string, owner: string) => Promise<RestoreLockLease>;
@@ -114,17 +119,19 @@ const NATIVE_CLEANUP_PENDING_MESSAGE =
 
 export function createTauriRestoreLockLeaseAdapter(): RestoreLockLeaseAdapter {
   return {
-    acquire: (token, owner, ttlMs, requestDeadlineMs) =>
+    acquire: (token, owner, ttlMs, requestDeadlineMs, requestWindowMs) =>
       invoke<RestoreLockLease>("acquire_restore_lock_lease", {
         token,
         owner,
         ttlMs,
         requestDeadlineMs,
+        requestWindowMs,
       }),
-    cancelAcquire: (token, requestDeadlineMs) =>
+    cancelAcquire: (token, requestDeadlineMs, requestWindowMs) =>
       invoke<void>("cancel_abandoned_restore_lock_acquire", {
         token,
         requestDeadlineMs,
+        requestWindowMs,
       }),
     current: () => invoke<RestoreLockLease | null>("current_restore_lock_lease"),
     renew: (token, owner, ttlMs) =>
@@ -252,11 +259,13 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let pendingNativeAcquire: {
     token: string;
     requestDeadlineMs: number;
+    requestWindowMs: number;
   } | null = null;
   let pendingLocalRecovery: {
     token: string;
     finalApplyGeneration: number;
     nativeAcquireRequestDeadlineMs: number | null;
+    nativeAcquireRequestWindowMs: number | null;
     nativeAcquireCancellationComplete: boolean;
     nativeFinished: boolean;
     applyComplete: boolean;
@@ -589,10 +598,26 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
   };
 
-  const startLeaseRenewal = (token: string, generation: number) => {
-    if (!nativeLease || leaseRenewTimer) {
+  const startLeaseRenewal = (
+    token: string,
+    generation: number,
+    renewalLifecycleGeneration: number
+  ) => {
+    if (
+      !nativeLease ||
+      leaseRenewTimer ||
+      stopping ||
+      lifecycleGeneration !== renewalLifecycleGeneration ||
+      !isCurrentLocalOperation(token, generation)
+    ) {
       return;
     }
+    const isCurrentRenewal = (tickToken: string, tickGeneration: number) =>
+      !stopping &&
+      lifecycleGeneration === renewalLifecycleGeneration &&
+      isCurrentLocalOperation(tickToken, tickGeneration) &&
+      leaseRenewalToken === tickToken &&
+      leaseRenewalGeneration === tickGeneration;
     leaseRenewalToken = token;
     leaseRenewalGeneration = generation;
     leaseRenewTimer = setInterval(() => {
@@ -602,9 +627,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         !tickToken ||
         tickToken !== token ||
         tickGeneration !== generation ||
-        leaseRenewalToken !== tickToken ||
-        leaseRenewalGeneration !== tickGeneration
+        !isCurrentRenewal(tickToken, tickGeneration)
       ) {
+        clearLeaseRenewal(token, generation);
         return;
       }
       if (
@@ -620,18 +645,13 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
             () => nativeLease.renew(tickToken, owner, leaseTtlMs),
             "복원 잠금 lease 갱신이 시간 초과되었습니다."
           );
-          if (
-            !isCurrentLocalOperation(tickToken, tickGeneration) ||
-            leaseRenewalToken !== tickToken ||
-            leaseRenewalGeneration !== tickGeneration
-          ) {
+          if (!isCurrentRenewal(tickToken, tickGeneration)) {
             return;
           }
           if (
             renewed.token !== tickToken ||
             renewed.owner !== owner ||
-            (localOperationActivated && !renewed.operationActive) ||
-            renewed.expiresAtMs <= Date.now()
+            (localOperationActivated && !renewed.operationActive)
           ) {
             markLeaseOwnershipLost(
               tickToken,
@@ -640,11 +660,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
             );
           }
         } catch (error) {
-          if (
-            !isCurrentLocalOperation(tickToken, tickGeneration) ||
-            leaseRenewalToken !== tickToken ||
-            leaseRenewalGeneration !== tickGeneration
-          ) {
+          if (!isCurrentRenewal(tickToken, tickGeneration)) {
             return;
           }
 
@@ -652,11 +668,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
           try {
             current = await readNativeLease();
           } catch (lookupError) {
-            if (
-              isCurrentLocalOperation(tickToken, tickGeneration) &&
-              leaseRenewalToken === tickToken &&
-              leaseRenewalGeneration === tickGeneration
-            ) {
+            if (isCurrentRenewal(tickToken, tickGeneration)) {
               reportProtocolError(
                 aggregateErrors("복원 잠금 lease 갱신과 확인에 실패했습니다", [
                   error,
@@ -666,19 +678,14 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
             }
             return;
           }
-          if (
-            !isCurrentLocalOperation(tickToken, tickGeneration) ||
-            leaseRenewalToken !== tickToken ||
-            leaseRenewalGeneration !== tickGeneration
-          ) {
+          if (!isCurrentRenewal(tickToken, tickGeneration)) {
             return;
           }
           if (
             !current ||
             current.token !== tickToken ||
             current.owner !== owner ||
-            (localOperationActivated && !current.operationActive) ||
-            current.expiresAtMs <= Date.now()
+            (localOperationActivated && !current.operationActive)
           ) {
             markLeaseOwnershipLost(tickToken, tickGeneration, error);
             return;
@@ -1379,11 +1386,17 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         new Error("복원 잠금 acquire 요청 마감시각을 확인할 수 없습니다.")
       );
     }
+    if (recovery.nativeAcquireRequestWindowMs === null) {
+      return wrapNativeCleanupError(
+        new Error("복원 잠금 acquire 요청 허용 시간을 확인할 수 없습니다.")
+      );
+    }
     const error = await runBoundedCleanup(
       () =>
         nativeLease.cancelAcquire!(
           recovery.token,
-          recovery.nativeAcquireRequestDeadlineMs!
+          recovery.nativeAcquireRequestDeadlineMs!,
+          recovery.nativeAcquireRequestWindowMs!
         ),
       "복원 잠금 acquire 취소 확인이 시간 초과되었습니다."
     );
@@ -1788,6 +1801,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     const nativeAcquireRequestDeadlineMs = nativeLease
       ? Date.now() + bridgeTimeoutMs
       : null;
+    const nativeAcquireRequestWindowMs = nativeLease ? bridgeTimeoutMs : null;
+    const acquireLifecycleGeneration = lifecycleGeneration;
     const generation = ++nextOperationGeneration;
     localToken = token;
     localOperationGeneration = generation;
@@ -1799,7 +1814,18 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     activeLeaseFailureGeneration = generation;
     let nativeAcquireConfirmed = !nativeLease;
     let nativeAcquireAbandoned = false;
+    let nativeAcquirePromiseSettled = false;
+    let cancelSettledAbandonedAcquire: (() => void) | null = null;
     let pending = false;
+    const assertAcquireStillCurrent = () => {
+      if (
+        stopping ||
+        lifecycleGeneration !== acquireLifecycleGeneration ||
+        !isCurrentLocalOperation(token, generation)
+      ) {
+        throw new Error("복원 잠금 coordinator가 종료되어 acquire를 계속할 수 없습니다.");
+      }
+    };
 
     try {
       // lockLocal synchronously flips the caller's persistence barrier before its queue drain.
@@ -1807,30 +1833,38 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       void Promise.resolve(localDrain).catch(() => {});
       if (nativeLease) {
         const requestDeadlineMs = nativeAcquireRequestDeadlineMs!;
-        pendingNativeAcquire = { token, requestDeadlineMs };
+        const requestWindowMs = nativeAcquireRequestWindowMs!;
+        pendingNativeAcquire = { token, requestDeadlineMs, requestWindowMs };
         const nativeAcquirePromise = nativeLease.acquire(
           token,
           owner,
           leaseTtlMs,
-          requestDeadlineMs
+          requestDeadlineMs,
+          requestWindowMs
         );
         const cancelLateAcquire = () => {
           if (!nativeAcquireAbandoned || !nativeLease.cancelAcquire) {
             return;
           }
           void nativeLease
-            .cancelAcquire(token, requestDeadlineMs)
+            .cancelAcquire(token, requestDeadlineMs, requestWindowMs)
             .catch(reportProtocolError);
+        };
+        cancelSettledAbandonedAcquire = cancelLateAcquire;
+        const observeNativeAcquireSettlement = () => {
+          nativeAcquirePromiseSettled = true;
+          cancelLateAcquire();
         };
         // Late settlement may request idempotent cleanup, but never mutates coordinator state.
         void nativeAcquirePromise.then(
-          cancelLateAcquire,
-          cancelLateAcquire
+          observeNativeAcquireSettlement,
+          observeNativeAcquireSettlement
         );
         const acquired = await runWithTimeout(
           () => nativeAcquirePromise,
           "복원 잠금 lease 획득이 시간 초과되었습니다."
         );
+        assertAcquireStillCurrent();
         if (acquired.token !== token || acquired.owner !== owner) {
           throw new Error("복원 잠금 lease 소유자 확인에 실패했습니다.");
         }
@@ -1838,13 +1872,14 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         if (pendingNativeAcquire?.token === token) {
           pendingNativeAcquire = null;
         }
-        startLeaseRenewal(token, generation);
+        startLeaseRenewal(token, generation, acquireLifecycleGeneration);
       }
 
       const liveWindowLabels = await runWithTimeout(
         options.listLiveWindowLabels,
         "활성 메모 창 조회가 시간 초과되었습니다."
       );
+      assertAcquireStillCurrent();
       const expectedWindowLabels = new Set(liveWindowLabels);
       expectedWindowLabels.add(owner);
       localExpectedWindowLabels = new Set(expectedWindowLabels);
@@ -1869,11 +1904,19 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       );
 
       await waitForNotificationAndAcknowledgements(token, acknowledgementPromise);
+      assertAcquireStillCurrent();
       clearPending(token);
       pending = false;
       return token;
     } catch (error) {
       nativeAcquireAbandoned = !nativeAcquireConfirmed;
+      if (
+        nativeAcquireAbandoned &&
+        nativeAcquirePromiseSettled &&
+        stopping
+      ) {
+        cancelSettledAbandonedAcquire?.();
+      }
       if (pendingNativeAcquire?.token === token) {
         pendingNativeAcquire = null;
       }
@@ -1897,6 +1940,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
               token,
               finalApplyGeneration: failedAcquireGeneration,
               nativeAcquireRequestDeadlineMs,
+              nativeAcquireRequestWindowMs,
               nativeAcquireCancellationComplete: nativeAcquireConfirmed,
               nativeFinished: !nativeLease?.finish,
               applyComplete: true,
@@ -1948,6 +1992,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
             finalApplyGeneration,
             nativeAcquireRequestDeadlineMs:
               unconfirmedNativeAcquire?.requestDeadlineMs ?? null,
+            nativeAcquireRequestWindowMs:
+              unconfirmedNativeAcquire?.requestWindowMs ?? null,
             nativeAcquireCancellationComplete: !unconfirmedNativeAcquire,
             nativeFinished: !nativeLease || !nativeLease.finish,
             applyComplete: !options.applyStore,

@@ -36,6 +36,8 @@ const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_OAUTH_SCOPE: &str = "openid email profile";
 const GOOGLE_OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_CANCELLED_RESTORE_ACQUIRES: usize = 256;
+const MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS: u64 = 30_000;
+const MAX_RESTORE_ACQUIRE_CLOCK_SKEW_MS: u64 = 250;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -57,17 +59,57 @@ struct DatabaseState(Mutex<Connection>);
 #[derive(Default)]
 struct RestoreLockLeaseData {
   lease: Option<RestoreLockLease>,
-  cancelled_acquires: HashMap<String, u64>,
+  cancelled_acquires: HashMap<String, RestoreAcquireCancellation>,
 }
 
-#[derive(Default)]
-struct RestoreLockLeaseState(Mutex<RestoreLockLeaseData>);
+struct RestoreLockLeaseState {
+  process_origin: Instant,
+  data: Mutex<RestoreLockLeaseData>,
+}
+
+impl Default for RestoreLockLeaseState {
+  fn default() -> Self {
+    Self {
+      process_origin: Instant::now(),
+      data: Mutex::new(RestoreLockLeaseData::default()),
+    }
+  }
+}
+
+impl RestoreLockLeaseState {
+  fn clock_snapshot(&self) -> RestoreClockSnapshot {
+    RestoreClockSnapshot {
+      wall_ms: system_time_millis(SystemTime::now()),
+      monotonic_ms: self.process_origin.elapsed().as_millis() as u64,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RestoreClockSnapshot {
+  wall_ms: u64,
+  monotonic_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreAcquireRequest {
+  deadline_ms: u64,
+  window_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreAcquireCancellation {
+  request: RestoreAcquireRequest,
+  expires_at_monotonic_ms: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RestoreLockLease {
   token: String,
   owner: String,
-  expires_at: SystemTime,
+  expires_at_ms: u64,
+  expires_at_monotonic_ms: u64,
+  acquire_request: Option<RestoreAcquireRequest>,
   operation_active: bool,
 }
 
@@ -161,22 +203,37 @@ fn save_memo(
   restore_token: Option<String>,
 ) -> Result<MemoRecord, String> {
   let mut restore_state = restore_lock
-    .0
+    .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
   let connection = database
     .0
     .lock()
     .map_err(|_| "database lock is unavailable".to_string())?;
-  save_memo_inner(
+  let clock = restore_lock.clock_snapshot();
+  save_memo_inner_at(
     &connection,
     &mut restore_state.lease,
     &memo,
     restore_token.as_deref(),
-    SystemTime::now(),
+    clock,
   )
 }
 
+fn save_memo_inner_at(
+  connection: &Connection,
+  lease: &mut Option<RestoreLockLease>,
+  memo: &MemoRecord,
+  restore_token: Option<&str>,
+  clock: RestoreClockSnapshot,
+) -> Result<MemoRecord, String> {
+  authorize_restore_save(lease, restore_token, clock)?;
+  let updated = normalize_record(memo);
+  upsert_memo(connection, &updated).map_err(|error| error.to_string())?;
+  Ok(updated)
+}
+
+#[cfg(test)]
 fn save_memo_inner(
   connection: &Connection,
   lease: &mut Option<RestoreLockLease>,
@@ -184,18 +241,15 @@ fn save_memo_inner(
   restore_token: Option<&str>,
   now: SystemTime,
 ) -> Result<MemoRecord, String> {
-  authorize_restore_save(lease, restore_token, now)?;
-  let updated = normalize_record(memo);
-  upsert_memo(connection, &updated).map_err(|error| error.to_string())?;
-  Ok(updated)
+  save_memo_inner_at(connection, lease, memo, restore_token, test_restore_clock(now))
 }
 
 fn authorize_restore_save(
   lease: &mut Option<RestoreLockLease>,
   restore_token: Option<&str>,
-  now: SystemTime,
+  clock: RestoreClockSnapshot,
 ) -> Result<(), String> {
-  prune_restore_lock_lease(lease, now);
+  prune_restore_lock_lease(lease, clock.monotonic_ms);
   match (lease.as_ref(), restore_token) {
     (None, None) => Ok(()),
     (None, Some(_)) => Err("복원 잠금 lease가 없어 restore token을 사용할 수 없습니다.".to_string()),
@@ -213,18 +267,20 @@ fn acquire_restore_lock_lease(
   owner: String,
   ttl_ms: u64,
   request_deadline_ms: u64,
+  request_window_ms: u64,
 ) -> Result<RestoreLockLeaseRecord, String> {
   let mut restore_state = state
-    .0
+    .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  acquire_restore_lock_lease_fenced_inner(
+  acquire_restore_lock_lease_fenced_inner_at(
     &mut restore_state,
     &token,
     &owner,
     ttl_ms,
     request_deadline_ms,
-    SystemTime::now(),
+    request_window_ms,
+    state.clock_snapshot(),
   )
 }
 
@@ -233,16 +289,18 @@ fn cancel_abandoned_restore_lock_acquire(
   state: State<'_, RestoreLockLeaseState>,
   token: String,
   request_deadline_ms: u64,
+  request_window_ms: u64,
 ) -> Result<(), String> {
   let mut restore_state = state
-    .0
+    .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  cancel_abandoned_restore_lock_acquire_inner(
+  cancel_abandoned_restore_lock_acquire_inner_at(
     &mut restore_state,
     &token,
     request_deadline_ms,
-    SystemTime::now(),
+    request_window_ms,
+    state.clock_snapshot(),
   )
   .map(|_| ())
 }
@@ -252,17 +310,17 @@ fn current_restore_lock_lease(
   state: State<'_, RestoreLockLeaseState>,
 ) -> Result<Option<RestoreLockLeaseRecord>, String> {
   let mut restore_state = state
-    .0
+    .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  let now = SystemTime::now();
+  let clock = state.clock_snapshot();
   prune_cancelled_restore_acquires(
     &mut restore_state.cancelled_acquires,
-    system_time_millis(now),
+    clock.monotonic_ms,
   );
-  Ok(current_restore_lock_lease_inner(
+  Ok(current_restore_lock_lease_inner_at(
     &mut restore_state.lease,
-    now,
+    clock,
   ))
 }
 
@@ -274,15 +332,15 @@ fn renew_restore_lock_lease(
   ttl_ms: u64,
 ) -> Result<RestoreLockLeaseRecord, String> {
   let mut restore_state = state
-    .0
+    .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  renew_restore_lock_lease_inner(
+  renew_restore_lock_lease_inner_at(
     &mut restore_state.lease,
     &token,
     &owner,
     ttl_ms,
-    SystemTime::now(),
+    state.clock_snapshot(),
   )
 }
 
@@ -293,14 +351,14 @@ fn activate_restore_lock_lease(
   owner: String,
 ) -> Result<RestoreLockLeaseRecord, String> {
   let mut restore_state = state
-    .0
+    .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  activate_restore_lock_lease_inner(
+  activate_restore_lock_lease_inner_at(
     &mut restore_state.lease,
     &token,
     &owner,
-    SystemTime::now(),
+    state.clock_snapshot(),
   )
 }
 
@@ -312,15 +370,15 @@ fn finish_restore_lock_lease(
   cleanup_ttl_ms: u64,
 ) -> Result<RestoreLockLeaseRecord, String> {
   let mut restore_state = state
-    .0
+    .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  finish_restore_lock_lease_inner(
+  finish_restore_lock_lease_inner_at(
     &mut restore_state.lease,
     &token,
     &owner,
     cleanup_ttl_ms,
-    SystemTime::now(),
+    state.clock_snapshot(),
   )
 }
 
@@ -331,17 +389,54 @@ fn release_restore_lock_lease(
   owner: String,
 ) -> Result<bool, String> {
   let mut restore_state = state
-    .0
+    .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  Ok(release_restore_lock_lease_inner(
+  Ok(release_restore_lock_lease_inner_at(
     &mut restore_state.lease,
     &token,
     &owner,
-    SystemTime::now(),
+    state.clock_snapshot(),
   ))
 }
 
+fn acquire_restore_lock_lease_fenced_inner_at(
+  state: &mut RestoreLockLeaseData,
+  token: &str,
+  owner: &str,
+  ttl_ms: u64,
+  request_deadline_ms: u64,
+  request_window_ms: u64,
+  clock: RestoreClockSnapshot,
+) -> Result<RestoreLockLeaseRecord, String> {
+  validate_restore_lock_identity(token, owner)?;
+  let (request, cancellation_deadline) = validate_restore_acquire_request(
+    request_deadline_ms,
+    request_window_ms,
+    clock,
+  )?;
+  prune_cancelled_restore_acquires(
+    &mut state.cancelled_acquires,
+    clock.monotonic_ms,
+  );
+  let Some(_) = cancellation_deadline else {
+    state.cancelled_acquires.remove(token);
+    return Err("복원 잠금 acquire 요청 마감시각이 지났습니다.".to_string());
+  };
+  if state.cancelled_acquires.contains_key(token) {
+    return Err("취소된 복원 잠금 acquire token은 다시 사용할 수 없습니다.".to_string());
+  }
+  acquire_restore_lock_lease_inner_at(
+    &mut state.lease,
+    token,
+    owner,
+    ttl_ms,
+    Some(request),
+    clock,
+  )
+}
+
+#[cfg(test)]
 fn acquire_restore_lock_lease_fenced_inner(
   state: &mut RestoreLockLeaseData,
   token: &str,
@@ -350,30 +445,51 @@ fn acquire_restore_lock_lease_fenced_inner(
   request_deadline_ms: u64,
   now: SystemTime,
 ) -> Result<RestoreLockLeaseRecord, String> {
-  validate_restore_lock_identity(token, owner)?;
-  let now_ms = system_time_millis(now);
-  prune_cancelled_restore_acquires(&mut state.cancelled_acquires, now_ms);
-  if request_deadline_ms <= now_ms {
-    state.cancelled_acquires.remove(token);
-    return Err("복원 잠금 acquire 요청 마감시각이 지났습니다.".to_string());
-  }
-  if state.cancelled_acquires.contains_key(token) {
-    return Err("취소된 복원 잠금 acquire token은 다시 사용할 수 없습니다.".to_string());
-  }
-  acquire_restore_lock_lease_inner(&mut state.lease, token, owner, ttl_ms, now)
+  acquire_restore_lock_lease_fenced_inner_at(
+    state,
+    token,
+    owner,
+    ttl_ms,
+    request_deadline_ms,
+    MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS,
+    test_restore_clock(now),
+  )
 }
 
-fn cancel_abandoned_restore_lock_acquire_inner(
+fn cancel_abandoned_restore_lock_acquire_inner_at(
   state: &mut RestoreLockLeaseData,
   token: &str,
   request_deadline_ms: u64,
-  now: SystemTime,
+  request_window_ms: u64,
+  clock: RestoreClockSnapshot,
 ) -> Result<bool, String> {
   if token.trim().is_empty() {
     return Err("복원 잠금 token은 비어 있을 수 없습니다.".to_string());
   }
-  let now_ms = system_time_millis(now);
-  prune_cancelled_restore_acquires(&mut state.cancelled_acquires, now_ms);
+  let (request, cancellation_deadline) = validate_restore_acquire_request(
+    request_deadline_ms,
+    request_window_ms,
+    clock,
+  )?;
+  prune_cancelled_restore_acquires(
+    &mut state.cancelled_acquires,
+    clock.monotonic_ms,
+  );
+  prune_restore_lock_lease(&mut state.lease, clock.monotonic_ms);
+
+  if state
+    .cancelled_acquires
+    .get(token)
+    .is_some_and(|current| current.request != request)
+  {
+    return Err("복원 잠금 acquire 취소 요청의 마감시각이 일치하지 않습니다.".to_string());
+  }
+  if state.lease.as_ref().is_some_and(|current| {
+    current.token == token && current.acquire_request.as_ref() != Some(&request)
+  }) {
+    return Err("복원 잠금 acquire 취소 요청의 마감시각이 일치하지 않습니다.".to_string());
+  }
+
   let removed = state
     .lease
     .as_ref()
@@ -381,47 +497,68 @@ fn cancel_abandoned_restore_lock_acquire_inner(
   if removed {
     state.lease = None;
   }
-  if request_deadline_ms <= now_ms {
+  let Some(expires_at_monotonic_ms) = cancellation_deadline else {
     state.cancelled_acquires.remove(token);
     return Ok(removed);
-  }
+  };
   if !state.cancelled_acquires.contains_key(token)
     && state.cancelled_acquires.len() >= MAX_CANCELLED_RESTORE_ACQUIRES
   {
     return Err("복원 잠금 acquire 취소 기록이 가득 차 정리 후 재시도가 필요합니다.".to_string());
   }
-  if let Some(recorded_deadline_ms) = state.cancelled_acquires.get(token) {
-    if *recorded_deadline_ms != request_deadline_ms {
-      return Err("복원 잠금 acquire 취소 요청의 마감시각이 일치하지 않습니다.".to_string());
-    }
-  } else {
+  if !state.cancelled_acquires.contains_key(token) {
     state
       .cancelled_acquires
-      .insert(token.to_string(), request_deadline_ms);
+      .insert(token.to_string(), RestoreAcquireCancellation {
+        request,
+        expires_at_monotonic_ms,
+      });
   }
   Ok(removed)
 }
 
-fn prune_cancelled_restore_acquires(
-  cancelled_acquires: &mut HashMap<String, u64>,
-  now_ms: u64,
-) {
-  cancelled_acquires.retain(|_, request_deadline_ms| *request_deadline_ms > now_ms);
+#[cfg(test)]
+fn cancel_abandoned_restore_lock_acquire_inner(
+  state: &mut RestoreLockLeaseData,
+  token: &str,
+  request_deadline_ms: u64,
+  now: SystemTime,
+) -> Result<bool, String> {
+  cancel_abandoned_restore_lock_acquire_inner_at(
+    state,
+    token,
+    request_deadline_ms,
+    MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS,
+    test_restore_clock(now),
+  )
 }
 
-fn acquire_restore_lock_lease_inner(
+fn prune_cancelled_restore_acquires(
+  cancelled_acquires: &mut HashMap<String, RestoreAcquireCancellation>,
+  monotonic_now_ms: u64,
+) {
+  cancelled_acquires.retain(|_, current| {
+    current.expires_at_monotonic_ms > monotonic_now_ms
+  });
+}
+
+fn acquire_restore_lock_lease_inner_at(
   lease: &mut Option<RestoreLockLease>,
   token: &str,
   owner: &str,
   ttl_ms: u64,
-  now: SystemTime,
+  acquire_request: Option<RestoreAcquireRequest>,
+  clock: RestoreClockSnapshot,
 ) -> Result<RestoreLockLeaseRecord, String> {
   validate_restore_lock_identity(token, owner)?;
-  prune_restore_lock_lease(lease, now);
+  prune_restore_lock_lease(lease, clock.monotonic_ms);
 
   if let Some(current) = lease {
     if current.token == token && current.owner == owner {
-      current.expires_at = expires_at(now, ttl_ms);
+      if current.acquire_request != acquire_request {
+        return Err("복원 잠금 acquire 요청의 마감시각이 일치하지 않습니다.".to_string());
+      }
+      update_restore_lock_expiry(current, ttl_ms, clock);
       return Ok(to_restore_lock_lease_record(current));
     }
     return Err("다른 복원 작업이 이미 진행 중입니다.".to_string());
@@ -430,7 +567,9 @@ fn acquire_restore_lock_lease_inner(
   let next = RestoreLockLease {
     token: token.to_string(),
     owner: owner.to_string(),
-    expires_at: expires_at(now, ttl_ms),
+    expires_at_ms: clock.wall_ms.saturating_add(ttl_ms),
+    expires_at_monotonic_ms: clock.monotonic_ms.saturating_add(ttl_ms),
+    acquire_request,
     operation_active: false,
   };
   let record = to_restore_lock_lease_record(&next);
@@ -438,14 +577,59 @@ fn acquire_restore_lock_lease_inner(
   Ok(record)
 }
 
+#[cfg(test)]
+fn acquire_restore_lock_lease_inner(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  ttl_ms: u64,
+  now: SystemTime,
+) -> Result<RestoreLockLeaseRecord, String> {
+  acquire_restore_lock_lease_inner_at(
+    lease,
+    token,
+    owner,
+    ttl_ms,
+    None,
+    test_restore_clock(now),
+  )
+}
+
+fn current_restore_lock_lease_inner_at(
+  lease: &mut Option<RestoreLockLease>,
+  clock: RestoreClockSnapshot,
+) -> Option<RestoreLockLeaseRecord> {
+  prune_restore_lock_lease(lease, clock.monotonic_ms);
+  lease.as_ref().map(to_restore_lock_lease_record)
+}
+
+#[cfg(test)]
 fn current_restore_lock_lease_inner(
   lease: &mut Option<RestoreLockLease>,
   now: SystemTime,
 ) -> Option<RestoreLockLeaseRecord> {
-  prune_restore_lock_lease(lease, now);
-  lease.as_ref().map(to_restore_lock_lease_record)
+  current_restore_lock_lease_inner_at(lease, test_restore_clock(now))
 }
 
+fn renew_restore_lock_lease_inner_at(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  ttl_ms: u64,
+  clock: RestoreClockSnapshot,
+) -> Result<RestoreLockLeaseRecord, String> {
+  validate_restore_lock_identity(token, owner)?;
+  prune_restore_lock_lease(lease, clock.monotonic_ms);
+
+  let current = lease
+    .as_mut()
+    .filter(|current| current.token == token && current.owner == owner)
+    .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
+  update_restore_lock_expiry(current, ttl_ms, clock);
+  Ok(to_restore_lock_lease_record(current))
+}
+
+#[cfg(test)]
 fn renew_restore_lock_lease_inner(
   lease: &mut Option<RestoreLockLease>,
   token: &str,
@@ -453,25 +637,23 @@ fn renew_restore_lock_lease_inner(
   ttl_ms: u64,
   now: SystemTime,
 ) -> Result<RestoreLockLeaseRecord, String> {
-  validate_restore_lock_identity(token, owner)?;
-  prune_restore_lock_lease(lease, now);
-
-  let current = lease
-    .as_mut()
-    .filter(|current| current.token == token && current.owner == owner)
-    .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
-  current.expires_at = expires_at(now, ttl_ms);
-  Ok(to_restore_lock_lease_record(current))
+  renew_restore_lock_lease_inner_at(
+    lease,
+    token,
+    owner,
+    ttl_ms,
+    test_restore_clock(now),
+  )
 }
 
-fn activate_restore_lock_lease_inner(
+fn activate_restore_lock_lease_inner_at(
   lease: &mut Option<RestoreLockLease>,
   token: &str,
   owner: &str,
-  now: SystemTime,
+  clock: RestoreClockSnapshot,
 ) -> Result<RestoreLockLeaseRecord, String> {
   validate_restore_lock_identity(token, owner)?;
-  prune_restore_lock_lease(lease, now);
+  prune_restore_lock_lease(lease, clock.monotonic_ms);
 
   let current = lease
     .as_mut()
@@ -481,6 +663,36 @@ fn activate_restore_lock_lease_inner(
   Ok(to_restore_lock_lease_record(current))
 }
 
+#[cfg(test)]
+fn activate_restore_lock_lease_inner(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  now: SystemTime,
+) -> Result<RestoreLockLeaseRecord, String> {
+  activate_restore_lock_lease_inner_at(lease, token, owner, test_restore_clock(now))
+}
+
+fn finish_restore_lock_lease_inner_at(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  cleanup_ttl_ms: u64,
+  clock: RestoreClockSnapshot,
+) -> Result<RestoreLockLeaseRecord, String> {
+  validate_restore_lock_identity(token, owner)?;
+  prune_restore_lock_lease(lease, clock.monotonic_ms);
+
+  let current = lease
+    .as_mut()
+    .filter(|current| current.token == token && current.owner == owner)
+    .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
+  current.operation_active = false;
+  update_restore_lock_expiry(current, cleanup_ttl_ms, clock);
+  Ok(to_restore_lock_lease_record(current))
+}
+
+#[cfg(test)]
 fn finish_restore_lock_lease_inner(
   lease: &mut Option<RestoreLockLease>,
   token: &str,
@@ -488,25 +700,22 @@ fn finish_restore_lock_lease_inner(
   cleanup_ttl_ms: u64,
   now: SystemTime,
 ) -> Result<RestoreLockLeaseRecord, String> {
-  validate_restore_lock_identity(token, owner)?;
-  prune_restore_lock_lease(lease, now);
-
-  let current = lease
-    .as_mut()
-    .filter(|current| current.token == token && current.owner == owner)
-    .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
-  current.operation_active = false;
-  current.expires_at = expires_at(now, cleanup_ttl_ms);
-  Ok(to_restore_lock_lease_record(current))
+  finish_restore_lock_lease_inner_at(
+    lease,
+    token,
+    owner,
+    cleanup_ttl_ms,
+    test_restore_clock(now),
+  )
 }
 
-fn release_restore_lock_lease_inner(
+fn release_restore_lock_lease_inner_at(
   lease: &mut Option<RestoreLockLease>,
   token: &str,
   owner: &str,
-  now: SystemTime,
+  clock: RestoreClockSnapshot,
 ) -> bool {
-  prune_restore_lock_lease(lease, now);
+  prune_restore_lock_lease(lease, clock.monotonic_ms);
   if lease.as_ref().is_some_and(|current| {
     current.token == token && current.owner == owner
   }) {
@@ -517,6 +726,16 @@ fn release_restore_lock_lease_inner(
   }
 }
 
+#[cfg(test)]
+fn release_restore_lock_lease_inner(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  now: SystemTime,
+) -> bool {
+  release_restore_lock_lease_inner_at(lease, token, owner, test_restore_clock(now))
+}
+
 fn validate_restore_lock_identity(token: &str, owner: &str) -> Result<(), String> {
   if token.trim().is_empty() || owner.trim().is_empty() {
     return Err("복원 잠금 token과 owner는 비어 있을 수 없습니다.".to_string());
@@ -524,8 +743,42 @@ fn validate_restore_lock_identity(token: &str, owner: &str) -> Result<(), String
   Ok(())
 }
 
-fn expires_at(now: SystemTime, ttl_ms: u64) -> SystemTime {
-  now + Duration::from_millis(ttl_ms)
+fn validate_restore_acquire_request(
+  request_deadline_ms: u64,
+  request_window_ms: u64,
+  clock: RestoreClockSnapshot,
+) -> Result<(RestoreAcquireRequest, Option<u64>), String> {
+  if request_window_ms == 0 || request_window_ms > MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS {
+    return Err("복원 잠금 acquire 요청 허용 시간이 유효하지 않습니다.".to_string());
+  }
+  let request = RestoreAcquireRequest {
+    deadline_ms: request_deadline_ms,
+    window_ms: request_window_ms,
+  };
+  if request_deadline_ms <= clock.wall_ms {
+    return Ok((request, None));
+  }
+  let future_ms = request_deadline_ms - clock.wall_ms;
+  if future_ms > request_window_ms.saturating_add(MAX_RESTORE_ACQUIRE_CLOCK_SKEW_MS) {
+    return Err("복원 잠금 acquire 요청 마감시각이 허용 범위보다 너무 멉니다.".to_string());
+  }
+  Ok((
+    request,
+    Some(
+      clock
+        .monotonic_ms
+        .saturating_add(future_ms.min(request_window_ms)),
+    ),
+  ))
+}
+
+fn update_restore_lock_expiry(
+  lease: &mut RestoreLockLease,
+  ttl_ms: u64,
+  clock: RestoreClockSnapshot,
+) {
+  lease.expires_at_ms = clock.wall_ms.saturating_add(ttl_ms);
+  lease.expires_at_monotonic_ms = clock.monotonic_ms.saturating_add(ttl_ms);
 }
 
 fn system_time_millis(time: SystemTime) -> u64 {
@@ -535,10 +788,13 @@ fn system_time_millis(time: SystemTime) -> u64 {
     .as_millis() as u64
 }
 
-fn prune_restore_lock_lease(lease: &mut Option<RestoreLockLease>, now: SystemTime) {
+fn prune_restore_lock_lease(
+  lease: &mut Option<RestoreLockLease>,
+  monotonic_now_ms: u64,
+) {
   if lease
     .as_ref()
-    .is_some_and(|current| current.expires_at <= now)
+    .is_some_and(|current| current.expires_at_monotonic_ms <= monotonic_now_ms)
   {
     *lease = None;
   }
@@ -548,8 +804,17 @@ fn to_restore_lock_lease_record(lease: &RestoreLockLease) -> RestoreLockLeaseRec
   RestoreLockLeaseRecord {
     token: lease.token.clone(),
     owner: lease.owner.clone(),
-    expires_at_ms: system_time_millis(lease.expires_at),
+    expires_at_ms: lease.expires_at_ms,
     operation_active: lease.operation_active,
+  }
+}
+
+#[cfg(test)]
+fn test_restore_clock(now: SystemTime) -> RestoreClockSnapshot {
+  let milliseconds = system_time_millis(now);
+  RestoreClockSnapshot {
+    wall_ms: milliseconds,
+    monotonic_ms: milliseconds,
   }
 }
 
@@ -562,10 +827,13 @@ fn claim_memo_window(
   window_label: String,
 ) -> Result<MemoWindowClaim, String> {
   let mut restore_state = restore_lock
-    .0
+    .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  ensure_no_live_restore_lock(&mut restore_state.lease, SystemTime::now())?;
+  ensure_no_live_restore_lock_at(
+    &mut restore_state.lease,
+    restore_lock.clock_snapshot(),
+  )?;
 
   let claim = {
     let mut owners = registry
@@ -596,14 +864,22 @@ fn claim_memo_window(
   Ok(claim)
 }
 
+fn ensure_no_live_restore_lock_at(
+  lease: &mut Option<RestoreLockLease>,
+  clock: RestoreClockSnapshot,
+) -> Result<(), String> {
+  if current_restore_lock_lease_inner_at(lease, clock).is_some() {
+    return Err("복원 잠금 중에는 메모 창을 열 수 없습니다.".to_string());
+  }
+  Ok(())
+}
+
+#[cfg(test)]
 fn ensure_no_live_restore_lock(
   lease: &mut Option<RestoreLockLease>,
   now: SystemTime,
 ) -> Result<(), String> {
-  if current_restore_lock_lease_inner(lease, now).is_some() {
-    return Err("복원 잠금 중에는 메모 창을 열 수 없습니다.".to_string());
-  }
-  Ok(())
+  ensure_no_live_restore_lock_at(lease, test_restore_clock(now))
 }
 
 #[tauri::command]
@@ -1417,6 +1693,170 @@ mod tests {
   }
 
   #[test]
+  fn wall_clock_rollback_cannot_extend_a_lease_past_monotonic_ttl() {
+    let connection = Connection::open_in_memory().expect("in-memory database should open");
+    initialize_database(&connection).expect("database should initialize");
+    let mut lease = None;
+    let memo = test_memo("memo-clock-rollback", "after rollback", "2026-07-13T00:00:00Z");
+
+    acquire_restore_lock_lease_inner_at(
+      &mut lease,
+      "rollback-token",
+      "main",
+      100,
+      None,
+      RestoreClockSnapshot {
+        wall_ms: 3_600_000,
+        monotonic_ms: 1_000,
+      },
+    )
+    .expect("lease should acquire before the wall clock rollback");
+
+    let after_ttl = RestoreClockSnapshot {
+      wall_ms: 0,
+      monotonic_ms: 1_101,
+    };
+    assert!(current_restore_lock_lease_inner_at(&mut lease, after_ttl).is_none());
+    save_memo_inner_at(
+      &connection,
+      &mut lease,
+      &memo,
+      None,
+      after_ttl,
+    )
+    .expect("ordinary saves should recover from monotonic expiry");
+    ensure_no_live_restore_lock_at(&mut lease, after_ttl)
+      .expect("claims should recover from monotonic expiry");
+  }
+
+  #[test]
+  fn renew_finish_and_release_use_monotonic_time_after_wall_clock_rollback() {
+    let mut lease = None;
+    acquire_restore_lock_lease_inner_at(
+      &mut lease,
+      "rollback-cleanup-token",
+      "main",
+      100,
+      None,
+      RestoreClockSnapshot {
+        wall_ms: 3_600_000,
+        monotonic_ms: 1_000,
+      },
+    )
+    .expect("lease should acquire before rollback");
+
+    let renewed = renew_restore_lock_lease_inner_at(
+      &mut lease,
+      "rollback-cleanup-token",
+      "main",
+      100,
+      RestoreClockSnapshot {
+        wall_ms: 0,
+        monotonic_ms: 1_050,
+      },
+    )
+    .expect("renewal should use monotonic liveness");
+    assert_eq!(renewed.expires_at_ms, 100);
+
+    let finished = finish_restore_lock_lease_inner_at(
+      &mut lease,
+      "rollback-cleanup-token",
+      "main",
+      50,
+      RestoreClockSnapshot {
+        wall_ms: 0,
+        monotonic_ms: 1_100,
+      },
+    )
+    .expect("finish should create a monotonic cleanup deadline");
+    assert_eq!(finished.expires_at_ms, 50);
+    assert!(current_restore_lock_lease_inner_at(
+      &mut lease,
+      RestoreClockSnapshot {
+        wall_ms: 0,
+        monotonic_ms: 1_149,
+      }
+    )
+    .is_some());
+    assert!(!release_restore_lock_lease_inner_at(
+      &mut lease,
+      "rollback-cleanup-token",
+      "main",
+      RestoreClockSnapshot {
+        wall_ms: 0,
+        monotonic_ms: 1_151,
+      },
+    ));
+    assert!(lease.is_none());
+  }
+
+  #[test]
+  fn acquire_rejects_implausible_future_deadline_after_wall_clock_rollback() {
+    let mut state = RestoreLockLeaseData::default();
+
+    let result = acquire_restore_lock_lease_fenced_inner_at(
+      &mut state,
+      "future-skew-token",
+      "main",
+      100,
+      3_601_100,
+      100,
+      RestoreClockSnapshot {
+        wall_ms: 1_000,
+        monotonic_ms: 500,
+      },
+    );
+
+    assert!(result
+      .expect_err("one-hour future skew must fail closed")
+      .contains("마감"));
+    assert!(state.lease.is_none());
+  }
+
+  #[test]
+  fn acquire_accepts_small_wall_skew_within_bounded_request_window() {
+    let mut state = RestoreLockLeaseData::default();
+    let clock = RestoreClockSnapshot {
+      wall_ms: 1_000,
+      monotonic_ms: 500,
+    };
+
+    let acquired = acquire_restore_lock_lease_fenced_inner_at(
+      &mut state,
+      "small-skew-token",
+      "main",
+      100,
+      1_150,
+      100,
+      clock,
+    )
+    .expect("50ms wall skew should remain within the strict allowance");
+
+    assert_eq!(acquired.expires_at_ms, 1_100);
+    assert_eq!(state.lease.as_ref().unwrap().expires_at_monotonic_ms, 600);
+    assert!(acquire_restore_lock_lease_fenced_inner_at(
+      &mut RestoreLockLeaseData::default(),
+      "zero-window-token",
+      "main",
+      100,
+      1_100,
+      0,
+      clock,
+    )
+    .is_err());
+    assert!(acquire_restore_lock_lease_fenced_inner_at(
+      &mut RestoreLockLeaseData::default(),
+      "oversized-window-token",
+      "main",
+      100,
+      31_001,
+      MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS + 1,
+      clock,
+    )
+    .is_err());
+  }
+
+  #[test]
   fn cancelled_restore_acquire_rejects_when_cancel_wins_before_acquire() {
     let mut state = RestoreLockLeaseData::default();
 
@@ -1530,16 +1970,69 @@ mod tests {
   }
 
   #[test]
+  fn cancellation_deadline_mismatch_preserves_matching_lease_and_fence() {
+    let mut state = RestoreLockLeaseData::default();
+    acquire_restore_lock_lease_fenced_inner_at(
+      &mut state,
+      "deadline-mismatch-token",
+      "main",
+      500,
+      2_800,
+      500,
+      RestoreClockSnapshot {
+        wall_ms: 2_300,
+        monotonic_ms: 1_000,
+      },
+    )
+    .expect("matching lease should acquire");
+    state
+      .cancelled_acquires
+      .insert(
+        "deadline-mismatch-token".to_string(),
+        RestoreAcquireCancellation {
+          request: RestoreAcquireRequest {
+            deadline_ms: 2_800,
+            window_ms: 500,
+          },
+          expires_at_monotonic_ms: 1_500,
+        },
+      );
+    let original_lease = state.lease.clone();
+    let original_fence = state.cancelled_acquires.clone();
+
+    let error = cancel_abandoned_restore_lock_acquire_inner_at(
+      &mut state,
+      "deadline-mismatch-token",
+      2_801,
+      500,
+      RestoreClockSnapshot {
+        wall_ms: 2_310,
+        monotonic_ms: 1_010,
+      },
+    )
+    .expect_err("deadline mismatch must fail before mutation");
+
+    assert!(error.contains("일치하지"));
+    assert_eq!(state.lease, original_lease);
+    assert_eq!(state.cancelled_acquires, original_fence);
+  }
+
+  #[test]
   fn cancelled_restore_acquire_capacity_fails_closed_without_evicting_live_deadlines() {
     let mut state = RestoreLockLeaseData::default();
     let request_deadline_ms = 20_000;
+    let clock = RestoreClockSnapshot {
+      wall_ms: 10_000,
+      monotonic_ms: 5_000,
+    };
 
     for index in 0..MAX_CANCELLED_RESTORE_ACQUIRES {
-      cancel_abandoned_restore_lock_acquire_inner(
+      cancel_abandoned_restore_lock_acquire_inner_at(
         &mut state,
         &format!("capacity-token-{index}"),
         20_000,
-        lease_time(10_000),
+        10_000,
+        clock,
       )
       .expect("each cancellation within capacity should be recorded");
     }
@@ -1547,12 +2040,16 @@ mod tests {
     assert!(state
       .cancelled_acquires
       .values()
-      .all(|deadline| *deadline == request_deadline_ms));
-    let capacity_error = cancel_abandoned_restore_lock_acquire_inner(
+      .all(|current| {
+        current.request.deadline_ms == request_deadline_ms
+          && current.expires_at_monotonic_ms == 15_000
+      }));
+    let capacity_error = cancel_abandoned_restore_lock_acquire_inner_at(
       &mut state,
       "capacity-token-overflow",
       20_000,
-      lease_time(10_000),
+      10_000,
+      clock,
     )
     .expect_err("the 257th live cancellation must fail closed");
 
@@ -1569,6 +2066,9 @@ mod tests {
     assert!(!state
       .cancelled_acquires
       .contains_key("capacity-token-overflow"));
+
+    prune_cancelled_restore_acquires(&mut state.cancelled_acquires, 15_001);
+    assert!(state.cancelled_acquires.is_empty());
   }
 
   #[test]

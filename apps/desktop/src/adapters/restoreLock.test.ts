@@ -396,6 +396,91 @@ describe("restore lock coordinator", () => {
     }
   });
 
+  it("does not reschedule when an in-flight renewal resolves after stop", async () => {
+    vi.useFakeTimers({ now: new Date("2026-07-13T09:30:00.000Z") });
+    try {
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = null;
+      const renewal = deferred<{
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      }>();
+      const nativeLease = {
+        acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          lease = {
+            token,
+            owner,
+            expiresAtMs: Date.now() + ttlMs,
+            operationActive: false,
+          };
+          return lease;
+        }),
+        current: vi.fn(async () => {
+          if (lease && lease.expiresAtMs <= Date.now()) {
+            lease = null;
+          }
+          return lease;
+        }),
+        renew: vi.fn(() => renewal.promise),
+        activate: vi.fn(async () => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.operationActive = true;
+          return lease;
+        }),
+        finish: vi.fn(),
+        release: vi.fn(),
+      };
+      const neverSettles = deferred<void>();
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => ["main"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        nativeLease,
+        lockLocal: async () => {},
+        unlockLocal: vi.fn(),
+        leaseTtlMs: 40,
+        leaseRenewIntervalMs: 10,
+        bridgeTimeoutMs: 5,
+        cleanupTimeoutMs: 30,
+      });
+
+      void coordinator.run(() => neverSettles.promise).catch(() => {});
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(nativeLease.renew).toHaveBeenCalledTimes(1);
+
+      const stop = coordinator.stop();
+      await vi.advanceTimersByTimeAsync(31);
+      await stop;
+      renewal.resolve({
+        token: lease!.token,
+        owner: lease!.owner,
+        expiresAtMs: Date.now() + 40,
+        operationActive: true,
+      });
+      await flushMicrotasks(50);
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(nativeLease.renew).toHaveBeenCalledTimes(1);
+      await expect(nativeLease.current()).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("times out when a live window never acknowledges", async () => {
     vi.useFakeTimers();
     try {
@@ -1769,6 +1854,111 @@ describe("restore lock coordinator", () => {
     }
   });
 
+  it("does not revive renewal or remote setup when acquire resolves after stop begins", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-13T00:00:00.000Z"));
+    try {
+      const acquireResponse = deferred<{
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      }>();
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = null;
+      const listLiveWindowLabels = vi.fn(async () => ["main", "memo-remote"]);
+      const notifyLockRequested = vi.fn(async () => {});
+      const unlockLocal = vi.fn();
+      const nativeLease = {
+        acquire: vi.fn(
+          (
+            token: string,
+            owner: string,
+            ttlMs: number,
+            _requestDeadlineMs?: number,
+            _requestWindowMs?: number
+          ) => {
+            return acquireResponse.promise;
+          }
+        ),
+        cancelAcquire: vi.fn(async () => {
+          throw new Error("cancel bridge unavailable");
+        }),
+        current: vi.fn(async () => {
+          if (lease && lease.expiresAtMs <= Date.now()) {
+            lease = null;
+          }
+          return lease;
+        }),
+        renew: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.expiresAtMs = Date.now() + ttlMs;
+          return { ...lease, token, owner };
+        }),
+        activate: vi.fn(),
+        release: vi.fn(async () => true),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels,
+        notifyLockRequested,
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        nativeLease,
+        lockLocal: async () => {},
+        unlockLocal,
+        timeoutMs: 10,
+        bridgeTimeoutMs: 10,
+        cleanupTimeoutMs: 5,
+        leaseTtlMs: 20,
+        leaseRenewIntervalMs: 2,
+      });
+
+      await coordinator.start();
+      const acquireOutcome = coordinator.acquire().catch((error: unknown) => error);
+      await flushMicrotasks(20);
+      await coordinator.stop();
+      expect(nativeLease.cancelAcquire).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(9);
+      const [token, owner, ttlMs] = nativeLease.acquire.mock.calls[0]!;
+      lease = {
+        token,
+        owner,
+        expiresAtMs: Date.now() + ttlMs,
+        operationActive: false,
+      };
+      acquireResponse.resolve({ ...lease });
+      await flushMicrotasks(50);
+
+      expect(nativeLease.cancelAcquire).toHaveBeenCalledTimes(2);
+      expect(listLiveWindowLabels).not.toHaveBeenCalled();
+      expect(notifyLockRequested).not.toHaveBeenCalled();
+      expect(nativeLease.renew).not.toHaveBeenCalled();
+      expect(nativeLease.activate).not.toHaveBeenCalled();
+      expect(nativeLease.release).not.toHaveBeenCalled();
+      expect(unlockLocal).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(ttlMs + 1);
+      await expect(nativeLease.current()).resolves.toBeNull();
+      await acquireOutcome;
+      await expect(coordinator.acquire()).rejects.toThrow("종료");
+      expect(nativeLease.renew).not.toHaveBeenCalled();
+      expect(notifyLockRequested).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lets an unconfirmed acquire created before its deadline expire by native TTL after stop", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-13T00:00:00.000Z"));
@@ -2706,7 +2896,8 @@ describe("restore lock coordinator", () => {
         expect.any(String),
         "main",
         70,
-        expect.any(Number)
+        expect.any(Number),
+        25
       );
       await vi.advanceTimersByTimeAsync(10);
       expect(nativeLease.renew).toHaveBeenCalledTimes(1);
