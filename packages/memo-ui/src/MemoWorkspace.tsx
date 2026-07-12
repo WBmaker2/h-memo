@@ -64,14 +64,14 @@ export function MemoWorkspace({
   const appMenuContent = (
     <div className="memo-menu__panel-content">
       <section className="memo-menu__group" aria-label="메모 기능">
-        <h3 className="memo-menu__group-title">메모 기능</h3>
+        <h2 className="memo-menu__group-title">메모 기능</h2>
         <button type="button" onClick={onCreateMemo} disabled={isMemoEditingDisabled}>
           새 메모
         </button>
         {actions}
       </section>
       <section className="memo-menu__group" aria-label="메모 관리">
-        <h3 className="memo-menu__group-title">메모 관리</h3>
+        <h2 className="memo-menu__group-title">메모 관리</h2>
         {hasManagedMemos ? (
           <ul className="memo-list">
             {menuMemos.map((memo, index) => (
@@ -90,6 +90,7 @@ export function MemoWorkspace({
                 <button
                   type="button"
                   aria-label={`${getMemoLabel(memo, index)} 삭제`}
+                  className="memo-menu__action--destructive destructive-action"
                   onClick={() => onDeleteMemo(memo.id)}
                   disabled={isMemoEditingDisabled}
                 >

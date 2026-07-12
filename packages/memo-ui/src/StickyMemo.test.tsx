@@ -231,6 +231,9 @@ describe("StickyMemo", () => {
       />
     );
 
+    const titlebar = screen.getByLabelText("상단 메뉴바");
+    expect(titlebar).toHaveAttribute("data-tauri-drag-region");
+    expect(titlebar).toHaveAttribute("title", "드래그해서 이동, 더블클릭해서 접기/펼치기");
     fireEvent.mouseDown(screen.getByLabelText("상단 메뉴바"), { button: 0 });
     fireEvent.pointerDown(screen.getByLabelText("창 크기 조절"), { button: 0 });
     expect(screen.queryByRole("button", { name: "최소화" })).not.toBeInTheDocument();
@@ -240,6 +243,36 @@ describe("StickyMemo", () => {
     expect(onRequestWindowDrag).toHaveBeenCalledTimes(1);
     expect(onRequestWindowResize).toHaveBeenCalledWith("SouthEast");
     expect(onRequestWindowClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the memo menu with Escape and restores focus to its summary", async () => {
+    const user = userEvent.setup();
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-escape" });
+
+    render(<StickyMemo memo={memo} onChange={vi.fn()} onDelete={vi.fn()} />);
+
+    const summary = screen.getByTitle("메모 메뉴");
+    const menu = summary.closest("details");
+    await user.click(summary);
+    const deleteButton = screen.getByRole("button", { name: "메모 삭제" });
+    deleteButton.focus();
+
+    await user.keyboard("{Escape}");
+
+    expect(menu).not.toHaveAttribute("open");
+    expect(summary).toHaveFocus();
+  });
+
+  it("omits native drag and resize affordances when handlers are absent", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-web" });
+
+    render(<StickyMemo memo={memo} onChange={vi.fn()} onDelete={vi.fn()} />);
+
+    const titlebar = screen.getByLabelText("상단 메뉴바");
+    expect(titlebar).not.toHaveAttribute("data-tauri-drag-region");
+    expect(titlebar).not.toHaveAttribute("title");
+    expect(titlebar.querySelector("[data-tauri-drag-region]")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("창 크기 조절")).not.toBeInTheDocument();
   });
 
   it("renders the app version next to the title", () => {

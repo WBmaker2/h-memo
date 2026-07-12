@@ -10,7 +10,27 @@ const LATEST_RELEASE_VERSION = "v1.0.0";
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
 const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
-const RELEASE_HISTORY = [
+type ReleaseHistoryEntry = {
+  date?: string;
+  version?: string;
+  title: string;
+  items: string[];
+};
+
+const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
+  {
+    date: "2026-07-12",
+    title: "데이터 안전성, 복원 안전성, 접근성, 메뉴 개선",
+    items: [
+      "복원 전 안전 지점과 멀티윈도우 잠금으로 로컬 데이터와 복원 과정을 보호합니다.",
+      "키보드로 사용할 수 있는 메뉴와 플랫폼별 메모창 표현을 적용했습니다.",
+    ],
+  },
+  {
+    date: "2026-05-13",
+    title: "H Memo 초기 개발",
+    items: ["Windows 데스크톱과 웹에서 메모를 기록하고 백업하는 개발을 시작했습니다."],
+  },
   {
     version: "v1.0.0",
     title: "백업 기록 선택 복원",
@@ -191,9 +211,17 @@ export function LandingPage() {
             </div>
             <div className="landing-page__release-list">
               {RELEASE_HISTORY.map((release) => (
-                <article className="landing-page__release-card" key={release.version}>
+                <article
+                  className="landing-page__release-card"
+                  key={release.date ?? release.version}
+                >
                   <h3>
-                    <span>{release.version}</span>
+                    {release.date ? (
+                      <time className="landing-page__release-date" dateTime={release.date}>
+                        {release.date}
+                      </time>
+                    ) : null}
+                    {release.version ? <span>{release.version}</span> : null}
                     {release.title}
                   </h3>
                   <ul>

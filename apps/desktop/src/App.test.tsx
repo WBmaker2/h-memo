@@ -3623,7 +3623,7 @@ describe("desktop App", () => {
     const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
     expect(mockListBackupSnapshots).toHaveBeenCalledWith(expect.anything(), "user-1");
     expect(mockRestoreLatestBackup).not.toHaveBeenCalled();
-    expect(within(dialog).getByText("2026-01-02T03:10:00.000Z")).toBeInTheDocument();
+    expect(within(dialog).getByText("2026. 1. 2. 오후 12:10:00")).toBeInTheDocument();
     expect(within(dialog).queryByText("2030-01-02T03:10:00.000Z")).not.toBeInTheDocument();
     expect(within(dialog).getAllByText("1개 메모")).toHaveLength(2);
     expect(screen.getByDisplayValue("로컬 내용")).toBeInTheDocument();

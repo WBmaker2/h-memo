@@ -1,4 +1,5 @@
 import type { BackedUpMemo } from "@h-memo/memo-sync";
+import { formatDateTime } from "./formatDateTime";
 
 export type ServerMemoManagerDialogProps = {
   isOpen: boolean;
@@ -63,7 +64,7 @@ export function ServerMemoManagerDialog({
                 <li key={item.memo.id} className="server-memo-list__item">
                   <div className="server-memo-list__content">
                     <strong>{label}</strong>
-                    <span>백업 시각: {item.backupCreatedAt}</span>
+                    <span>백업 시각: {formatDateTime(item.backupCreatedAt)}</span>
                     {item.memo.deletedAt ? <span>로컬 삭제 기록 있음</span> : null}
                   </div>
                   <div className="server-memo-list__actions">
@@ -78,6 +79,7 @@ export function ServerMemoManagerDialog({
                     <button
                       type="button"
                       aria-label={`${label} 서버 삭제`}
+                      className="server-memo-dialog__action--destructive destructive-action"
                       disabled={isBusy}
                       onClick={() => onDelete(item.memo.id)}
                     >

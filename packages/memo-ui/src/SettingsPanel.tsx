@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useId, useState, type ChangeEvent, type FormEvent } from "react";
 
 export type FirebaseConfigFormValue = {
   apiKey: string;
@@ -76,6 +76,7 @@ export function SettingsPanel({
   onClearFirebaseConfig,
 }: SettingsPanelProps) {
   const [firebaseForm, setFirebaseForm] = useState<FirebaseConfigFormValue>(firebaseConfig);
+  const disclosureId = useId().replace(/:/g, "");
 
   useEffect(() => {
     setFirebaseForm(firebaseConfig);
@@ -109,165 +110,190 @@ export function SettingsPanel({
 
   return (
     <section className="settings-panel">
-      <section className="settings-panel__section">
-        <h4 className="settings-panel__section-title">계정</h4>
-        <p>{userName || "구글 로그인(선택)"}</p>
-        <button
-          type="button"
-          onClick={handleAuthClick}
-          disabled={isAuthDisabled || !isServerAvailable}
-          title={userName ? "로그아웃" : "구글 로그인"}
-        >
-          {userName ? "로그아웃" : "구글 로그인"}
-        </button>
-      </section>
+      <details
+        className="settings-panel__section"
+        open
+        role="group"
+        aria-labelledby={`${disclosureId}-account-label`}
+      >
+        <summary id={`${disclosureId}-account-label`}>
+          <span role="heading" aria-level={3} className="settings-panel__section-title">
+            계정
+          </span>
+        </summary>
+        <div className="settings-panel__section-content">
+          <p>{userName || "구글 로그인(선택)"}</p>
+          <button
+            type="button"
+            onClick={handleAuthClick}
+            disabled={isAuthDisabled || !isServerAvailable}
+            title={userName ? "로그아웃" : "구글 로그인"}
+          >
+            {userName ? "로그아웃" : "구글 로그인"}
+          </button>
 
-      {onSaveFirebaseConfig ? (
-        <section className="settings-panel__section">
-          <h4 className="settings-panel__section-title">구글 로그인 설정</h4>
-          <form className="firebase-config-form" onSubmit={handleFirebaseConfigSubmit}>
-            <label>
-              API key
-              <input
-                value={firebaseForm.apiKey}
-                onChange={handleFirebaseConfigChange("apiKey")}
-                autoComplete="off"
-              />
-            </label>
-            <label>
-              Auth domain
-              <input
-                value={firebaseForm.authDomain}
-                onChange={handleFirebaseConfigChange("authDomain")}
-                autoComplete="off"
-              />
-            </label>
-            <label>
-              Project ID
-              <input
-                value={firebaseForm.projectId}
-                onChange={handleFirebaseConfigChange("projectId")}
-                autoComplete="off"
-              />
-            </label>
-            <label>
-              App ID
-              <input
-                value={firebaseForm.appId}
-                onChange={handleFirebaseConfigChange("appId")}
-                autoComplete="off"
-              />
-            </label>
-            <label>
-              Storage bucket
-              <input
-                value={firebaseForm.storageBucket}
-                onChange={handleFirebaseConfigChange("storageBucket")}
-                autoComplete="off"
-              />
-            </label>
-            <label>
-              Messaging sender ID
-              <input
-                value={firebaseForm.messagingSenderId}
-                onChange={handleFirebaseConfigChange("messagingSenderId")}
-                autoComplete="off"
-              />
-            </label>
-            <label>
-              Measurement ID
-              <input
-                value={firebaseForm.measurementId}
-                onChange={handleFirebaseConfigChange("measurementId")}
-                autoComplete="off"
-              />
-            </label>
-            <label>
-              Google OAuth Client ID
-              <input
-                value={firebaseForm.googleOAuthClientId}
-                onChange={handleFirebaseConfigChange("googleOAuthClientId")}
-                autoComplete="off"
-              />
-            </label>
-            <div>
-              <button type="submit" disabled={isServerBusy}>
-                설정 저장
-              </button>
-              <button type="button" onClick={onClearFirebaseConfig} disabled={isServerBusy}>
-                설정 지우기
-              </button>
-            </div>
-          </form>
-        </section>
-      ) : null}
-
-      <section className="settings-panel__section">
-        <h4 className="settings-panel__section-title">백업/복원</h4>
-        <p role="status">{backupStatus}</p>
-        <div>
-          <button
-            type="button"
-            onClick={onBackup}
-            disabled={isBackupDisabled || !isServerAvailable}
-          >
-            서버 백업
-          </button>
-          <button
-            type="button"
-            onClick={onRestore}
-            disabled={isRestoreDisabled || !isServerAvailable}
-          >
-            서버 복원
-          </button>
-          <button
-            type="button"
-            onClick={onExportText}
-            disabled={isServerBusy}
-          >
-            TXT 내보내기
-          </button>
-          <button
-            type="button"
-            onClick={onExportJsonBackup}
-            disabled={isServerBusy}
-          >
-            JSON 백업
-          </button>
-          <button
-            type="button"
-            onClick={onImportJsonBackup}
-            disabled={isServerBusy || isLocalRestoreDisabled}
-          >
-            JSON 복원
-          </button>
-          {canUndoRestore ? (
-            <button
-              type="button"
-              onClick={onUndoRestore}
-              disabled={isServerBusy || isLocalRestoreDisabled}
-            >
-              마지막 복원 되돌리기
-            </button>
+          {onSaveFirebaseConfig ? (
+            <section className="settings-panel__section settings-panel__section--nested">
+              <h4 className="settings-panel__section-title">구글 로그인 설정</h4>
+              <form className="firebase-config-form" onSubmit={handleFirebaseConfigSubmit}>
+                <label>
+                  API key
+                  <input
+                    value={firebaseForm.apiKey}
+                    onChange={handleFirebaseConfigChange("apiKey")}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Auth domain
+                  <input
+                    value={firebaseForm.authDomain}
+                    onChange={handleFirebaseConfigChange("authDomain")}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Project ID
+                  <input
+                    value={firebaseForm.projectId}
+                    onChange={handleFirebaseConfigChange("projectId")}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  App ID
+                  <input
+                    value={firebaseForm.appId}
+                    onChange={handleFirebaseConfigChange("appId")}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Storage bucket
+                  <input
+                    value={firebaseForm.storageBucket}
+                    onChange={handleFirebaseConfigChange("storageBucket")}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Messaging sender ID
+                  <input
+                    value={firebaseForm.messagingSenderId}
+                    onChange={handleFirebaseConfigChange("messagingSenderId")}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Measurement ID
+                  <input
+                    value={firebaseForm.measurementId}
+                    onChange={handleFirebaseConfigChange("measurementId")}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Google OAuth Client ID
+                  <input
+                    value={firebaseForm.googleOAuthClientId}
+                    onChange={handleFirebaseConfigChange("googleOAuthClientId")}
+                    autoComplete="off"
+                  />
+                </label>
+                <div>
+                  <button type="submit" disabled={isServerBusy}>
+                    설정 저장
+                  </button>
+                  <button type="button" onClick={onClearFirebaseConfig} disabled={isServerBusy}>
+                    설정 지우기
+                  </button>
+                </div>
+              </form>
+            </section>
           ) : null}
         </div>
-      </section>
+      </details>
+
+      <details
+        className="settings-panel__section"
+        open
+        role="group"
+        aria-labelledby={`${disclosureId}-backup-label`}
+      >
+        <summary id={`${disclosureId}-backup-label`}>
+          <span role="heading" aria-level={3} className="settings-panel__section-title">
+            백업 및 복원
+          </span>
+        </summary>
+        <div className="settings-panel__section-content">
+          <p role="status">{backupStatus}</p>
+          <div>
+            <button
+              type="button"
+              onClick={onBackup}
+              disabled={isBackupDisabled || !isServerAvailable}
+            >
+              서버 백업
+            </button>
+            <button
+              type="button"
+              onClick={onRestore}
+              disabled={isRestoreDisabled || !isServerAvailable}
+            >
+              서버 복원
+            </button>
+            <button type="button" onClick={onExportText} disabled={isServerBusy}>
+              TXT 내보내기
+            </button>
+            <button type="button" onClick={onExportJsonBackup} disabled={isServerBusy}>
+              JSON 백업
+            </button>
+            <button
+              type="button"
+              onClick={onImportJsonBackup}
+              disabled={isServerBusy || isLocalRestoreDisabled}
+            >
+              JSON 복원
+            </button>
+            {canUndoRestore ? (
+              <button
+                type="button"
+                onClick={onUndoRestore}
+                disabled={isServerBusy || isLocalRestoreDisabled}
+              >
+                마지막 복원 되돌리기
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </details>
 
       {showStartupSection ? (
-        <section className="settings-panel__section">
-          <h4 className="settings-panel__section-title">시작프로그램</h4>
-          <label className="settings-panel__switch-row">
-            <span>시작프로그램 등록</span>
-            <input
-              type="checkbox"
-              role="switch"
-              aria-label="시작프로그램 등록"
-              checked={startupEnabled}
-              disabled={!isStartupAvailable}
-              onChange={handleToggleStartup}
-            />
-          </label>
-        </section>
+        <details
+          className="settings-panel__section"
+          open
+          role="group"
+          aria-labelledby={`${disclosureId}-startup-label`}
+        >
+          <summary id={`${disclosureId}-startup-label`}>
+            <span role="heading" aria-level={3} className="settings-panel__section-title">
+              시작프로그램
+            </span>
+          </summary>
+          <div className="settings-panel__section-content">
+            <label className="settings-panel__switch-row">
+              <span>시작프로그램 등록</span>
+              <input
+                type="checkbox"
+                role="switch"
+                aria-label="시작프로그램 등록"
+                checked={startupEnabled}
+                disabled={!isStartupAvailable}
+                onChange={handleToggleStartup}
+              />
+            </label>
+          </div>
+        </details>
       ) : null}
     </section>
   );

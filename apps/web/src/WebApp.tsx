@@ -14,7 +14,7 @@ import {
   type MemoRepository,
   type RestoreSafetyPoint,
 } from "@h-memo/memo-core";
-import { MemoWorkspace, ServerMemoManagerDialog } from "@h-memo/memo-ui";
+import { formatDateTime, MemoWorkspace, ServerMemoManagerDialog } from "@h-memo/memo-ui";
 import {
   FirestoreBackupGateway,
   backupMemos,
@@ -163,13 +163,8 @@ function createRestoreSafetyPoint(
   };
 }
 
-function formatBackupTime(createdAt: string): string {
-  const date = new Date(createdAt);
-  return Number.isNaN(date.getTime()) ? createdAt : date.toLocaleString("ko-KR");
-}
-
 function getServerRestoreConfirmMessage(snapshot: BackedUpSnapshot): string {
-  return `${formatBackupTime(snapshot.createdAt)} 백업의 ${snapshot.memoCount}개 메모로 현재 로컬 메모를 대체합니다. 계속할까요?`;
+  return `${formatDateTime(snapshot.createdAt)} 백업의 ${snapshot.memoCount}개 메모로 현재 로컬 메모를 대체합니다. 계속할까요?`;
 }
 
 function broadcastRestoreSafetyChanged() {
@@ -1392,7 +1387,7 @@ export function WebApp() {
                     className="backup-history-list__item"
                   >
                     <div className="backup-history-list__content">
-                      <strong>{snapshot.createdAt}</strong>
+                      <strong>{formatDateTime(snapshot.createdAt)}</strong>
                       <span>{snapshot.memoCount}개 메모</span>
                       <span title={preview}>미리보기: {preview}</span>
                     </div>

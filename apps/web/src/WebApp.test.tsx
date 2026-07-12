@@ -1749,7 +1749,7 @@ describe("WebApp", () => {
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
 
     const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
-    expect(within(dialog).getByText("2026-05-13T10:05:00.000Z")).toBeInTheDocument();
+    expect(within(dialog).getByText("2026. 5. 13. 오후 7:05:00")).toBeInTheDocument();
     expect(within(dialog).queryByText("2030-05-13T10:05:00.000Z")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("삭제되어야 할 로컬 데이터")).toBeInTheDocument();
 
