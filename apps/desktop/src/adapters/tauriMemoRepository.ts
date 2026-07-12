@@ -8,13 +8,31 @@ type TauriMemoRecord = Omit<Memo, "windowState" | "style" | "richContent"> & {
 };
 
 export class TauriMemoRepository implements MemoRepository {
+  private restoreToken: string | null = null;
+
+  async withRestoreToken<T>(token: string, operation: () => Promise<T>): Promise<T> {
+    if (this.restoreToken !== null) {
+      throw new Error("이미 다른 복원 저장 범위가 진행 중입니다.");
+    }
+
+    this.restoreToken = token;
+    try {
+      return await operation();
+    } finally {
+      this.restoreToken = null;
+    }
+  }
+
   async listMemos(): Promise<Memo[]> {
     const records = await invoke<TauriMemoRecord[]>("list_memos");
     return records;
   }
 
   async saveMemo(memo: Memo): Promise<Memo> {
-    const saved = await invoke<TauriMemoRecord>("save_memo", { memo });
+    const args = this.restoreToken
+      ? { memo, restoreToken: this.restoreToken }
+      : { memo };
+    const saved = await invoke<TauriMemoRecord>("save_memo", args);
     return saved;
   }
 

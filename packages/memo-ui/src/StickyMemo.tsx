@@ -265,6 +265,7 @@ export function StickyMemo({
                 type="button"
                 aria-label={memoCloseLabel}
                 title="메모창 닫기"
+                disabled={isEditingDisabled}
                 onClick={() => onCloseMemo(editingMemo.id)}
               >
                 ×
@@ -275,6 +276,7 @@ export function StickyMemo({
                 type="button"
                 aria-label="종료"
                 title="종료"
+                disabled={isEditingDisabled}
                 onClick={onRequestWindowClose}
               >
                 ×

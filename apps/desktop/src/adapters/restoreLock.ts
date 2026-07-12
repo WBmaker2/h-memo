@@ -46,6 +46,7 @@ export type RestoreLockCoordinatorOptions = {
   leaseTtlMs?: number;
   leaseRenewIntervalMs?: number;
   leasePollIntervalMs?: number;
+  cleanupTimeoutMs?: number;
   onProtocolError?: (error: unknown) => void;
 };
 
@@ -60,6 +61,7 @@ const DEFAULT_ACK_TIMEOUT_MS = 5000;
 const DEFAULT_LEASE_TTL_MS = 10000;
 const DEFAULT_LEASE_RENEW_INTERVAL_MS = 2000;
 const DEFAULT_LEASE_POLL_INTERVAL_MS = 250;
+const DEFAULT_CLEANUP_TIMEOUT_MS = 1000;
 
 export function createTauriRestoreLockLeaseAdapter(): RestoreLockLeaseAdapter {
   return {
@@ -90,12 +92,17 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   const leaseRenewIntervalMs =
     options.leaseRenewIntervalMs ?? DEFAULT_LEASE_RENEW_INTERVAL_MS;
   const leasePollIntervalMs = options.leasePollIntervalMs ?? DEFAULT_LEASE_POLL_INTERVAL_MS;
+  const cleanupTimeoutMs = options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
   let startPromise: Promise<void> | null = null;
   let localToken: string | null = null;
   let remoteToken: string | null = null;
   let leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
   let remoteLeasePollTimer: ReturnType<typeof setInterval> | null = null;
   let remoteLeaseExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+  let activeLeaseFailureReject: ((error: unknown) => void) | null = null;
+  let activeOperation: Promise<unknown> | null = null;
+  let stopping = false;
+  let stopPromise: Promise<void> | null = null;
 
   const reportProtocolError = (error: unknown) => {
     options.onProtocolError?.(error);
@@ -156,9 +163,19 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       return;
     }
     leaseRenewTimer = setInterval(() => {
-      void nativeLease.renew(token, owner, leaseTtlMs).catch((error) => {
-        reportProtocolError(error);
-      });
+      void nativeLease
+        .renew(token, owner, leaseTtlMs)
+        .then((renewed) => {
+          if (renewed.token !== token || renewed.owner !== owner) {
+            throw new Error("복원 잠금 lease 갱신 소유자 확인에 실패했습니다.");
+          }
+        })
+        .catch((error) => {
+          clearLeaseRenewal();
+          const failure = toError(error, "복원 잠금 lease 갱신에 실패했습니다.");
+          reportProtocolError(failure);
+          activeLeaseFailureReject?.(failure);
+        });
     }, leaseRenewIntervalMs);
   };
 
@@ -303,6 +320,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   };
 
   const start = async () => {
+    if (stopping) {
+      throw new Error("복원 잠금 coordinator가 종료되었습니다.");
+    }
     if (!startPromise) {
       startPromise = Promise.all([
         options.listenLockRequested((payload) => {
@@ -311,6 +331,12 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         options.listenLockAcknowledged(handleLockAcknowledged),
         options.listenLockReleased(handleLockReleased),
       ]).then(async (registeredCleanups) => {
+        if (stopping) {
+          for (const cleanup of registeredCleanups) {
+            cleanup();
+          }
+          return;
+        }
         cleanups.push(...registeredCleanups);
         await initializeRemoteLease();
       });
@@ -318,23 +344,41 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     await startPromise;
   };
 
-  const broadcastRelease = async (token: string) => {
+  const runBoundedCleanup = async (
+    operation: () => Promise<unknown>,
+    timeoutMessage: string
+  ) => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), cleanupTimeoutMs);
+    });
+
     try {
-      await options.notifyLockReleased(token);
+      await Promise.race([Promise.resolve().then(operation), timeoutPromise]);
     } catch (error) {
       reportProtocolError(error);
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
+  };
+
+  const broadcastRelease = async (token: string) => {
+    await runBoundedCleanup(
+      () => options.notifyLockReleased(token),
+      "복원 잠금 해제 공유가 시간 초과되었습니다."
+    );
   };
 
   const releaseNativeLease = async (token: string) => {
     if (!nativeLease) {
       return;
     }
-    try {
-      await nativeLease.release(token, owner);
-    } catch (error) {
-      reportProtocolError(error);
-    }
+    await runBoundedCleanup(
+      () => nativeLease.release(token, owner),
+      "복원 잠금 lease 해제가 시간 초과되었습니다."
+    );
   };
 
   const waitForNotificationAndAcknowledgements = async (
@@ -365,6 +409,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
 
   const acquire = async () => {
     await start();
+    if (stopping) {
+      throw new Error("복원 잠금 coordinator가 종료되었습니다.");
+    }
     if (localToken || remoteToken) {
       throw new Error("다른 복원 작업이 이미 진행 중입니다.");
     }
@@ -440,28 +487,94 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       await broadcastRelease(token);
     } finally {
       localToken = null;
+      activeLeaseFailureReject = null;
       options.unlockLocal(token);
     }
   };
 
-  const stop = async () => {
-    for (const cleanup of cleanups.splice(0)) {
-      cleanup();
+  const run = async <T,>(operation: (token: string) => Promise<T>): Promise<T> => {
+    await start();
+    if (stopping) {
+      throw new Error("복원 잠금 coordinator가 종료되었습니다.");
     }
-    if (localToken) {
-      const token = localToken;
-      await release(token);
+    if (localToken && activeOperation) {
+      await activeOperation.catch(() => {});
+    }
+    if (stopping) {
+      throw new Error("복원 잠금 coordinator가 종료되었습니다.");
     }
     if (remoteToken) {
-      const token = remoteToken;
-      unlockRemote(token);
+      throw new Error("다른 복원 작업이 이미 진행 중입니다.");
     }
+
+    let rejectLeaseFailure!: (error: unknown) => void;
+    const leaseFailure = new Promise<never>((_, reject) => {
+      rejectLeaseFailure = reject;
+    });
+    activeLeaseFailureReject = rejectLeaseFailure;
+
+    let token: string | null = null;
+    const completion = (async () => {
+      try {
+        token = await acquire();
+        return await operation(token);
+      } finally {
+        if (token) {
+          await release(token);
+        } else if (activeLeaseFailureReject === rejectLeaseFailure) {
+          activeLeaseFailureReject = null;
+        }
+      }
+    })();
+    activeOperation = completion;
+    void completion.then(
+      () => {
+        if (activeOperation === completion) {
+          activeOperation = null;
+        }
+      },
+      () => {
+        if (activeOperation === completion) {
+          activeOperation = null;
+        }
+      }
+    );
+    void completion.catch(() => {});
+
+    return Promise.race([completion, leaseFailure]);
+  };
+
+  const stop = async () => {
+    if (stopPromise) {
+      return stopPromise;
+    }
+
+    stopping = true;
+    stopPromise = (async () => {
+      if (activeOperation) {
+        await activeOperation.catch(() => {});
+      }
+      if (localToken) {
+        const token = localToken;
+        await release(token);
+      }
+      if (remoteToken) {
+        const token = remoteToken;
+        unlockRemote(token);
+      }
+      for (const cleanup of cleanups.splice(0)) {
+        cleanup();
+      }
+    })();
+
+    return stopPromise;
   };
 
   return {
     start,
     acquire,
     release,
+    run,
     stop,
   };
 }

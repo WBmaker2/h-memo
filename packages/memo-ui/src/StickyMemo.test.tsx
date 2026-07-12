@@ -149,6 +149,38 @@ describe("StickyMemo", () => {
     expect(screen.queryByRole("button", { name: "종료" })).not.toBeInTheDocument();
   });
 
+  it("disables titlebar close controls while restore mutation is locked", async () => {
+    const user = userEvent.setup();
+    const memo = createMemo({
+      now: "2026-07-13T09:00:00.000Z",
+      id: "memo-locked-close",
+      plainText: "잠긴 메모",
+    });
+    const onCloseMemo = vi.fn();
+    const onRequestWindowClose = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onCloseMemo={onCloseMemo}
+        onRequestWindowClose={onRequestWindowClose}
+        isEditingDisabled
+      />
+    );
+
+    const memoClose = screen.getByRole("button", { name: "잠긴 메모 메모창 닫기" });
+    const appClose = screen.getByRole("button", { name: "종료" });
+    expect(memoClose).toBeDisabled();
+    expect(appClose).toBeDisabled();
+
+    await user.click(memoClose);
+    await user.click(appClose);
+    expect(onCloseMemo).not.toHaveBeenCalled();
+    expect(onRequestWindowClose).not.toHaveBeenCalled();
+  });
+
   it("closes another memo menu when a different memo menu opens", async () => {
     const user = userEvent.setup();
     const firstMemo = createMemo({

@@ -59,6 +59,7 @@ const JSON_RESTORE_CONFIRM_MESSAGE =
 const NO_BACKUP_MESSAGE = "복원할 백업이 없습니다.";
 const SERVER_MEMO_INITIAL_STATUS = "서버 메모를 불러오지 않았습니다.";
 const RESTORE_SAFETY_CHANGED_EVENT = "h-memo:restore-safety-changed";
+const RESTORE_SAFETY_POLL_INTERVAL_MS = 250;
 
 type BackupMessage = string;
 type SyncServices = {
@@ -253,9 +254,11 @@ export function WebApp() {
         reload();
       }
     };
+    const pollId = window.setInterval(reload, RESTORE_SAFETY_POLL_INTERVAL_MS);
     window.addEventListener(RESTORE_SAFETY_CHANGED_EVENT, reload);
     window.addEventListener("storage", handleStorage);
     return () => {
+      window.clearInterval(pollId);
       window.removeEventListener(RESTORE_SAFETY_CHANGED_EVENT, reload);
       window.removeEventListener("storage", handleStorage);
     };

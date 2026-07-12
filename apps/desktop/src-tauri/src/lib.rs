@@ -145,14 +145,55 @@ fn list_memos_from_connection(connection: &Connection) -> AnyhowResult<Vec<MemoR
 }
 
 #[tauri::command]
-fn save_memo(database: State<'_, DatabaseState>, memo: MemoRecord) -> Result<MemoRecord, String> {
+fn save_memo(
+  database: State<'_, DatabaseState>,
+  restore_lock: State<'_, RestoreLockLeaseState>,
+  memo: MemoRecord,
+  restore_token: Option<String>,
+) -> Result<MemoRecord, String> {
+  let mut lease = restore_lock
+    .0
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
   let connection = database
     .0
     .lock()
     .map_err(|_| "database lock is unavailable".to_string())?;
-  let updated = normalize_record(&memo);
-  upsert_memo(&connection, &updated).map_err(|error| error.to_string())?;
+  save_memo_inner(
+    &connection,
+    &mut lease,
+    &memo,
+    restore_token.as_deref(),
+    SystemTime::now(),
+  )
+}
+
+fn save_memo_inner(
+  connection: &Connection,
+  lease: &mut Option<RestoreLockLease>,
+  memo: &MemoRecord,
+  restore_token: Option<&str>,
+  now: SystemTime,
+) -> Result<MemoRecord, String> {
+  authorize_restore_save(lease, restore_token, now)?;
+  let updated = normalize_record(memo);
+  upsert_memo(connection, &updated).map_err(|error| error.to_string())?;
   Ok(updated)
+}
+
+fn authorize_restore_save(
+  lease: &mut Option<RestoreLockLease>,
+  restore_token: Option<&str>,
+  now: SystemTime,
+) -> Result<(), String> {
+  prune_restore_lock_lease(lease, now);
+  match (lease.as_ref(), restore_token) {
+    (None, None) => Ok(()),
+    (None, Some(_)) => Err("복원 잠금 lease가 없어 restore token을 사용할 수 없습니다.".to_string()),
+    (Some(_), None) => Err("복원 잠금 중에는 restore token이 필요합니다.".to_string()),
+    (Some(current), Some(token)) if current.token == token => Ok(()),
+    (Some(_), Some(_)) => Err("복원 잠금 restore token이 일치하지 않습니다.".to_string()),
+  }
 }
 
 #[tauri::command]
@@ -319,9 +360,16 @@ fn to_restore_lock_lease_record(lease: &RestoreLockLease) -> RestoreLockLeaseRec
 fn claim_memo_window(
   app: AppHandle,
   registry: State<'_, MemoWindowRegistry>,
+  restore_lock: State<'_, RestoreLockLeaseState>,
   memo_id: String,
   window_label: String,
 ) -> Result<MemoWindowClaim, String> {
+  let mut lease = restore_lock
+    .0
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  ensure_no_live_restore_lock(&mut lease, SystemTime::now())?;
+
   let claim = {
     let mut owners = registry
       .0
@@ -349,6 +397,16 @@ fn claim_memo_window(
   }
 
   Ok(claim)
+}
+
+fn ensure_no_live_restore_lock(
+  lease: &mut Option<RestoreLockLease>,
+  now: SystemTime,
+) -> Result<(), String> {
+  if current_restore_lock_lease_inner(lease, now).is_some() {
+    return Err("복원 잠금 중에는 메모 창을 열 수 없습니다.".to_string());
+  }
+  Ok(())
 }
 
 #[tauri::command]
@@ -1172,6 +1230,104 @@ mod tests {
     assert_eq!(memos.len(), 1);
     assert_eq!(memos[0].plain_text, "newest");
     assert_eq!(memos[0].updated_at, "2026-07-11T00:01:00Z");
+  }
+
+  #[test]
+  fn save_memo_enforces_the_restore_token_matrix_before_mutating_the_database() {
+    let connection = Connection::open_in_memory().expect("in-memory database should open");
+    initialize_database(&connection).expect("database should initialize");
+    let mut lease = None;
+    let initial = test_memo("memo-save-boundary", "initial", "2026-07-12T09:00:00Z");
+    let active = test_memo("memo-save-boundary", "active", "2026-07-12T09:01:00Z");
+
+    save_memo_inner(
+      &connection,
+      &mut lease,
+      &initial,
+      None,
+      lease_time(3_000),
+    )
+    .expect("ordinary saves should work without a lease");
+    assert!(save_memo_inner(
+      &connection,
+      &mut lease,
+      &active,
+      Some("token-before-lease"),
+      lease_time(3_001),
+    )
+    .is_err());
+
+    acquire_restore_lock_lease_inner(
+      &mut lease,
+      "token-current",
+      "main",
+      100,
+      lease_time(3_010),
+    )
+    .expect("lease should be acquired");
+
+    for token in [None, Some("token-stale")] {
+      assert!(save_memo_inner(
+        &connection,
+        &mut lease,
+        &active,
+        token,
+        lease_time(3_020),
+      )
+      .is_err());
+    }
+    let unchanged = list_memos_from_connection(&connection).expect("memos should list");
+    assert_eq!(unchanged[0].plain_text, "initial");
+
+    save_memo_inner(
+      &connection,
+      &mut lease,
+      &active,
+      Some("token-current"),
+      lease_time(3_030),
+    )
+    .expect("the exact live lease token should authorize the save");
+    assert_eq!(
+      list_memos_from_connection(&connection).expect("memos should list")[0].plain_text,
+      "active"
+    );
+
+    let expired = test_memo("memo-save-boundary", "expired", "2026-07-12T09:02:00Z");
+    assert!(save_memo_inner(
+      &connection,
+      &mut lease,
+      &expired,
+      Some("token-current"),
+      lease_time(3_111),
+    )
+    .is_err());
+    save_memo_inner(
+      &connection,
+      &mut lease,
+      &expired,
+      None,
+      lease_time(3_112),
+    )
+    .expect("ordinary saves should resume after lease expiry");
+  }
+
+  #[test]
+  fn memo_window_claim_rejects_a_live_restore_lease_atomically() {
+    let mut lease = None;
+    ensure_no_live_restore_lock(&mut lease, lease_time(4_000))
+      .expect("a claim should be allowed without a live lease");
+    acquire_restore_lock_lease_inner(
+      &mut lease,
+      "claim-lock",
+      "main",
+      100,
+      lease_time(4_000),
+    )
+    .expect("lease should be acquired");
+
+    assert!(ensure_no_live_restore_lock(&mut lease, lease_time(4_050)).is_err());
+    ensure_no_live_restore_lock(&mut lease, lease_time(4_101))
+      .expect("claims should resume after the lease expires");
   }
 
   #[test]

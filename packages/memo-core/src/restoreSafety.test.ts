@@ -82,6 +82,16 @@ describe("restoreSafety", () => {
     expect(restoreSafety.loadRestoreSafetyPoint(createStorage("not-json"))).toBeNull();
   });
 
+  it("rejects a safety point whose envelope timestamp is not parseable", () => {
+    const point = createSafetyPoint();
+    point.createdAt = "not-a-date";
+
+    const storage = createStorage();
+    storage.setItem(STORAGE_KEY, JSON.stringify(point));
+
+    expect(restoreSafety.loadRestoreSafetyPoint(storage)).toBeNull();
+  });
+
   it("reports storage quota errors instead of continuing", () => {
     const storage = createStorage();
     storage.setItem = () => {

@@ -333,4 +333,15 @@ describe("tauriWindow", () => {
       claimToken: "token-1",
     });
   });
+
+  it("does not construct a memo window when the native claim sees an active restore lease", async () => {
+    const { openMemoWindow } = await import("./tauriWindow");
+    mockInvoke.mockRejectedValueOnce(new Error("복원 잠금 중에는 메모 창을 열 수 없습니다."));
+
+    await expect(
+      openMemoWindow(createMemo({ id: "memo-locked", now: "2026-07-11T09:00:00.000Z" }))
+    ).rejects.toThrow("복원 잠금");
+
+    expect(webviewWindowState.constructorCalls).toBe(0);
+  });
 });

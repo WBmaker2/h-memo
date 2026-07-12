@@ -517,6 +517,50 @@ describe("WebApp", () => {
     });
   });
 
+  it("reloads canUndo from durable polling when the restore-safety event is lost", async () => {
+    vi.useFakeTimers();
+    try {
+      const memo = createMemo({
+        id: "memo-polling-undo",
+        now: "2026-07-12T12:10:00.000Z",
+        plainText: "폴링으로 찾을 웹 메모",
+      });
+      installLocalStorageStub({
+        initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([memo])]],
+      });
+
+      render(<WebApp />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByDisplayValue("폴링으로 찾을 웹 메모")).toBeInTheDocument();
+
+      window.localStorage.setItem(
+        RESTORE_SAFETY_KEY,
+        JSON.stringify({
+          version: 1,
+          source: "json",
+          createdAt: "2026-07-12T12:11:00.000Z",
+          payload: {
+            version: 1,
+            userId: "local",
+            createdAt: "2026-07-12T12:11:00.000Z",
+            memos: [memo],
+          },
+        })
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      fireEvent.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+      expect(screen.getByRole("button", { name: "마지막 복원 되돌리기" })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("treats malformed persisted undo storage as unavailable", async () => {
     installLocalStorageStub({
       initialEntries: [[RESTORE_SAFETY_KEY, JSON.stringify({ version: 1, source: "unknown" })]],

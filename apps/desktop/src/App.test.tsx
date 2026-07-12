@@ -229,6 +229,9 @@ const {
     saveMemo = mockSaveMemo;
     softDeleteMemo = mockSoftDeleteMemo;
     restoreMemo = mockRestoreMemo;
+    async withRestoreToken<T>(_token: string, operation: () => Promise<T>) {
+      return operation();
+    }
   }
 
   return {
@@ -3193,6 +3196,102 @@ describe("desktop App", () => {
       newerPoint.createdAt
     );
     expect(screen.getByRole("button", { name: "마지막 복원 되돌리기" })).toBeInTheDocument();
+  });
+
+  it("reloads canUndo from durable polling when the restore-safety event is lost", async () => {
+    vi.useFakeTimers();
+    try {
+      setTauriRuntime(true);
+      mockGetStartupEnabled.mockResolvedValue(false);
+      const memo = createMemo({
+        id: "desktop-polling-undo",
+        now: "2026-07-12T16:20:00.000Z",
+        plainText: "폴링으로 찾을 메모",
+      });
+      tauriRepositoryState.set(memo.id, memo);
+
+      render(<App />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByDisplayValue("폴링으로 찾을 메모")).toBeInTheDocument();
+
+      window.localStorage.setItem(
+        RESTORE_SAFETY_KEY,
+        JSON.stringify({
+          version: 1,
+          source: "server",
+          createdAt: "2026-07-12T16:21:00.000Z",
+          payload: {
+            version: 1,
+            userId: "desktop-user",
+            createdAt: "2026-07-12T16:21:00.000Z",
+            memos: [memo],
+          },
+        })
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      fireEvent.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+      expect(screen.getByRole("button", { name: "마지막 복원 되돌리기" })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not mutate the server after a restore lock begins during delete confirmation", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({ uid: "server-user", displayName: "서버 사용자", email: "server@example.com", photoURL: "" });
+      return mockAuthUnsubscribe;
+    });
+    const memo = createMemo({
+      id: "desktop-confirmation-lock",
+      now: "2026-07-12T16:30:00.000Z",
+      plainText: "확인 중 잠금 메모",
+    });
+    const otherMemo = createMemo({
+      id: "desktop-confirmation-other",
+      now: "2026-07-12T16:31:00.000Z",
+      plainText: "남겨둘 확인 메모",
+    });
+    tauriRepositoryState.set(memo.id, memo);
+    tauriRepositoryState.set(otherMemo.id, otherMemo);
+    mockDeleteBackedUpMemo.mockResolvedValue(1);
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("확인 중 잠금 메모")).toBeInTheDocument();
+      expect(tauriEventState.restoreLockRequestedListener).not.toBeNull();
+    });
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    await user.click(screen.getByRole("button", { name: "확인 중 잠금 메모 삭제" }));
+    expect(screen.getByRole("dialog", { name: "메모 삭제" })).toBeInTheDocument();
+
+    nativeLeaseState.lease = {
+      token: "confirmation-restore-lock",
+      owner: "other-window",
+      expiresAtMs: Date.now() + 10_000,
+    };
+    await act(async () => {
+      await tauriEventState.restoreLockRequestedListener?.({ token: "confirmation-restore-lock" });
+    });
+
+    await user.click(screen.getByRole("button", { name: "삭제하기" }));
+
+    expect(mockDeleteBackedUpMemo).not.toHaveBeenCalled();
+    expect(tauriRepositoryState.has(memo.id)).toBe(true);
   });
 
   it("keeps server memo visible when server delete reports no stored record", async () => {

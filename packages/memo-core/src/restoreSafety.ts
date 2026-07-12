@@ -26,7 +26,11 @@ function isRestoreSafetyPoint(value: unknown): value is RestoreSafetyPoint {
   if (value.version !== 1 || (value.source !== "server" && value.source !== "json")) {
     return false;
   }
-  if (typeof value.createdAt !== "string" || value.createdAt.trim() === "") {
+  if (
+    typeof value.createdAt !== "string" ||
+    value.createdAt.trim() === "" ||
+    Number.isNaN(Date.parse(value.createdAt))
+  ) {
     return false;
   }
 
