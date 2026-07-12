@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+const testDirectory = dirname(fileURLToPath(import.meta.url));
+
 const styleFiles = [
-  ["web", resolve(process.cwd(), "apps/web/src/styles.css")],
-  ["desktop", resolve(process.cwd(), "apps/desktop/src/styles.css")],
+  ["web", resolve(testDirectory, "styles.css")],
+  ["desktop", resolve(testDirectory, "../../desktop/src/styles.css")],
 ] as const;
 
 describe.each(styleFiles)("%s settings styles", (_, stylePath) => {
