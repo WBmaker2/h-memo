@@ -37,6 +37,7 @@ type StickyMemoProps = {
   onRequestSync?: () => void;
   isSyncDisabled?: boolean;
   isSyncBusy?: boolean;
+  isEditingDisabled?: boolean;
 };
 
 export function StickyMemo({
@@ -54,6 +55,7 @@ export function StickyMemo({
   onRequestSync,
   isSyncDisabled = false,
   isSyncBusy = false,
+  isEditingDisabled = false,
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -89,6 +91,9 @@ export function StickyMemo({
   }, [memo.id]);
 
   const commitMemo = (nextMemo: Memo) => {
+    if (isEditingDisabled) {
+      return;
+    }
     setEditingMemo(nextMemo);
     onChange(nextMemo);
   };
@@ -196,6 +201,7 @@ export function StickyMemo({
                 onStyleChange={handleStyleChange}
                 onDelete={() => onDelete(editingMemo.id)}
                 showDeleteAction={!appMenuContent}
+                isDisabled={isEditingDisabled}
               />
             </section>
             {appMenuContent ? (
@@ -283,6 +289,7 @@ export function StickyMemo({
             aria-label="메모 내용"
             value={editingMemo.plainText}
             onChange={handleContentChange}
+            readOnly={isEditingDisabled}
           />
           <div
             className="sticky-memo__resize-handle"

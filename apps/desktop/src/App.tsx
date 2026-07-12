@@ -29,6 +29,8 @@ import {
   closeWindow,
   closeMemoWindow,
   claimCurrentMemoWindow,
+  getCurrentWindowLabel,
+  listLiveMemoWindowLabels,
   openMemoWindow,
   listenWindowBoundsChanged,
   readWindowBounds,
@@ -47,9 +49,16 @@ import {
   listenTrayOpenAllMemos,
   notifyAuthStateChanged,
   notifyMemoStoreChanged,
+  notifyRestoreLockAcknowledged,
+  notifyRestoreLockReleased,
+  notifyRestoreLockRequested,
   notifyStartupStateChanged,
+  listenRestoreLockAcknowledged,
+  listenRestoreLockReleased,
+  listenRestoreLockRequested,
   type MemoStoreChangedPayload,
 } from "./adapters/tauriEvents";
+import { createRestoreLockCoordinator } from "./adapters/restoreLock";
 import { startGoogleDesktopOAuth } from "./adapters/tauriGoogleOAuth";
 import {
   FirestoreBackupGateway,
@@ -245,10 +254,14 @@ export function App() {
     snapshots: [],
   });
   const [isBusy, setIsBusy] = useState(false);
+  const [isRestoreLocked, setIsRestoreLocked] = useState(false);
   const [servicesAvailable, setServicesAvailable] = useState(hasFirebaseConfigSet);
   const [hasLoadedMemos, setHasLoadedMemos] = useState(false);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
+  const restoreLockRef = useRef<string | null>(null);
+  const restoreLockCoordinatorRef = useRef<ReturnType<typeof createRestoreLockCoordinator> | null>(null);
+  const restoreLockWaitRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const ownershipQueueRef = useRef<Promise<void>>(Promise.resolve());
   const ownershipGenerationRef = useRef(0);
   const ownedMemoWindowRef = useRef<OwnedMemoWindow | null>(null);
@@ -293,6 +306,52 @@ export function App() {
   useEffect(() => {
     activeMemoIdRef.current = activeMemoId;
   }, [activeMemoId]);
+
+  useEffect(() => {
+    if (!isTauri) {
+      return;
+    }
+
+    const coordinator = createRestoreLockCoordinator({
+      getCurrentWindowLabel,
+      listLiveWindowLabels: listLiveMemoWindowLabels,
+      notifyLockRequested: notifyRestoreLockRequested,
+      listenLockRequested: listenRestoreLockRequested,
+      notifyLockAcknowledged: notifyRestoreLockAcknowledged,
+      listenLockAcknowledged: listenRestoreLockAcknowledged,
+      notifyLockReleased: notifyRestoreLockReleased,
+      listenLockReleased: listenRestoreLockReleased,
+      lockLocal: (token) => {
+        const activeToken = restoreLockRef.current;
+        if (activeToken && activeToken !== token) {
+          throw new Error("다른 복원 작업이 이미 진행 중입니다.");
+        }
+        restoreLockRef.current = token;
+        setIsRestoreLocked(true);
+        return restoreLockWaitRef.current();
+      },
+      unlockLocal: (token) => {
+        if (restoreLockRef.current !== token) {
+          return;
+        }
+        restoreLockRef.current = null;
+        setIsRestoreLocked(false);
+      },
+      onProtocolError: (error) => {
+        setBackupStatus(`복원 잠금 공유 실패: ${getErrorMessage(error)}`);
+      },
+    });
+    restoreLockCoordinatorRef.current = coordinator;
+
+    void coordinator.start().catch((error) => {
+      setBackupStatus(`복원 잠금 초기화 실패: ${getErrorMessage(error)}`);
+    });
+
+    return () => {
+      restoreLockCoordinatorRef.current = null;
+      void coordinator.stop();
+    };
+  }, [isTauri]);
 
   const setSignedInUser = useCallback(
     (nextUser: HMemoUser, options?: { broadcast?: boolean }) => {
@@ -718,6 +777,9 @@ export function App() {
   };
 
   const enqueuePersist = (operation: () => Promise<void>) => {
+    if (restoreLockRef.current) {
+      return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
+    }
     const queued = persistQueueRef.current.then(operation);
     persistQueueRef.current = queued
       .then(() => {
@@ -736,7 +798,12 @@ export function App() {
     }
   };
 
+  restoreLockWaitRef.current = waitForPendingPersists;
+
   const persistMemo = (nextMemo: Memo, options?: { skipStateUpdate: boolean }) => {
+    if (restoreLockRef.current) {
+      return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
+    }
     return enqueuePersist(async () => {
       const saved = await repository.saveMemo(nextMemo);
       if (!options?.skipStateUpdate) {
@@ -748,7 +815,7 @@ export function App() {
 
   const persistActiveMemoWindowBounds = useCallback(
     async (boundsOverride?: WindowBounds) => {
-      if (!isTauri) {
+      if (!isTauri || restoreLockRef.current) {
         return;
       }
 
@@ -770,6 +837,9 @@ export function App() {
       };
       const nextMemo = updateMemoWindowState(target, windowState, new Date().toISOString());
 
+      if (restoreLockRef.current) {
+        return;
+      }
       upsertMemo(nextMemo);
       await persistMemo(nextMemo, { skipStateUpdate: true });
     },
@@ -889,10 +959,28 @@ export function App() {
     broadcastMemoStoreChanged();
   };
 
+  const runWithDesktopRestoreLock = async <T,>(operation: () => Promise<T>) => {
+    if (!isTauri) {
+      return operation();
+    }
+
+    const coordinator = restoreLockCoordinatorRef.current;
+    if (!coordinator) {
+      throw new Error("복원 잠금을 초기화하지 못했습니다.");
+    }
+
+    const token = await coordinator.acquire();
+    try {
+      return await operation();
+    } finally {
+      await coordinator.release(token);
+    }
+  };
+
   const replaceMemosWithSafety = async (
     source: RestoreSafetyPoint["source"],
     userId: string,
-    nextMemos: Memo[]
+    nextMemos: Memo[] | ((currentMemos: Memo[]) => Memo[])
   ) => {
     if (!restoreSafetyStorage) {
       throw new Error("복원 안전 지점을 저장할 저장 공간을 사용할 수 없습니다.");
@@ -901,11 +989,16 @@ export function App() {
     const currentMemos = await repository.listMemos();
     const safetyPoint = createRestoreSafetyPoint(source, userId, currentMemos);
     saveRestoreSafetyPoint(restoreSafetyStorage, safetyPoint);
-    await replaceMemosFromBackup(nextMemos, currentMemos);
+    const replacementMemos =
+      typeof nextMemos === "function" ? nextMemos(currentMemos) : nextMemos;
+    await replaceMemosFromBackup(replacementMemos, currentMemos);
     setRestoreSafetyPoint(safetyPoint);
   };
 
   const handleCreateMemo = async () => {
+    if (restoreLockRef.current) {
+      return;
+    }
     const now = new Date().toISOString();
     const nextMemo = createMemo({
       id: createMemoId(),
@@ -1018,6 +1111,9 @@ export function App() {
   };
 
   const handleMemoChange = (nextMemo: Memo) => {
+    if (restoreLockRef.current) {
+      return;
+    }
     upsertMemo(nextMemo);
     void persistMemo(nextMemo, { skipStateUpdate: true }).catch((error) => {
       setBackupStatus(`메모 저장 실패: ${getErrorMessage(error)}`);
@@ -1025,6 +1121,9 @@ export function App() {
   };
 
   const handleDeleteMemo = async (memoId: string) => {
+    if (restoreLockRef.current) {
+      return;
+    }
     const target = memos.find((memo) => memo.id === memoId);
     if (!target) {
       return;
@@ -1042,6 +1141,9 @@ export function App() {
   };
 
   const performDeleteMemo = async (memoId: string, status = "메모를 삭제했습니다.") => {
+    if (restoreLockRef.current) {
+      return;
+    }
     const target = memosRef.current.find((memo) => memo.id === memoId);
     if (!target) {
       setPendingDeleteMemo(null);
@@ -1121,8 +1223,9 @@ export function App() {
       return;
     }
 
-    await waitForPendingPersists();
-    await replaceMemosWithSafety("json", user?.uid ?? "local", parsed.payload.memos);
+    await runWithDesktopRestoreLock(() =>
+      replaceMemosWithSafety("json", user?.uid ?? "local", parsed.payload.memos)
+    );
     setBackupStatus(`JSON 복원 완료: ${parsed.payload.memos.length}개 메모`);
   };
 
@@ -1139,8 +1242,9 @@ export function App() {
     setIsBusy(true);
     setBackupStatus("마지막 복원을 되돌리는 중입니다.");
     try {
-      await waitForPendingPersists();
-      await replaceMemosFromBackup(safetyPoint.payload.memos);
+      await runWithDesktopRestoreLock(() =>
+        replaceMemosFromBackup(safetyPoint.payload.memos)
+      );
       clearRestoreSafetyPoint(restoreSafetyStorage);
       setRestoreSafetyPoint(null);
       setBackupStatus("마지막 복원을 되돌렸습니다.");
@@ -1402,12 +1506,13 @@ export function App() {
     setIsBusy(true);
     setBackupStatus("선택한 백업을 복원합니다.");
     try {
-      await waitForPendingPersists();
       if (!window.confirm(getServerRestoreConfirmMessage(snapshot))) {
         setBackupStatus("복원을 취소했습니다.");
         return;
       }
-      await replaceMemosWithSafety("server", user?.uid ?? "local", snapshot.payload.memos);
+      await runWithDesktopRestoreLock(() =>
+        replaceMemosWithSafety("server", user?.uid ?? "local", snapshot.payload.memos)
+      );
       setBackupHistoryDialog({ isOpen: false, snapshots: [] });
       setBackupStatus(`복원 완료: ${snapshot.payload.memos.length}개 메모`);
     } catch (error) {
@@ -1473,9 +1578,17 @@ export function App() {
           visible: true,
         },
       };
-      const savedMemo = await repository.saveMemo(restoredMemo);
-      upsertMemo(savedMemo);
-      broadcastMemoStoreChanged({ memoId: savedMemo.id });
+      await runWithDesktopRestoreLock(() =>
+        replaceMemosWithSafety("server", user?.uid ?? "local", (currentMemos) => {
+          const hasTarget = currentMemos.some((memo) => memo.id === restoredMemo.id);
+          return hasTarget
+            ? currentMemos.map((memo) =>
+                memo.id === restoredMemo.id ? restoredMemo : memo
+              )
+            : [...currentMemos, restoredMemo];
+        })
+      );
+      const savedMemo = memosRef.current.find((memo) => memo.id === restoredMemo.id) ?? restoredMemo;
       setBackupStatus("서버 백업에서 메모를 복원했습니다.");
 
       if (!isTauri) {
@@ -1627,11 +1740,14 @@ export function App() {
   };
 
   const isServerReady = hasFirebaseConfigSet && servicesAvailable;
-  const isBackupDisabled = !isServerReady || user === null || isBusy || !syncServicesInitialized;
-  const isRestoreDisabled = !isServerReady || user === null || isBusy || !syncServicesInitialized;
-  const isAuthDisabled = !isServerReady || isBusy || needsDesktopGoogleOAuthClient;
+  const isBackupDisabled =
+    !isServerReady || user === null || isBusy || isRestoreLocked || !syncServicesInitialized;
+  const isRestoreDisabled =
+    !isServerReady || user === null || isBusy || isRestoreLocked || !syncServicesInitialized;
+  const isAuthDisabled =
+    !isServerReady || isBusy || isRestoreLocked || needsDesktopGoogleOAuthClient;
   const isServerMemoManagerDisabled =
-    !isServerReady || user === null || isBusy || !syncServicesInitialized;
+    !isServerReady || user === null || isBusy || isRestoreLocked || !syncServicesInitialized;
 
   const handleRequestWindowDrag = () => {
     if (!isTauri) {
@@ -1709,7 +1825,8 @@ export function App() {
         onDeleteMemo={handleDeleteMemo}
         onRequestSync={handleBackup}
         isSyncDisabled={isBackupDisabled}
-        isSyncBusy={isBusy}
+        isSyncBusy={isBusy || isRestoreLocked}
+        isMemoEditingDisabled={isRestoreLocked}
         actions={
           <button
             type="button"
@@ -1739,7 +1856,7 @@ export function App() {
           onSaveFirebaseConfig: allowFirebaseConfigOverride ? handleSaveFirebaseConfig : undefined,
           onClearFirebaseConfig: allowFirebaseConfigOverride ? handleClearFirebaseConfig : undefined,
           isServerAvailable: servicesAvailable,
-          isServerBusy: isBusy,
+          isServerBusy: isBusy || isRestoreLocked,
           isBackupDisabled,
           isRestoreDisabled,
           canUndoRestore: restoreSafetyPoint !== null,
@@ -1812,7 +1929,7 @@ export function App() {
                       <button
                         type="button"
                         onClick={() => handleRestoreBackupSnapshot(index)}
-                        disabled={isBusy}
+                        disabled={isBusy || isRestoreLocked}
                       >
                         복원
                       </button>
@@ -1863,14 +1980,14 @@ export function App() {
                       <button
                         type="button"
                         onClick={() => handleRestoreServerMemo(item.memo.id)}
-                        disabled={isBusy}
+                        disabled={isBusy || isRestoreLocked}
                       >
                         복원
                       </button>
                       <button
                         type="button"
                         onClick={() => handleDeleteServerMemo(item.memo.id, getMemoLabel(item.memo))}
-                        disabled={isBusy}
+                        disabled={isBusy || isRestoreLocked}
                       >
                         서버 삭제
                       </button>

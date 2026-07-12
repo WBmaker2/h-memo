@@ -994,10 +994,44 @@ describe("WebApp", () => {
               deletedAt: null,
               richContent: { type: "doc", content: [{ type: "paragraph" }] },
             },
+            {
+              id: "local-deleted-memo",
+              title: "삭제된 로컬 메모",
+              plainText: "복원 전에 이미 삭제된 데이터",
+              createdAt: "2026-05-13T09:01:00.000Z",
+              updatedAt: "2026-05-13T09:06:00.000Z",
+              windowState: {
+                x: null,
+                y: null,
+                width: 320,
+                height: 280,
+                visible: false,
+                alwaysOnTop: false,
+              },
+              style: {
+                backgroundColor: "#fff7b8",
+                textColor: "#1f2937",
+                fontFamily: "Malgun Gothic, Segoe UI, sans-serif",
+                fontSize: 16,
+              },
+              syncState: "local-only",
+              deletedAt: "2026-05-13T09:07:00.000Z",
+              richContent: { type: "doc", content: [{ type: "paragraph" }] },
+            },
           ]),
         ],
       ],
     });
+
+    const storage = window.localStorage;
+    const originalSetItem = storage.setItem.bind(storage);
+    let safetyAtFirstMutation: string | null = null;
+    storage.setItem = (key: string, value: string) => {
+      if (key === LOCAL_MEMO_KEY && safetyAtFirstMutation === null) {
+        safetyAtFirstMutation = storage.getItem(RESTORE_SAFETY_KEY);
+      }
+      originalSetItem(key, value);
+    };
 
     render(<WebApp />);
 
@@ -1029,8 +1063,15 @@ describe("WebApp", () => {
     );
     expect(safetyPoint.source).toBe("server");
     expect(safetyPoint.payload.memos).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: "local-only-memo" })])
+      expect.arrayContaining([
+        expect.objectContaining({ id: "local-only-memo" }),
+        expect.objectContaining({ id: "local-deleted-memo" }),
+      ])
     );
+    expect(safetyPoint.payload.memos.map((memo: { id: string }) => memo.id).sort()).toEqual(
+      ["local-only-memo", "local-deleted-memo"].sort()
+    );
+    expect(safetyAtFirstMutation).toBe(JSON.stringify(safetyPoint));
   });
 
   it("opens server memo manager and restores selected server memo", async () => {
@@ -1062,6 +1103,135 @@ describe("WebApp", () => {
         "서버 메모 복원 완료"
       );
     });
+  });
+
+  it("captures the complete browser state before individual server memo restore and undo", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+    const currentMemo = createMemo({
+      id: "web-individual-current",
+      now: "2026-07-12T14:00:00.000Z",
+      plainText: "복원 전 웹 메모",
+    });
+    const deletedMemo = {
+      ...SERVER_BACKED_UP_MEMO.memo,
+      deletedAt: "2026-07-12T14:01:00.000Z",
+      windowState: { ...SERVER_BACKED_UP_MEMO.memo.windowState, visible: false },
+    };
+    const initialMemos = [currentMemo, deletedMemo];
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify(initialMemos)]],
+    });
+    vi.mocked(listBackedUpMemos).mockResolvedValue([
+      { memo: deletedMemo, backupCreatedAt: "2026-07-12T14:02:00.000Z" },
+    ]);
+
+    const storage = window.localStorage;
+    const originalSetItem = storage.setItem.bind(storage);
+    let safetyAtFirstMutation: string | null = null;
+    storage.setItem = (key: string, value: string) => {
+      if (key === LOCAL_MEMO_KEY && safetyAtFirstMutation === null) {
+        safetyAtFirstMutation = storage.getItem(RESTORE_SAFETY_KEY);
+      }
+      originalSetItem(key, value);
+    };
+
+    render(<WebApp />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("복원 전 웹 메모")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+    await user.click(
+      await screen.findByRole("button", { name: "서버에서 가져온 웹 메모 복원" })
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByDisplayValue("서버에서 가져온 웹 메모")).toHaveLength(1);
+      expect(screen.getAllByRole("textbox", { name: "메모 내용" })).toHaveLength(2);
+    });
+
+    const safetyPoint = JSON.parse(storage.getItem(RESTORE_SAFETY_KEY) ?? "null");
+    expect(safetyPoint.source).toBe("server");
+    expect(safetyPoint.payload.memos.map((memo: { id: string }) => memo.id).sort()).toEqual(
+      initialMemos.map((memo) => memo.id).sort()
+    );
+    expect(safetyAtFirstMutation).toBe(JSON.stringify(safetyPoint));
+
+    let safetyAtUndoMutation: string | null = null;
+    storage.setItem = (key: string, value: string) => {
+      if (key === LOCAL_MEMO_KEY && safetyAtUndoMutation === null) {
+        safetyAtUndoMutation = storage.getItem(RESTORE_SAFETY_KEY);
+      }
+      originalSetItem(key, value);
+    };
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    await user.click(screen.getByRole("button", { name: "마지막 복원 되돌리기" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("status").map((status) => status.textContent).join(" ")).toContain(
+        "마지막 복원을 되돌렸습니다."
+      );
+      expect(screen.getByDisplayValue("복원 전 웹 메모")).toBeInTheDocument();
+    });
+    expect(screen.queryByDisplayValue("서버에서 가져온 웹 메모")).not.toBeInTheDocument();
+    expect(safetyAtUndoMutation).toBe(JSON.stringify(safetyPoint));
+    expect(storage.getItem(RESTORE_SAFETY_KEY)).toBeNull();
+    expect(JSON.parse(storage.getItem(LOCAL_MEMO_KEY) ?? "[]").map((memo: { id: string }) => memo.id).sort()).toEqual(
+      initialMemos.map((memo) => memo.id).sort()
+    );
+  });
+
+  it("does not mutate browser memos when individual server restore safety storage fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+    const currentMemo = createMemo({
+      id: "web-individual-failure-current",
+      now: "2026-07-12T15:00:00.000Z",
+      plainText: "저장 실패에도 유지할 웹 메모",
+    });
+    const deletedMemo = {
+      ...SERVER_BACKED_UP_MEMO.memo,
+      deletedAt: "2026-07-12T15:01:00.000Z",
+      windowState: { ...SERVER_BACKED_UP_MEMO.memo.windowState, visible: false },
+    };
+    const initialRaw = JSON.stringify([currentMemo, deletedMemo]);
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, initialRaw]],
+      failOnSet: true,
+    });
+    vi.mocked(listBackedUpMemos).mockResolvedValue([
+      { memo: deletedMemo, backupCreatedAt: "2026-07-12T15:02:00.000Z" },
+    ]);
+
+    render(<WebApp />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("저장 실패에도 유지할 웹 메모")).toBeInTheDocument();
+    });
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+    await user.click(
+      await screen.findByRole("button", { name: "서버에서 가져온 웹 메모 복원" })
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("status").map((status) => status.textContent).join(" ")).toContain(
+        "서버 메모 복원 실패"
+      );
+      expect(screen.getByDisplayValue("저장 실패에도 유지할 웹 메모")).toBeInTheDocument();
+    });
+    expect(screen.queryByDisplayValue("서버에서 가져온 웹 메모")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem(LOCAL_MEMO_KEY)).toBe(initialRaw);
+    expect(screen.queryByRole("button", { name: "마지막 복원 되돌리기" })).not.toBeInTheDocument();
   });
 
   it("deletes a server memo from manager and removes it from list", async () => {

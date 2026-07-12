@@ -92,4 +92,20 @@ describe("restoreSafety", () => {
       "복원 안전 지점"
     );
   });
+
+  it("reports cyclic rich content without writing a partial safety point", () => {
+    const storage = createStorage();
+    const point = createSafetyPoint();
+    const cyclicRichContent: Record<string, unknown> = { type: "doc" };
+    cyclicRichContent.self = cyclicRichContent;
+    point.payload.memos[0] = {
+      ...point.payload.memos[0],
+      richContent: cyclicRichContent,
+    };
+
+    expect(() => restoreSafety.saveRestoreSafetyPoint(storage, point)).toThrow(
+      "복원 안전 지점을 저장하지 못했습니다"
+    );
+    expect(storage.getItem(STORAGE_KEY)).toBeNull();
+  });
 });

@@ -48,6 +48,11 @@ const {
   mockNotifyMemoStoreChanged,
   mockNotifyAuthStateChanged,
   mockNotifyStartupStateChanged,
+  mockNotifyRestoreLockRequested,
+  mockNotifyRestoreLockAcknowledged,
+  mockNotifyRestoreLockReleased,
+  mockGetCurrentWindowLabel,
+  mockListLiveWindowLabels,
   mockStartGoogleDesktopOAuth,
   tauriRepositoryState,
   tauriWindowState,
@@ -83,6 +88,11 @@ const {
   const mockNotifyMemoStoreChanged = vi.fn();
   const mockNotifyAuthStateChanged = vi.fn();
   const mockNotifyStartupStateChanged = vi.fn();
+  const mockNotifyRestoreLockRequested = vi.fn();
+  const mockNotifyRestoreLockAcknowledged = vi.fn();
+  const mockNotifyRestoreLockReleased = vi.fn();
+  const mockGetCurrentWindowLabel = vi.fn();
+  const mockListLiveWindowLabels = vi.fn();
   const mockStartGoogleDesktopOAuth = vi.fn();
   const tauriEventState: {
     memoStoreListener: ((payload: { memoId?: string; deletedMemoId?: string }) => void) | null;
@@ -95,6 +105,11 @@ const {
           status: string;
         }) => void)
       | null;
+    restoreLockRequestedListener: ((payload: { token: string }) => void | Promise<void>) | null;
+    restoreLockAcknowledgedListener:
+      | ((payload: { token: string; windowLabel: string; ok: boolean; error?: string }) => void)
+      | null;
+    restoreLockReleasedListener: ((payload: { token: string }) => void) | null;
     unlistenMemoStore: ReturnType<typeof vi.fn>;
     unlistenTrayOpenAllMemos: ReturnType<typeof vi.fn>;
     unlistenTrayCreateMemo: ReturnType<typeof vi.fn>;
@@ -106,6 +121,9 @@ const {
     trayCreateMemoListener: null,
     startupStateListener: null,
     authStateListener: null,
+    restoreLockRequestedListener: null,
+    restoreLockAcknowledgedListener: null,
+    restoreLockReleasedListener: null,
     unlistenMemoStore: vi.fn(),
     unlistenTrayOpenAllMemos: vi.fn(),
     unlistenTrayCreateMemo: vi.fn(),
@@ -148,7 +166,13 @@ const {
 
   const tauriRepositoryState = new Map<string, any>();
 
-  const cloneMemo = (value: any) => JSON.parse(JSON.stringify(value));
+  const cloneMemo = (value: any) => {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return value;
+    }
+  };
 
   const listMemos = async () => {
     return [...tauriRepositoryState.values()].map(cloneMemo);
@@ -236,6 +260,11 @@ const {
     mockNotifyMemoStoreChanged,
     mockNotifyAuthStateChanged,
     mockNotifyStartupStateChanged,
+    mockNotifyRestoreLockRequested,
+    mockNotifyRestoreLockAcknowledged,
+    mockNotifyRestoreLockReleased,
+    mockGetCurrentWindowLabel,
+    mockListLiveWindowLabels,
     mockStartGoogleDesktopOAuth,
     tauriRepositoryState,
     tauriWindowState,
@@ -340,6 +369,8 @@ vi.mock("./adapters/tauriWindow", () => ({
   readWindowBounds: () => mockReadWindowBounds(),
   restoreWindowBounds: (bounds: unknown) => mockRestoreWindowBounds(bounds),
   setWindowHeight: (height: number) => mockSetWindowHeight(height),
+  getCurrentWindowLabel: () => mockGetCurrentWindowLabel(),
+  listLiveMemoWindowLabels: () => mockListLiveWindowLabels(),
   listenWindowBoundsChanged: (listener: () => void) => {
     tauriWindowState.boundsListener = listener;
     return mockListenWindowBoundsChanged(listener);
@@ -350,6 +381,10 @@ vi.mock("./adapters/tauriEvents", () => ({
   notifyMemoStoreChanged: (payload: unknown) => mockNotifyMemoStoreChanged(payload),
   notifyAuthStateChanged: (payload: unknown) => mockNotifyAuthStateChanged(payload),
   notifyStartupStateChanged: (payload: unknown) => mockNotifyStartupStateChanged(payload),
+  notifyRestoreLockRequested: (token: string) => mockNotifyRestoreLockRequested(token),
+  notifyRestoreLockAcknowledged: (payload: unknown) =>
+    mockNotifyRestoreLockAcknowledged(payload),
+  notifyRestoreLockReleased: (token: string) => mockNotifyRestoreLockReleased(token),
   listenMemoStoreChanged: async (
     listener: (payload: { memoId?: string; deletedMemoId?: string }) => void
   ) => {
@@ -376,6 +411,20 @@ vi.mock("./adapters/tauriEvents", () => ({
   listenStartupStateChanged: async (listener: (payload: { enabled: boolean }) => void) => {
     tauriEventState.startupStateListener = listener;
     return tauriEventState.unlistenStartupState;
+  },
+  listenRestoreLockRequested: async (listener: (payload: { token: string }) => void | Promise<void>) => {
+    tauriEventState.restoreLockRequestedListener = listener;
+    return vi.fn();
+  },
+  listenRestoreLockAcknowledged: async (
+    listener: (payload: { token: string; windowLabel: string; ok: boolean; error?: string }) => void
+  ) => {
+    tauriEventState.restoreLockAcknowledgedListener = listener;
+    return vi.fn();
+  },
+  listenRestoreLockReleased: async (listener: (payload: { token: string }) => void) => {
+    tauriEventState.restoreLockReleasedListener = listener;
+    return vi.fn();
   },
 }));
 
@@ -471,6 +520,11 @@ beforeEach(() => {
   mockNotifyMemoStoreChanged.mockReset();
   mockNotifyAuthStateChanged.mockReset();
   mockNotifyStartupStateChanged.mockReset();
+  mockNotifyRestoreLockRequested.mockReset();
+  mockNotifyRestoreLockAcknowledged.mockReset();
+  mockNotifyRestoreLockReleased.mockReset();
+  mockGetCurrentWindowLabel.mockReset();
+  mockListLiveWindowLabels.mockReset();
   mockStartGoogleDesktopOAuth.mockReset();
   tauriWindowState.bounds = { x: 20, y: 30, width: 380, height: 420 };
   tauriWindowState.boundsListener = null;
@@ -478,6 +532,9 @@ beforeEach(() => {
   tauriEventState.memoStoreListener = null;
   tauriEventState.startupStateListener = null;
   tauriEventState.authStateListener = null;
+  tauriEventState.restoreLockRequestedListener = null;
+  tauriEventState.restoreLockAcknowledgedListener = null;
+  tauriEventState.restoreLockReleasedListener = null;
   tauriEventState.unlistenMemoStore.mockReset();
   tauriEventState.unlistenStartupState.mockReset();
   tauriEventState.unlistenAuthState.mockReset();
@@ -516,6 +573,11 @@ beforeEach(() => {
     tauriWindowState.boundsListener = listener;
     return tauriWindowState.unlisten;
   });
+  mockGetCurrentWindowLabel.mockReturnValue("main");
+  mockListLiveWindowLabels.mockResolvedValue(["main"]);
+  mockNotifyRestoreLockRequested.mockResolvedValue(undefined);
+  mockNotifyRestoreLockAcknowledged.mockResolvedValue(undefined);
+  mockNotifyRestoreLockReleased.mockResolvedValue(undefined);
   tauriEventState.memoStoreListener = null;
   tauriEventState.trayOpenAllMemosListener = null;
   tauriEventState.trayCreateMemoListener = null;
@@ -1973,6 +2035,68 @@ describe("desktop App", () => {
     });
   });
 
+  it("drains a queued desktop save before acknowledging a remote restore lock and blocks new saves", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const memo = createMemo({
+      id: "memo-remote-restore-lock",
+      now: "2026-07-12T09:00:00.000Z",
+      plainText: "잠금 전 메모",
+    });
+    tauriRepositoryState.set(memo.id, memo);
+    const pendingSave = deferred<void>();
+    mockSaveMemo.mockImplementation(async (nextMemo: any) => {
+      await pendingSave.promise;
+      return defaultSaveMemo(nextMemo);
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("잠금 전 메모")).toBeInTheDocument();
+      expect(tauriEventState.restoreLockRequestedListener).not.toBeNull();
+    });
+
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "큐에 들어간 저장" },
+    });
+    await waitFor(() => expect(mockSaveMemo).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await tauriEventState.restoreLockRequestedListener?.({ token: "remote-lock-token" });
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("메모 내용")).toHaveAttribute("readonly");
+    });
+    const saveCountAtLock = mockSaveMemo.mock.calls.length;
+    fireEvent.change(screen.getByLabelText("메모 내용"), {
+      target: { value: "잠금 후 저장 시도" },
+    });
+    expect(mockSaveMemo).toHaveBeenCalledTimes(saveCountAtLock);
+    expect(screen.getByLabelText("메모 내용")).toHaveValue("큐에 들어간 저장");
+    expect(mockNotifyRestoreLockAcknowledged).not.toHaveBeenCalled();
+
+    pendingSave.resolve();
+    await waitFor(() => {
+      expect(mockNotifyRestoreLockAcknowledged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: "remote-lock-token",
+          windowLabel: "main",
+          ok: true,
+        })
+      );
+    });
+
+    await act(async () => {
+      tauriEventState.restoreLockReleasedListener?.({ token: "remote-lock-token" });
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("메모 내용")).not.toHaveAttribute("readonly");
+    });
+  });
+
   it("backs up latest edit even when persistence is delayed", async () => {
     const user = userEvent.setup();
     const now = new Date().toISOString();
@@ -2328,6 +2452,87 @@ describe("desktop App", () => {
     expect(screen.queryByRole("dialog", { name: "백업 기록 선택" })).not.toBeInTheDocument();
   });
 
+  it("writes desktop restore safety before the first snapshot mutation", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({ uid: "user-1", displayName: "테스터", email: "test@example.com", photoURL: "" });
+      return mockAuthUnsubscribe;
+    });
+    const currentMemo = createMemo({
+      id: "desktop-snapshot-current",
+      now: "2026-07-12T17:00:00.000Z",
+      plainText: "스냅샷 전 메모",
+    });
+    const deletedMemo = {
+      ...createMemo({
+        id: "desktop-snapshot-deleted",
+        now: "2026-07-12T17:01:00.000Z",
+        plainText: "스냅샷 전 삭제 메모",
+      }),
+      deletedAt: "2026-07-12T17:02:00.000Z",
+      windowState: { ...currentMemo.windowState, visible: false },
+    };
+    const restoredMemo = createMemo({
+      id: "desktop-snapshot-restored",
+      now: "2026-07-12T17:03:00.000Z",
+      plainText: "스냅샷 복원 메모",
+    });
+    tauriRepositoryState.set(currentMemo.id, currentMemo);
+    tauriRepositoryState.set(deletedMemo.id, deletedMemo);
+    mockListBackupSnapshots.mockResolvedValue([
+      {
+        createdAt: "2026-07-12T17:04:00.000Z",
+        memoCount: 1,
+        payload: {
+          version: 1,
+          userId: "user-1",
+          createdAt: "2026-07-12T17:04:00.000Z",
+          memos: [restoredMemo],
+        },
+      },
+    ]);
+
+    const storage = window.localStorage;
+    let safetyAtFirstMutation: string | null = null;
+    mockSaveMemo.mockImplementation(async (memo: any) => {
+      if (safetyAtFirstMutation === null) {
+        safetyAtFirstMutation = storage.getItem(RESTORE_SAFETY_KEY);
+      }
+      return defaultSaveMemo(memo);
+    });
+    mockSoftDeleteMemo.mockImplementation(async (id: string, deletedAt: string) => {
+      if (safetyAtFirstMutation === null) {
+        safetyAtFirstMutation = storage.getItem(RESTORE_SAFETY_KEY);
+      }
+      return defaultSoftDeleteMemo(id, deletedAt);
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("스냅샷 전 메모")).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole("button", { name: "서버 복원" }));
+    const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
+    await user.click(within(dialog).getByRole("button", { name: "복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("스냅샷 복원 메모")).toBeInTheDocument();
+    });
+    const safetyPoint = JSON.parse(storage.getItem(RESTORE_SAFETY_KEY) ?? "null");
+    expect(safetyPoint.payload.memos.map((memo: { id: string }) => memo.id).sort()).toEqual(
+      [currentMemo.id, deletedMemo.id].sort()
+    );
+    expect(safetyAtFirstMutation).toBe(JSON.stringify(safetyPoint));
+  });
+
   it("복구된 로그인 세션이 있을 때 백업/복원 버튼이 활성화된다", async () => {
     const user = userEvent.setup();
     setMockFirebaseClientEnv({
@@ -2453,6 +2658,241 @@ describe("desktop App", () => {
       expect(within(serverDialog).queryByRole("listitem")).not.toBeInTheDocument();
       expect(screen.getByText("서버에 저장된 메모가 없습니다.")).toBeInTheDocument();
     });
+  });
+
+  it("captures all desktop memos before individual server restore and undo", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({
+        uid: "server-user",
+        displayName: "서버 사용자",
+        email: "server@example.com",
+        photoURL: "",
+      });
+      return mockAuthUnsubscribe;
+    });
+    const currentMemo = createMemo({
+      id: "desktop-individual-current",
+      now: "2026-07-12T14:00:00.000Z",
+      plainText: "복원 전 데스크톱 메모",
+    });
+    const deletedMemo = {
+      ...createMemo({
+        id: "desktop-individual-deleted",
+        now: "2026-07-12T14:01:00.000Z",
+        plainText: "삭제된 데스크톱 메모",
+      }),
+      deletedAt: "2026-07-12T14:02:00.000Z",
+      windowState: { ...currentMemo.windowState, visible: false },
+    };
+    tauriRepositoryState.set(currentMemo.id, currentMemo);
+    tauriRepositoryState.set(deletedMemo.id, deletedMemo);
+    mockListBackedUpMemos.mockResolvedValue([
+      {
+        memo: deletedMemo,
+        backupCreatedAt: "2026-07-12T14:03:00.000Z",
+      },
+    ]);
+
+    const storage = window.localStorage;
+    const mutationOrder: string[] = [];
+    let safetyAtFirstMutation: string | null = null;
+    mockSaveMemo.mockImplementation(async (memo: any) => {
+      mutationOrder.push(`save:${memo.id}`);
+      if (safetyAtFirstMutation === null) {
+        safetyAtFirstMutation = storage.getItem(RESTORE_SAFETY_KEY);
+      }
+      return defaultSaveMemo(memo);
+    });
+    mockSoftDeleteMemo.mockImplementation(async (id: string, deletedAt: string) => {
+      mutationOrder.push(`soft-delete:${id}`);
+      if (safetyAtFirstMutation === null) {
+        safetyAtFirstMutation = storage.getItem(RESTORE_SAFETY_KEY);
+      }
+      return defaultSoftDeleteMemo(id, deletedAt);
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("복원 전 데스크톱 메모")).toBeInTheDocument();
+    });
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+    await user.click(await screen.findByRole("button", { name: "복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("서버 백업에서 메모를 복원했습니다.");
+      expect(tauriRepositoryState.get(deletedMemo.id)).toMatchObject({
+        id: deletedMemo.id,
+        deletedAt: null,
+      });
+    });
+
+    const safetyPoint = JSON.parse(storage.getItem(RESTORE_SAFETY_KEY) ?? "null");
+    expect(safetyPoint.source).toBe("server");
+    expect(safetyPoint.payload.memos.map((memo: { id: string }) => memo.id).sort()).toEqual(
+      [currentMemo.id, deletedMemo.id].sort()
+    );
+    expect(safetyAtFirstMutation).toBe(JSON.stringify(safetyPoint));
+    expect(mutationOrder[0]).toBe(`save:${currentMemo.id}`);
+
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    await user.click(screen.getByRole("button", { name: "마지막 복원 되돌리기" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("마지막 복원을 되돌렸습니다.");
+      expect(screen.getByDisplayValue("복원 전 데스크톱 메모")).toBeInTheDocument();
+    });
+    expect(storage.getItem(RESTORE_SAFETY_KEY)).toBeNull();
+    expect(
+      [...tauriRepositoryState.values()].map((memo: { id: string }) => memo.id).sort()
+    ).toEqual([currentMemo.id, deletedMemo.id].sort());
+    expect(tauriRepositoryState.get(deletedMemo.id)).toMatchObject({
+      id: deletedMemo.id,
+      deletedAt: deletedMemo.deletedAt,
+    });
+  });
+
+  it("does not mutate desktop memos when individual restore safety storage fails", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({
+        uid: "server-user",
+        displayName: "서버 사용자",
+        email: "server@example.com",
+        photoURL: "",
+      });
+      return mockAuthUnsubscribe;
+    });
+    const currentMemo = createMemo({
+      id: "desktop-individual-failure-current",
+      now: "2026-07-12T15:00:00.000Z",
+      plainText: "저장 실패에도 유지할 데스크톱 메모",
+    });
+    const deletedMemo = {
+      ...createMemo({
+        id: "desktop-individual-failure-deleted",
+        now: "2026-07-12T15:01:00.000Z",
+        plainText: "복원되지 않을 데스크톱 메모",
+      }),
+      deletedAt: "2026-07-12T15:02:00.000Z",
+      windowState: { ...currentMemo.windowState, visible: false },
+    };
+    tauriRepositoryState.set(currentMemo.id, currentMemo);
+    tauriRepositoryState.set(deletedMemo.id, deletedMemo);
+    mockListBackedUpMemos.mockResolvedValue([
+      { memo: deletedMemo, backupCreatedAt: "2026-07-12T15:03:00.000Z" },
+    ]);
+    const nativeStorage = window.localStorage;
+    const failingStorage: Storage = {
+      get length() {
+        return 0;
+      },
+      clear() {},
+      getItem() {
+        return null;
+      },
+      key() {
+        return null;
+      },
+      removeItem() {},
+      setItem() {
+        throw new Error("quota exceeded");
+      },
+    };
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: failingStorage,
+    });
+
+    try {
+      render(<App />);
+      await waitFor(() => {
+        expect(screen.getByDisplayValue("저장 실패에도 유지할 데스크톱 메모")).toBeInTheDocument();
+      });
+      await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+      await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+      await user.click(await screen.findByRole("button", { name: "복원" }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("status")).toHaveTextContent("서버 메모 복원 실패");
+      });
+      expect(screen.queryByDisplayValue("복원되지 않을 데스크톱 메모")).not.toBeInTheDocument();
+      expect(mockSaveMemo).not.toHaveBeenCalled();
+      expect(mockSoftDeleteMemo).not.toHaveBeenCalled();
+      expect([...tauriRepositoryState.keys()].sort()).toEqual(
+        [currentMemo.id, deletedMemo.id].sort()
+      );
+    } finally {
+      Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        value: nativeStorage,
+      });
+    }
+  });
+
+  it("does not mutate desktop memos when safety serialization fails on cyclic rich content", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({ uid: "server-user", displayName: "서버 사용자", email: "server@example.com", photoURL: "" });
+      return mockAuthUnsubscribe;
+    });
+    const cyclicRichContent: Record<string, unknown> = { type: "doc" };
+    cyclicRichContent.self = cyclicRichContent;
+    const currentMemo = {
+      ...createMemo({
+        id: "desktop-cyclic-current",
+        now: "2026-07-12T16:00:00.000Z",
+        plainText: "순환 데이터 메모",
+      }),
+      richContent: cyclicRichContent,
+    };
+    tauriRepositoryState.set(currentMemo.id, currentMemo);
+    mockListBackedUpMemos.mockResolvedValue([
+      {
+        memo: { ...currentMemo, deletedAt: "2026-07-12T16:01:00.000Z" },
+        backupCreatedAt: "2026-07-12T16:02:00.000Z",
+      },
+    ]);
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("순환 데이터 메모")).toBeInTheDocument();
+    });
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+    await user.click(await screen.findByRole("button", { name: "복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("서버 메모 복원 실패: 복원 안전 지점");
+    });
+    expect(mockSaveMemo).not.toHaveBeenCalled();
+    expect(mockSoftDeleteMemo).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(RESTORE_SAFETY_KEY)).toBeNull();
   });
 
   it("keeps server memo visible when server delete reports no stored record", async () => {

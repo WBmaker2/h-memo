@@ -27,6 +27,7 @@ type MemoWorkspaceShellProps = {
   onRequestSync?: () => void;
   isSyncDisabled?: boolean;
   isSyncBusy?: boolean;
+  isMemoEditingDisabled?: boolean;
   settingsProps: SettingsPanelProps;
 };
 
@@ -48,6 +49,7 @@ export function MemoWorkspace({
   onRequestSync,
   isSyncDisabled,
   isSyncBusy,
+  isMemoEditingDisabled = false,
   settingsProps,
   actions,
   authStatus,
@@ -162,6 +164,7 @@ export function MemoWorkspace({
               onRequestSync={onRequestSync}
               isSyncDisabled={isSyncDisabled}
               isSyncBusy={isSyncBusy}
+              isEditingDisabled={isMemoEditingDisabled}
             />
           ))
         ) : (

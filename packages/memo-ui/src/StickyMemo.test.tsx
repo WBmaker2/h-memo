@@ -36,6 +36,31 @@ describe("StickyMemo", () => {
     });
   });
 
+  it("blocks body and style edits while restore mutation is locked", async () => {
+    const user = userEvent.setup();
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-locked" });
+    const onChange = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        onChange={onChange}
+        onDelete={vi.fn()}
+        isEditingDisabled
+      />
+    );
+
+    const content = screen.getByRole("textbox", { name: "메모 내용" });
+    expect(content).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "노란색 배경" })).toBeDisabled();
+
+    fireEvent.change(content, { target: { value: "잠금 중 변경" } });
+    await user.click(screen.getByRole("button", { name: "노란색 배경" }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(content).toHaveValue("");
+  });
+
   it("renders memo menu sections with style and app actions", async () => {
     const user = userEvent.setup();
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-menu" });

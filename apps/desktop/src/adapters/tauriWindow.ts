@@ -25,6 +25,17 @@ export type MemoWindowClaim = {
   claimToken: string | null;
 };
 
+export function getCurrentWindowLabel() {
+  return getCurrentWindow().label;
+}
+
+export async function listLiveMemoWindowLabels() {
+  const windows = await WebviewWindow.getAll();
+  return windows
+    .map((window) => window.label)
+    .filter((label) => label === "main" || label.startsWith("memo_"));
+}
+
 export function startWindowDrag() {
   return getCurrentWindow().startDragging();
 }
