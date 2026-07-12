@@ -43,7 +43,12 @@ import {
 import { validateFirebaseClientEnv } from "@h-memo/memo-sync/firebase-env-validation";
 import type { FirebaseConfigFormValue } from "@h-memo/memo-ui";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
-import { LocalStorageMemoRepository } from "./adapters/localStorageMemoRepository";
+import {
+  LocalStorageMemoRepository,
+  WEB_MEMO_STORAGE_CHANGED_EVENT,
+  WEB_MEMO_STORAGE_KEY,
+} from "./adapters/localStorageMemoRepository";
+import { WebMutationBarrier } from "./adapters/webMutationBarrier";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
@@ -168,6 +173,7 @@ function broadcastRestoreSafetyChanged() {
 
 export function WebApp() {
   const repository = useMemo<MemoRepository>(() => createRepository(), []);
+  const mutationBarrier = useMemo(() => new WebMutationBarrier(), []);
   const restoreSafetyStorage = useMemo(() => getRestoreSafetyStorage(), []);
   const [memos, setMemos] = useState<Memo[]>([]);
   const [restoreSafetyPoint, setRestoreSafetyPoint] = useState<RestoreSafetyPoint | null>(() =>
@@ -234,6 +240,64 @@ export function WebApp() {
     const all = await repository.listMemos();
     setMemos(sortMemos(all));
   }, [repository]);
+
+  useEffect(() => {
+    let remoteReleaseGeneration = 0;
+    return mutationBarrier.subscribe((lease) => {
+      const currentToken = restoreLockRef.current;
+      if (lease) {
+        if (currentToken && !currentToken.startsWith("remote:")) {
+          return;
+        }
+        restoreLockRef.current = `remote:${lease.token}`;
+        setIsRestoreLocked(true);
+        return;
+      }
+      if (!currentToken?.startsWith("remote:")) {
+        return;
+      }
+
+      const releaseToken = currentToken;
+      const generation = ++remoteReleaseGeneration;
+      void reloadMemos()
+        .then(() => {
+          if (
+            generation !== remoteReleaseGeneration ||
+            restoreLockRef.current !== releaseToken ||
+            mutationBarrier.getRemoteLease()
+          ) {
+            return;
+          }
+          restoreLockRef.current = null;
+          setIsRestoreLocked(false);
+        })
+        .catch((error) => {
+          setBackupStatus(`다른 탭 복원 상태 적용 실패: ${getErrorMessage(error)}`);
+        });
+    });
+  }, [mutationBarrier, reloadMemos]);
+
+  useEffect(() => {
+    const reloadWhenUnlocked = () => {
+      if (!restoreLockRef.current) {
+        void reloadMemos();
+      }
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === WEB_MEMO_STORAGE_KEY) {
+        reloadWhenUnlocked();
+      }
+    };
+    window.addEventListener(WEB_MEMO_STORAGE_CHANGED_EVENT, reloadWhenUnlocked);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener(
+        WEB_MEMO_STORAGE_CHANGED_EVENT,
+        reloadWhenUnlocked
+      );
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [reloadMemos]);
 
   useEffect(() => {
     setBackupStatus(
@@ -398,7 +462,10 @@ export function WebApp() {
     if (restoreLockRef.current) {
       return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
     }
-    const queued = persistQueueRef.current.then(operation);
+    const expectedEpoch = mutationBarrier.getEpoch();
+    const queued = persistQueueRef.current.then(() =>
+      mutationBarrier.runMutation(expectedEpoch, operation)
+    );
     persistQueueRef.current = queued
       .then(() => {
         persistErrorRef.current = null;
@@ -439,7 +506,7 @@ export function WebApp() {
     setIsRestoreLocked(true);
     try {
       await waitForPendingPersists();
-      return await operation();
+      return await mutationBarrier.runRestore(operation);
     } finally {
       if (restoreLockRef.current === token) {
         restoreLockRef.current = null;
@@ -448,26 +515,36 @@ export function WebApp() {
     }
   };
 
-  const rollbackRestoreAttempt = async (currentMemos: Memo[], nextMemos: Memo[]) => {
+  const rollbackRestoreAttempt = async (
+    currentMemos: Memo[],
+    writtenMemos: Memo[]
+  ): Promise<unknown[]> => {
     const currentIds = new Set(currentMemos.map((memo) => memo.id));
     const rollbackAt = new Date().toISOString();
 
-    await Promise.allSettled(
-      nextMemos
+    const deleteResults = await Promise.allSettled(
+      writtenMemos
         .filter((memo) => !currentIds.has(memo.id))
         .map((memo) => repository.softDeleteMemo(memo.id, rollbackAt))
     );
-    await Promise.allSettled(currentMemos.map((memo) => repository.saveMemo(memo)));
+    const saveResults = await Promise.allSettled(
+      currentMemos.map((memo) => repository.saveMemo(memo))
+    );
+    return [...deleteResults, ...saveResults]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
   };
 
   const replaceMemosFromBackup = async (nextMemos: Memo[], previousMemos?: Memo[]) => {
     const currentMemos = previousMemos ?? (await repository.listMemos());
     const keptIds = new Set(nextMemos.map((memo) => memo.id));
     const removedAt = new Date().toISOString();
+    const writtenMemos: Memo[] = [];
 
     try {
       for (const memo of nextMemos) {
         await repository.saveMemo(memo);
+        writtenMemos.push(memo);
       }
       for (const memo of currentMemos) {
         if (!keptIds.has(memo.id)) {
@@ -475,7 +552,18 @@ export function WebApp() {
         }
       }
     } catch (error) {
-      await rollbackRestoreAttempt(currentMemos, nextMemos);
+      const rollbackErrors = await rollbackRestoreAttempt(currentMemos, writtenMemos);
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          `복원 실패 후 원상 복구에도 실패했습니다: ${[
+            error,
+            ...rollbackErrors,
+          ]
+            .map(getErrorMessage)
+            .join(" / ")}`
+        );
+      }
       throw error;
     }
 

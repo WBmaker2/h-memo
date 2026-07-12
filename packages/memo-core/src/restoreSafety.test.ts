@@ -104,6 +104,18 @@ describe("restoreSafety", () => {
     expect(restoreSafety.loadRestoreSafetyPoint(storage)).toBeNull();
   });
 
+  it("rejects a persisted safety point with duplicate memo ids", () => {
+    const point = createSafetyPoint();
+    point.payload = {
+      ...point.payload,
+      memos: [point.payload.memos[0], { ...point.payload.memos[0] }],
+    };
+
+    expect(
+      restoreSafety.loadRestoreSafetyPoint(createStorage(JSON.stringify(point)))
+    ).toBeNull();
+  });
+
   it("reports storage quota errors instead of continuing", () => {
     const storage = createStorage();
     storage.setItem = () => {

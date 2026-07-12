@@ -252,6 +252,26 @@ fn activate_restore_lock_lease(
 }
 
 #[tauri::command]
+fn finish_restore_lock_lease(
+  state: State<'_, RestoreLockLeaseState>,
+  token: String,
+  owner: String,
+  cleanup_ttl_ms: u64,
+) -> Result<RestoreLockLeaseRecord, String> {
+  let mut lease = state
+    .0
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  finish_restore_lock_lease_inner(
+    &mut lease,
+    &token,
+    &owner,
+    cleanup_ttl_ms,
+    SystemTime::now(),
+  )
+}
+
+#[tauri::command]
 fn release_restore_lock_lease(
   state: State<'_, RestoreLockLeaseState>,
   token: String,
@@ -338,6 +358,25 @@ fn activate_restore_lock_lease_inner(
     .filter(|current| current.token == token && current.owner == owner)
     .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
   current.operation_active = true;
+  Ok(to_restore_lock_lease_record(current))
+}
+
+fn finish_restore_lock_lease_inner(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  cleanup_ttl_ms: u64,
+  now: SystemTime,
+) -> Result<RestoreLockLeaseRecord, String> {
+  validate_restore_lock_identity(token, owner)?;
+  prune_restore_lock_lease(lease, now);
+
+  let current = lease
+    .as_mut()
+    .filter(|current| current.token == token && current.owner == owner)
+    .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
+  current.operation_active = false;
+  current.expires_at = expires_at(now, cleanup_ttl_ms);
   Ok(to_restore_lock_lease_record(current))
 }
 
@@ -1116,6 +1155,7 @@ pub fn run() {
       current_restore_lock_lease,
       renew_restore_lock_lease,
       activate_restore_lock_lease,
+      finish_restore_lock_lease,
       release_restore_lock_lease,
       claim_memo_window,
       complete_memo_window,
@@ -1469,6 +1509,38 @@ mod tests {
       lease_time(5_601),
     )
     .expect("ordinary saves should resume after matching release");
+  }
+
+  #[test]
+  fn completed_active_restore_lease_expires_from_bounded_cleanup_state() {
+    let mut lease = None;
+    acquire_restore_lock_lease_inner(
+      &mut lease,
+      "cleanup-token",
+      "main",
+      100,
+      lease_time(6_000),
+    )
+    .expect("lease should be acquired");
+    activate_restore_lock_lease_inner(&mut lease, "cleanup-token", "main", lease_time(6_050))
+      .expect("operation should activate");
+
+    let finished = finish_restore_lock_lease_inner(
+      &mut lease,
+      "cleanup-token",
+      "main",
+      50,
+      lease_time(6_500),
+    )
+    .expect("settled callback should enter bounded cleanup");
+    assert!(!finished.operation_active);
+    assert_eq!(finished.expires_at_ms, 6_550);
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(6_549)).is_some());
+    assert!(ensure_no_live_restore_lock(&mut lease, lease_time(6_549)).is_err());
+
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(6_551)).is_none());
+    ensure_no_live_restore_lock(&mut lease, lease_time(6_551))
+      .expect("claims should resume after bounded cleanup expiry");
   }
 
   #[test]

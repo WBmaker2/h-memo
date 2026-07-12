@@ -1,6 +1,7 @@
 import type { BackupPayload, Memo, ValidationResult } from "./types";
 
 const INVALID_MEMO_REASON = "잘못된 메모 데이터가 포함되어 있습니다.";
+const DUPLICATE_MEMO_ID_REASON = "중복된 메모 ID가 포함되어 있습니다.";
 const SYNC_STATES = ["local-only", "queued", "backed-up", "conflict"];
 
 type JsonUnknown = { [key: string]: unknown };
@@ -152,6 +153,14 @@ function validateBackupPayloadShape(
   const hasInvalidMemo = candidate.memos.some((memo) => !isValidMemoShape(memo));
   if (hasInvalidMemo) {
     return { ok: false, reason: INVALID_MEMO_REASON };
+  }
+
+  const memoIds = new Set<string>();
+  for (const memo of candidate.memos) {
+    if (memoIds.has(memo.id)) {
+      return { ok: false, reason: DUPLICATE_MEMO_ID_REASON };
+    }
+    memoIds.add(memo.id);
   }
 
   return {

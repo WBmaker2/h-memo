@@ -9,6 +9,10 @@ const TRAY_CREATE_MEMO_EVENT = "h-memo:tray-create-memo";
 const RESTORE_LOCK_REQUESTED_EVENT = "h-memo:restore-lock-requested";
 const RESTORE_LOCK_ACKNOWLEDGED_EVENT = "h-memo:restore-lock-acknowledged";
 const RESTORE_LOCK_RELEASED_EVENT = "h-memo:restore-lock-released";
+const RESTORE_STORE_APPLY_REQUESTED_EVENT =
+  "h-memo:restore-store-apply-requested";
+const RESTORE_STORE_APPLY_ACKNOWLEDGED_EVENT =
+  "h-memo:restore-store-apply-acknowledged";
 const RESTORE_SAFETY_CHANGED_EVENT = "h-memo:restore-safety-changed";
 const sourceId = `window-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -45,6 +49,19 @@ export type RestoreLockAcknowledgedPayload = {
 export type RestoreLockReleasedPayload = {
   sourceId: string;
   token: string;
+};
+
+export type RestoreStoreApplyRequestedPayload = {
+  sourceId: string;
+  token: string;
+};
+
+export type RestoreStoreApplyAcknowledgedPayload = {
+  sourceId: string;
+  token: string;
+  windowLabel: string;
+  ok: boolean;
+  error?: string;
 };
 
 export type RestoreSafetyChangedPayload = {
@@ -157,14 +174,70 @@ export function notifyRestoreLockReleased(token: string) {
 }
 
 export function listenRestoreLockReleased(
-  handler: (payload: Omit<RestoreLockReleasedPayload, "sourceId">) => void
+  handler: (
+    payload: Omit<RestoreLockReleasedPayload, "sourceId">
+  ) => void | Promise<void>
 ) {
   return listen<RestoreLockReleasedPayload>(RESTORE_LOCK_RELEASED_EVENT, (event) => {
     if (event.payload.sourceId === sourceId) {
       return;
     }
-    handler(event.payload);
+    void handler(event.payload);
   });
+}
+
+export function notifyRestoreStoreApplyRequested(token: string) {
+  return emit<RestoreStoreApplyRequestedPayload>(
+    RESTORE_STORE_APPLY_REQUESTED_EVENT,
+    {
+      sourceId,
+      token,
+    }
+  );
+}
+
+export function listenRestoreStoreApplyRequested(
+  handler: (
+    payload: Omit<RestoreStoreApplyRequestedPayload, "sourceId">
+  ) => void | Promise<void>
+) {
+  return listen<RestoreStoreApplyRequestedPayload>(
+    RESTORE_STORE_APPLY_REQUESTED_EVENT,
+    (event) => {
+      if (event.payload.sourceId === sourceId) {
+        return;
+      }
+      void handler(event.payload);
+    }
+  );
+}
+
+export function notifyRestoreStoreApplyAcknowledged(
+  payload: Omit<RestoreStoreApplyAcknowledgedPayload, "sourceId">
+) {
+  return emit<RestoreStoreApplyAcknowledgedPayload>(
+    RESTORE_STORE_APPLY_ACKNOWLEDGED_EVENT,
+    {
+      sourceId,
+      ...payload,
+    }
+  );
+}
+
+export function listenRestoreStoreApplyAcknowledged(
+  handler: (
+    payload: Omit<RestoreStoreApplyAcknowledgedPayload, "sourceId">
+  ) => void
+) {
+  return listen<RestoreStoreApplyAcknowledgedPayload>(
+    RESTORE_STORE_APPLY_ACKNOWLEDGED_EVENT,
+    (event) => {
+      if (event.payload.sourceId === sourceId) {
+        return;
+      }
+      handler(event.payload);
+    }
+  );
 }
 
 export function notifyRestoreSafetyChanged() {

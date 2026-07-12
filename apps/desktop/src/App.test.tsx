@@ -51,6 +51,8 @@ const {
   mockNotifyRestoreLockRequested,
   mockNotifyRestoreLockAcknowledged,
   mockNotifyRestoreLockReleased,
+  mockNotifyRestoreStoreApplyRequested,
+  mockNotifyRestoreStoreApplyAcknowledged,
   mockNotifyRestoreSafetyChanged,
   mockInvoke,
   mockGetCurrentWindowLabel,
@@ -94,6 +96,8 @@ const {
   const mockNotifyRestoreLockRequested = vi.fn();
   const mockNotifyRestoreLockAcknowledged = vi.fn();
   const mockNotifyRestoreLockReleased = vi.fn();
+  const mockNotifyRestoreStoreApplyRequested = vi.fn();
+  const mockNotifyRestoreStoreApplyAcknowledged = vi.fn();
   const mockNotifyRestoreSafetyChanged = vi.fn();
   const mockInvoke = vi.fn();
   const mockGetCurrentWindowLabel = vi.fn();
@@ -115,6 +119,12 @@ const {
       | ((payload: { token: string; windowLabel: string; ok: boolean; error?: string }) => void)
       | null;
     restoreLockReleasedListener: ((payload: { token: string }) => void) | null;
+    restoreStoreApplyRequestedListener:
+      | ((payload: { token: string }) => void | Promise<void>)
+      | null;
+    restoreStoreApplyAcknowledgedListener:
+      | ((payload: { token: string; windowLabel: string; ok: boolean; error?: string }) => void)
+      | null;
     restoreSafetyChangedListener: (() => void) | null;
     unlistenMemoStore: ReturnType<typeof vi.fn>;
     unlistenTrayOpenAllMemos: ReturnType<typeof vi.fn>;
@@ -130,6 +140,8 @@ const {
     restoreLockRequestedListener: null,
     restoreLockAcknowledgedListener: null,
     restoreLockReleasedListener: null,
+    restoreStoreApplyRequestedListener: null,
+    restoreStoreApplyAcknowledgedListener: null,
     restoreSafetyChangedListener: null,
     unlistenMemoStore: vi.fn(),
     unlistenTrayOpenAllMemos: vi.fn(),
@@ -283,6 +295,8 @@ const {
     mockNotifyRestoreLockRequested,
     mockNotifyRestoreLockAcknowledged,
     mockNotifyRestoreLockReleased,
+    mockNotifyRestoreStoreApplyRequested,
+    mockNotifyRestoreStoreApplyAcknowledged,
     mockNotifyRestoreSafetyChanged,
     mockInvoke,
     mockGetCurrentWindowLabel,
@@ -408,6 +422,10 @@ vi.mock("./adapters/tauriEvents", () => ({
   notifyRestoreLockAcknowledged: (payload: unknown) =>
     mockNotifyRestoreLockAcknowledged(payload),
   notifyRestoreLockReleased: (token: string) => mockNotifyRestoreLockReleased(token),
+  notifyRestoreStoreApplyRequested: (token: string) =>
+    mockNotifyRestoreStoreApplyRequested(token),
+  notifyRestoreStoreApplyAcknowledged: (payload: unknown) =>
+    mockNotifyRestoreStoreApplyAcknowledged(payload),
   notifyRestoreSafetyChanged: () => mockNotifyRestoreSafetyChanged(),
   listenMemoStoreChanged: async (
     listener: (payload: { memoId?: string; deletedMemoId?: string }) => void
@@ -448,6 +466,23 @@ vi.mock("./adapters/tauriEvents", () => ({
   },
   listenRestoreLockReleased: async (listener: (payload: { token: string }) => void) => {
     tauriEventState.restoreLockReleasedListener = listener;
+    return vi.fn();
+  },
+  listenRestoreStoreApplyRequested: async (
+    listener: (payload: { token: string }) => void | Promise<void>
+  ) => {
+    tauriEventState.restoreStoreApplyRequestedListener = listener;
+    return vi.fn();
+  },
+  listenRestoreStoreApplyAcknowledged: async (
+    listener: (payload: {
+      token: string;
+      windowLabel: string;
+      ok: boolean;
+      error?: string;
+    }) => void
+  ) => {
+    tauriEventState.restoreStoreApplyAcknowledgedListener = listener;
     return vi.fn();
   },
   listenRestoreSafetyChanged: async (listener: () => void) => {
@@ -555,6 +590,8 @@ beforeEach(() => {
   mockNotifyRestoreLockRequested.mockReset();
   mockNotifyRestoreLockAcknowledged.mockReset();
   mockNotifyRestoreLockReleased.mockReset();
+  mockNotifyRestoreStoreApplyRequested.mockReset();
+  mockNotifyRestoreStoreApplyAcknowledged.mockReset();
   mockNotifyRestoreSafetyChanged.mockReset();
   mockInvoke.mockReset();
   mockGetCurrentWindowLabel.mockReset();
@@ -569,6 +606,8 @@ beforeEach(() => {
   tauriEventState.restoreLockRequestedListener = null;
   tauriEventState.restoreLockAcknowledgedListener = null;
   tauriEventState.restoreLockReleasedListener = null;
+  tauriEventState.restoreStoreApplyRequestedListener = null;
+  tauriEventState.restoreStoreApplyAcknowledgedListener = null;
   tauriEventState.restoreSafetyChangedListener = null;
   tauriEventState.unlistenMemoStore.mockReset();
   tauriEventState.unlistenStartupState.mockReset();
@@ -614,6 +653,8 @@ beforeEach(() => {
   mockNotifyRestoreLockRequested.mockResolvedValue(undefined);
   mockNotifyRestoreLockAcknowledged.mockResolvedValue(undefined);
   mockNotifyRestoreLockReleased.mockResolvedValue(undefined);
+  mockNotifyRestoreStoreApplyRequested.mockResolvedValue(undefined);
+  mockNotifyRestoreStoreApplyAcknowledged.mockResolvedValue(undefined);
   mockNotifyRestoreSafetyChanged.mockResolvedValue(undefined);
   mockInvoke.mockImplementation(async (command: string, args?: Record<string, any>) => {
     if (command === "current_restore_lock_lease") {
@@ -664,6 +705,21 @@ beforeEach(() => {
         throw new Error("복원 잠금 lease가 없습니다.");
       }
       nativeLeaseState.lease.operationActive = true;
+      return nativeLeaseState.lease;
+    }
+    if (command === "finish_restore_lock_lease") {
+      const token = String(args?.token ?? "");
+      const owner = String(args?.owner ?? "");
+      if (
+        !nativeLeaseState.lease ||
+        nativeLeaseState.lease.token !== token ||
+        nativeLeaseState.lease.owner !== owner
+      ) {
+        throw new Error("복원 잠금 lease가 없습니다.");
+      }
+      nativeLeaseState.lease.operationActive = false;
+      nativeLeaseState.lease.expiresAtMs =
+        Date.now() + Number(args?.cleanupTtlMs ?? 1000);
       return nativeLeaseState.lease;
     }
     if (command === "release_restore_lock_lease") {
@@ -1244,6 +1300,122 @@ describe("desktop App", () => {
       expect(screen.getByDisplayValue("복원된 JSON 메모")).toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent("JSON 복원 완료: 1개 메모");
     });
+  });
+
+  it("rolls back a desktop restore when a remote window rejects store application", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const currentMemo = createMemo({
+      id: "desktop-apply-failure-current",
+      now: "2026-07-12T18:00:00.000Z",
+      plainText: "원격 적용 실패 전 메모",
+    });
+    const restoredMemo = createMemo({
+      id: "desktop-apply-failure-restored",
+      now: "2026-07-12T18:01:00.000Z",
+      plainText: "원격 적용에 실패할 복원 메모",
+    });
+    tauriRepositoryState.set(currentMemo.id, currentMemo);
+    mockImportJsonFile.mockResolvedValue({
+      status: "loaded",
+      contents: JSON.stringify({
+        version: 1,
+        userId: "local",
+        createdAt: "2026-07-12T18:02:00.000Z",
+        memos: [restoredMemo],
+      }),
+    });
+    mockListLiveWindowLabels.mockResolvedValue(["main", "memo-1"]);
+    mockNotifyRestoreLockRequested.mockImplementation(async (token: string) => {
+      tauriEventState.restoreLockAcknowledgedListener?.({
+        token,
+        windowLabel: "memo-1",
+        ok: true,
+      });
+    });
+    let applyRequestCount = 0;
+    mockNotifyRestoreStoreApplyRequested.mockImplementation(
+      async (token: string) => {
+        applyRequestCount += 1;
+        tauriEventState.restoreStoreApplyAcknowledgedListener?.({
+          token,
+          windowLabel: "memo-1",
+          ok: applyRequestCount > 1,
+          ...(applyRequestCount === 1
+            ? { error: "원격 메모 reload 실패" }
+            : {}),
+        });
+      }
+    );
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("원격 적용 실패 전 메모")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "JSON 복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "JSON 복원 실패: 원격 메모 reload 실패"
+      );
+    });
+    expect(screen.getByDisplayValue("원격 적용 실패 전 메모")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("원격 적용에 실패할 복원 메모")).not.toBeInTheDocument();
+    expect(tauriRepositoryState.get(currentMemo.id)).toEqual(currentMemo);
+    expect(tauriRepositoryState.get(restoredMemo.id)).toEqual(
+      expect.objectContaining({ deletedAt: expect.any(String) })
+    );
+  });
+
+  it("bounds a hung restore-safety event before releasing the desktop barrier", async () => {
+    vi.useFakeTimers();
+    try {
+      setTauriRuntime(true);
+      mockGetStartupEnabled.mockResolvedValue(false);
+      const restoredMemo = createMemo({
+        id: "desktop-safety-event-timeout",
+        now: "2026-07-12T18:10:00.000Z",
+        plainText: "안전 이벤트 timeout 복원 메모",
+      });
+      mockImportJsonFile.mockResolvedValue({
+        status: "loaded",
+        contents: JSON.stringify({
+          version: 1,
+          userId: "local",
+          createdAt: "2026-07-12T18:11:00.000Z",
+          memos: [restoredMemo],
+        }),
+      });
+      mockNotifyRestoreSafetyChanged.mockImplementation(
+        () => new Promise<void>(() => {})
+      );
+
+      render(<App />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      fireEvent.click(screen.getByRole("button", { name: "JSON 복원" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(nativeLeaseState.lease).toEqual(
+        expect.objectContaining({ operationActive: true })
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "JSON 복원 완료: 1개 메모"
+      );
+      expect(nativeLeaseState.lease).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cancels local JSON restore before replacing current memos", async () => {

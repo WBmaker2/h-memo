@@ -52,11 +52,15 @@ import {
   notifyRestoreLockAcknowledged,
   notifyRestoreLockReleased,
   notifyRestoreLockRequested,
+  notifyRestoreStoreApplyAcknowledged,
+  notifyRestoreStoreApplyRequested,
   notifyRestoreSafetyChanged,
   notifyStartupStateChanged,
   listenRestoreLockAcknowledged,
   listenRestoreLockReleased,
   listenRestoreLockRequested,
+  listenRestoreStoreApplyAcknowledged,
+  listenRestoreStoreApplyRequested,
   listenRestoreSafetyChanged,
   type MemoStoreChangedPayload,
 } from "./adapters/tauriEvents";
@@ -125,6 +129,7 @@ const DELETE_SERVER_MEMO_CONFIRM_MESSAGE =
 const COLLAPSED_WINDOW_HEIGHT = 46;
 const MIN_EXPANDED_WINDOW_HEIGHT = 160;
 const RESTORE_SAFETY_POLL_INTERVAL_MS = 250;
+const DESKTOP_EVENT_TIMEOUT_MS = 1000;
 const APP_VERSION_LABEL = `v${desktopPackageJson.version}`;
 
 function isTauriRuntime() {
@@ -147,6 +152,26 @@ function getErrorMessage(error: unknown): string {
     return error;
   }
   return "알 수 없는 오류";
+}
+
+async function runDesktopEventWithTimeout<T>(
+  operation: () => Promise<T>,
+  timeoutMessage: string
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error(timeoutMessage)),
+      DESKTOP_EVENT_TIMEOUT_MS
+    );
+  });
+  try {
+    return await Promise.race([operation(), timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 function sortMemos(nextMemos: Memo[]): Memo[] {
@@ -269,6 +294,7 @@ export function App() {
   const restoreLockRef = useRef<string | null>(null);
   const restoreLockCoordinatorRef = useRef<ReturnType<typeof createRestoreLockCoordinator> | null>(null);
   const restoreLockWaitRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const restoreStoreApplyRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const restoreLockReadyRef = useRef(!isTauri);
   const restoreLockReadyPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const ownershipQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -305,6 +331,11 @@ export function App() {
       listenLockAcknowledged: listenRestoreLockAcknowledged,
       notifyLockReleased: notifyRestoreLockReleased,
       listenLockReleased: listenRestoreLockReleased,
+      notifyStoreApplyRequested: notifyRestoreStoreApplyRequested,
+      listenStoreApplyRequested: listenRestoreStoreApplyRequested,
+      notifyStoreApplyAcknowledged: notifyRestoreStoreApplyAcknowledged,
+      listenStoreApplyAcknowledged: listenRestoreStoreApplyAcknowledged,
+      applyStore: () => restoreStoreApplyRef.current(),
       nativeLease: createTauriRestoreLockLeaseAdapter(),
       lockLocal: (token) => {
         const activeToken = restoreLockRef.current;
@@ -358,6 +389,7 @@ export function App() {
     setMemos(all);
     setHasLoadedMemos(true);
   }, [repository]);
+  restoreStoreApplyRef.current = reloadMemos;
 
   useEffect(() => {
     void reloadMemos();
@@ -427,13 +459,14 @@ export function App() {
   }, [hasFirebaseConfigSet, needsDesktopGoogleOAuthClient, servicesAvailable, user]);
 
   const broadcastMemoStoreChanged = useCallback(
-    (payload: Omit<MemoStoreChangedPayload, "sourceId"> = {}) => {
+    async (payload: Omit<MemoStoreChangedPayload, "sourceId"> = {}) => {
       if (!isTauri) {
         return;
       }
-      void notifyMemoStoreChanged(payload).catch((error) => {
-        setBackupStatus(`메모 상태 공유 실패: ${getErrorMessage(error)}`);
-      });
+      await runDesktopEventWithTimeout(
+        () => notifyMemoStoreChanged(payload),
+        "메모 상태 공유가 시간 초과되었습니다."
+      );
     },
     [isTauri]
   );
@@ -443,7 +476,10 @@ export function App() {
       return;
     }
     try {
-      await notifyRestoreSafetyChanged();
+      await runDesktopEventWithTimeout(
+        notifyRestoreSafetyChanged,
+        "복원 안전 지점 공유가 시간 초과되었습니다."
+      );
     } catch (error) {
       setBackupStatus(`복원 안전 지점 공유 실패: ${getErrorMessage(error)}`);
     }
@@ -910,7 +946,9 @@ export function App() {
       if (!options?.skipStateUpdate) {
         upsertMemo(saved);
       }
-      broadcastMemoStoreChanged({ memoId: saved.id });
+      void broadcastMemoStoreChanged({ memoId: saved.id }).catch((error) => {
+        setBackupStatus(`메모 상태 공유 실패: ${getErrorMessage(error)}`);
+      });
       return saved;
     });
   };
@@ -1024,46 +1062,91 @@ export function App() {
     });
   }, [displayedMemos, hasLoadedMemos, isTauri, visibleMemos]);
 
-  const rollbackRestoreAttempt = async (currentMemos: Memo[], nextMemos: Memo[]) => {
+  const rollbackRestoreAttempt = async (
+    currentMemos: Memo[],
+    writtenMemos: Memo[]
+  ): Promise<unknown[]> => {
     const currentIds = new Set(currentMemos.map((memo) => memo.id));
     const rollbackAt = new Date().toISOString();
 
-    await Promise.allSettled(
-      nextMemos
+    const deleteResults = await Promise.allSettled(
+      writtenMemos
         .filter((memo) => !currentIds.has(memo.id))
         .map((memo) => repository.softDeleteMemo(memo.id, rollbackAt))
     );
-    await Promise.allSettled(currentMemos.map((memo) => repository.saveMemo(memo)));
+    const saveResults = await Promise.allSettled(
+      currentMemos.map((memo) => repository.saveMemo(memo))
+    );
+    return [...deleteResults, ...saveResults]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
   };
 
-  const replaceMemosFromBackup = async (nextMemos: Memo[], previousMemos?: Memo[]) => {
+  const replaceMemosFromBackup = async (
+    nextMemos: Memo[],
+    previousMemos?: Memo[],
+    synchronize?: () => Promise<void>
+  ) => {
     const currentMemos = previousMemos ?? (await repository.listMemos());
     const keptIds = new Set(nextMemos.map((memo) => memo.id));
     const removedAt = new Date().toISOString();
+    const writtenMemos: Memo[] = [];
 
     try {
       for (const memo of nextMemos) {
         await repository.saveMemo(memo);
+        writtenMemos.push(memo);
       }
       for (const memo of currentMemos) {
         if (!keptIds.has(memo.id)) {
           await repository.softDeleteMemo(memo.id, removedAt);
         }
       }
+      const sortedMemos = sortMemos(nextMemos);
+      memosRef.current = sortedMemos;
+      setMemos(sortedMemos);
+      await synchronize?.();
+      await broadcastMemoStoreChanged();
     } catch (error) {
-      await rollbackRestoreAttempt(currentMemos, nextMemos);
+      const rollbackErrors = await rollbackRestoreAttempt(
+        currentMemos,
+        writtenMemos
+      );
+      const restoredMemos = sortMemos(currentMemos);
+      memosRef.current = restoredMemos;
+      setMemos(restoredMemos);
+      if (synchronize) {
+        try {
+          await synchronize();
+        } catch (rollbackApplyError) {
+          rollbackErrors.push(rollbackApplyError);
+        }
+      }
+      try {
+        await broadcastMemoStoreChanged();
+      } catch (rollbackEventError) {
+        rollbackErrors.push(rollbackEventError);
+      }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          `복원 실패 후 원상 복구에도 실패했습니다: ${[
+            error,
+            ...rollbackErrors,
+          ]
+            .map(getErrorMessage)
+            .join(" / ")}`
+        );
+      }
       throw error;
     }
-
-    const sortedMemos = sortMemos(nextMemos);
-    memosRef.current = sortedMemos;
-    setMemos(sortedMemos);
-    broadcastMemoStoreChanged();
   };
 
-  const runWithDesktopRestoreLock = async <T,>(operation: () => Promise<T>) => {
+  const runWithDesktopRestoreLock = async <T,>(
+    operation: (synchronize: () => Promise<void>) => Promise<T>
+  ) => {
     if (!isTauri) {
-      return operation();
+      return operation(() => Promise.resolve());
     }
 
     const coordinator = restoreLockCoordinatorRef.current;
@@ -1075,14 +1158,17 @@ export function App() {
       if (!(repository instanceof TauriMemoRepository)) {
         throw new Error("복원 저장소 범위를 초기화하지 못했습니다.");
       }
-      return repository.withRestoreToken(token, operation);
+      return repository.withRestoreToken(token, () =>
+        operation(() => coordinator.synchronize(token))
+      );
     });
   };
 
   const replaceMemosWithSafety = async (
     source: RestoreSafetyPoint["source"],
     userId: string,
-    nextMemos: Memo[] | ((currentMemos: Memo[]) => Memo[])
+    nextMemos: Memo[] | ((currentMemos: Memo[]) => Memo[]),
+    synchronize?: () => Promise<void>
   ) => {
     if (!restoreSafetyStorage) {
       throw new Error("복원 안전 지점을 저장할 저장 공간을 사용할 수 없습니다.");
@@ -1093,7 +1179,7 @@ export function App() {
     saveRestoreSafetyPoint(restoreSafetyStorage, safetyPoint);
     const replacementMemos =
       typeof nextMemos === "function" ? nextMemos(currentMemos) : nextMemos;
-    await replaceMemosFromBackup(replacementMemos, currentMemos);
+    await replaceMemosFromBackup(replacementMemos, currentMemos, synchronize);
     setRestoreSafetyPoint(safetyPoint);
     await broadcastRestoreSafetyChanged();
   };
@@ -1276,7 +1362,9 @@ export function App() {
     upsertMemo(deleted);
     setPendingDeleteMemo(null);
     setBackupStatus(status);
-    broadcastMemoStoreChanged({ deletedMemoId: memoId });
+    void broadcastMemoStoreChanged({ deletedMemoId: memoId }).catch((error) => {
+      setBackupStatus(`메모 상태 공유 실패: ${getErrorMessage(error)}`);
+    });
     return isTauri && activeMemoIdRef.current === memoId;
   };
 
@@ -1334,8 +1422,13 @@ export function App() {
       return;
     }
 
-    await runWithDesktopRestoreLock(() =>
-      replaceMemosWithSafety("json", user?.uid ?? "local", parsed.payload.memos)
+    await runWithDesktopRestoreLock((synchronize) =>
+      replaceMemosWithSafety(
+        "json",
+        user?.uid ?? "local",
+        parsed.payload.memos,
+        synchronize
+      )
     );
     setBackupStatus(`JSON 복원 완료: ${parsed.payload.memos.length}개 메모`);
   };
@@ -1352,12 +1445,16 @@ export function App() {
     setIsBusy(true);
     setBackupStatus("마지막 복원을 되돌리는 중입니다.");
     try {
-      await runWithDesktopRestoreLock(async () => {
+      await runWithDesktopRestoreLock(async (synchronize) => {
         const safetyPoint = loadRestoreSafetyPoint(restoreSafetyStorage);
         if (!safetyPoint) {
           throw new Error("되돌릴 복원 안전 지점이 없습니다.");
         }
-        await replaceMemosFromBackup(safetyPoint.payload.memos);
+        await replaceMemosFromBackup(
+          safetyPoint.payload.memos,
+          undefined,
+          synchronize
+        );
         clearRestoreSafetyPoint(restoreSafetyStorage);
         setRestoreSafetyPoint(null);
         await broadcastRestoreSafetyChanged();
@@ -1628,8 +1725,13 @@ export function App() {
         setBackupStatus("복원을 취소했습니다.");
         return;
       }
-      await runWithDesktopRestoreLock(() =>
-        replaceMemosWithSafety("server", user?.uid ?? "local", snapshot.payload.memos)
+      await runWithDesktopRestoreLock((synchronize) =>
+        replaceMemosWithSafety(
+          "server",
+          user?.uid ?? "local",
+          snapshot.payload.memos,
+          synchronize
+        )
       );
       setBackupHistoryDialog({ isOpen: false, snapshots: [] });
       setBackupStatus(`복원 완료: ${snapshot.payload.memos.length}개 메모`);
@@ -1697,15 +1799,22 @@ export function App() {
           visible: true,
         },
       };
-      await runWithDesktopRestoreLock(() =>
-        replaceMemosWithSafety("server", user?.uid ?? "local", (currentMemos) => {
-          const hasTarget = currentMemos.some((memo) => memo.id === restoredMemo.id);
-          return hasTarget
-            ? currentMemos.map((memo) =>
-                memo.id === restoredMemo.id ? restoredMemo : memo
-              )
-            : [...currentMemos, restoredMemo];
-        })
+      await runWithDesktopRestoreLock((synchronize) =>
+        replaceMemosWithSafety(
+          "server",
+          user?.uid ?? "local",
+          (currentMemos) => {
+            const hasTarget = currentMemos.some(
+              (memo) => memo.id === restoredMemo.id
+            );
+            return hasTarget
+              ? currentMemos.map((memo) =>
+                  memo.id === restoredMemo.id ? restoredMemo : memo
+                )
+              : [...currentMemos, restoredMemo];
+          },
+          synchronize
+        )
       );
       const savedMemo = memosRef.current.find((memo) => memo.id === restoredMemo.id) ?? restoredMemo;
       setBackupStatus("서버 백업에서 메모를 복원했습니다.");

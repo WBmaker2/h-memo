@@ -143,4 +143,22 @@ describe("backupPayload", () => {
       });
     }
   });
+
+  it("rejects backup payloads with duplicate memo ids", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-duplicate" });
+    const payload = createBackupPayload({
+      userId: "user-1",
+      memos: [memo, { ...memo, plainText: "같은 ID의 다른 내용" }],
+      createdAt: "2026-05-13T09:05:00.000Z",
+    });
+
+    expect(validateBackupPayload(payload, "user-1")).toEqual({
+      ok: false,
+      reason: "중복된 메모 ID가 포함되어 있습니다.",
+    });
+    expect(validateLocalBackupPayload(payload)).toEqual({
+      ok: false,
+      reason: "중복된 메모 ID가 포함되어 있습니다.",
+    });
+  });
 });

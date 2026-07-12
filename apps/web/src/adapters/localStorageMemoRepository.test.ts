@@ -108,4 +108,33 @@ describe("LocalStorageMemoRepository", () => {
     await expect(repository.saveMemo(memo)).rejects.toThrow("localStorage 저장 실패");
     await expect(repository.listMemos()).resolves.toHaveLength(0);
   });
+
+  it("refreshes from durable storage across repository instances before reads and writes", async () => {
+    const firstRepository = new LocalStorageMemoRepository();
+    const secondRepository = new LocalStorageMemoRepository();
+    const firstMemo = createMemo({
+      id: "cross-tab-first",
+      now: "2026-07-12T19:00:00.000Z",
+      plainText: "첫 번째 탭 메모",
+    });
+    const secondMemo = createMemo({
+      id: "cross-tab-second",
+      now: "2026-07-12T19:01:00.000Z",
+      plainText: "두 번째 탭 메모",
+    });
+
+    await firstRepository.saveMemo(firstMemo);
+    await expect(secondRepository.listMemos()).resolves.toEqual([firstMemo]);
+
+    await secondRepository.saveMemo(secondMemo);
+    await expect(firstRepository.listMemos()).resolves.toEqual([
+      secondMemo,
+      firstMemo,
+    ]);
+    expect(
+      JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "[]").map(
+        (memo: { id: string }) => memo.id
+      )
+    ).toEqual([secondMemo.id, firstMemo.id]);
+  });
 });

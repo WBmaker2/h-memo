@@ -9,7 +9,8 @@ import {
   type SyncState,
 } from "@h-memo/memo-core";
 
-const STORAGE_KEY = "h-memo:web-memo-repository-v1";
+export const WEB_MEMO_STORAGE_KEY = "h-memo:web-memo-repository-v1";
+export const WEB_MEMO_STORAGE_CHANGED_EVENT = "h-memo:web-memo-storage-changed";
 const DEFAULT_RICH_CONTENT = { type: "doc", content: [{ type: "paragraph" }] } as const;
 const SYNC_STATES = new Set<SyncState>([
   "local-only",
@@ -133,7 +134,7 @@ function safeReadStorage(): Memo[] {
   }
 
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(WEB_MEMO_STORAGE_KEY);
     if (!raw) {
       return [];
     }
@@ -155,7 +156,8 @@ function writeStorage(value: Memo[]) {
   }
 
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+    window.localStorage.setItem(WEB_MEMO_STORAGE_KEY, JSON.stringify(value));
+    window.dispatchEvent(new Event(WEB_MEMO_STORAGE_CHANGED_EVENT));
   } catch (error) {
     throw new Error(`localStorage 저장 실패: ${getErrorMessage(error)}`);
   }
@@ -185,11 +187,21 @@ export class LocalStorageMemoRepository implements MemoRepository {
     }
   }
 
+  private refreshRecords() {
+    const latestRecords = new Map<string, Memo>();
+    for (const memo of safeReadStorage()) {
+      latestRecords.set(memo.id, memo);
+    }
+    this.replaceRecords(latestRecords);
+  }
+
   async listMemos(): Promise<Memo[]> {
+    this.refreshRecords();
     return sortMemos(Array.from(this.records.values()).map((memo) => clone(memo)));
   }
 
   async saveMemo(memo: Memo): Promise<Memo> {
+    this.refreshRecords();
     const nextMemo = clone(memo);
     const nextRecords = new Map(this.records);
     nextRecords.set(nextMemo.id, nextMemo);
@@ -199,6 +211,7 @@ export class LocalStorageMemoRepository implements MemoRepository {
   }
 
   async softDeleteMemo(id: string, deletedAt: string): Promise<Memo> {
+    this.refreshRecords();
     const found = this.records.get(id);
     if (!found) {
       throw new Error(`Cannot soft delete memo: memo not found (${id})`);
@@ -213,6 +226,7 @@ export class LocalStorageMemoRepository implements MemoRepository {
   }
 
   async restoreMemo(id: string, restoredAt: string): Promise<Memo> {
+    this.refreshRecords();
     const found = this.records.get(id);
     if (!found) {
       throw new Error(`Cannot restore memo: memo not found (${id})`);

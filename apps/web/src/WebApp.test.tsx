@@ -151,6 +151,53 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
+function installExclusiveWebLocks() {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(navigator, "locks");
+  const queues = new Map<string, Promise<void>>();
+  const request = vi.fn(
+    <T,>(
+      name: string,
+      optionsOrCallback:
+        | LockOptions
+        | ((lock: Lock | null) => Promise<T> | T),
+      callback?: (lock: Lock | null) => Promise<T> | T
+    ) => {
+      const operation =
+        typeof optionsOrCallback === "function"
+          ? optionsOrCallback
+          : callback;
+      if (!operation) {
+        return Promise.reject(new Error("lock callback is required"));
+      }
+      const previous = queues.get(name) ?? Promise.resolve();
+      const result = previous
+        .catch(() => {})
+        .then(() => operation({ name, mode: "exclusive" } as Lock));
+      queues.set(
+        name,
+        result.then(
+          () => undefined,
+          () => undefined
+        )
+      );
+      return result;
+    }
+  );
+
+  Object.defineProperty(navigator, "locks", {
+    configurable: true,
+    value: { request },
+  });
+
+  return () => {
+    if (originalDescriptor) {
+      Object.defineProperty(navigator, "locks", originalDescriptor);
+    } else {
+      Reflect.deleteProperty(navigator, "locks");
+    }
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   installLocalStorageStub();
@@ -496,6 +543,76 @@ describe("WebApp", () => {
     expect(screen.queryByDisplayValue("저장 실패로 복원되지 않을 메모")).not.toBeInTheDocument();
   });
 
+  it("surfaces restore and rollback failures together", async () => {
+    const currentMemo = createMemo({
+      id: "web-rollback-current",
+      now: "2026-07-12T10:10:00.000Z",
+      plainText: "롤백 실패 전 메모",
+    });
+    const firstRestoredMemo = createMemo({
+      id: "web-rollback-first",
+      now: "2026-07-12T10:11:00.000Z",
+      plainText: "첫 번째 복원 메모",
+    });
+    const secondRestoredMemo = createMemo({
+      id: "web-rollback-second",
+      now: "2026-07-12T10:12:00.000Z",
+      plainText: "두 번째 복원 메모",
+    });
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([currentMemo])]],
+    });
+    const originalSave = LocalStorageMemoRepository.prototype.saveMemo;
+    let saveCallCount = 0;
+    const saveSpy = vi
+      .spyOn(LocalStorageMemoRepository.prototype, "saveMemo")
+      .mockImplementation(async function (this: LocalStorageMemoRepository, memo) {
+        saveCallCount += 1;
+        if (saveCallCount === 2) {
+          throw new Error("복원 쓰기 실패");
+        }
+        if (saveCallCount === 3) {
+          throw new Error("롤백 저장 실패");
+        }
+        return originalSave.call(this, memo);
+      });
+    const deleteSpy = vi
+      .spyOn(LocalStorageMemoRepository.prototype, "softDeleteMemo")
+      .mockRejectedValue(new Error("롤백 삭제 실패"));
+
+    try {
+      render(<WebApp />);
+      await waitFor(() => {
+        expect(screen.getByDisplayValue("롤백 실패 전 메모")).toBeInTheDocument();
+      });
+
+      await userEvent.upload(
+        screen.getByLabelText("JSON 백업 파일 선택"),
+        new File(
+          [
+            JSON.stringify({
+              version: 1,
+              userId: "local",
+              createdAt: "2026-07-12T10:13:00.000Z",
+              memos: [firstRestoredMemo, secondRestoredMemo],
+            }),
+          ],
+          "rollback-failure.json",
+          { type: "application/json" }
+        )
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "JSON 복원 실패: 복원 실패 후 원상 복구에도 실패했습니다: 복원 쓰기 실패 / 롤백 삭제 실패 / 롤백 저장 실패"
+        );
+      });
+    } finally {
+      saveSpy.mockRestore();
+      deleteSpy.mockRestore();
+    }
+  });
+
   it("initializes undo from a valid persisted safety point", async () => {
     const memo = createMemo({
       id: "memo-persisted-undo",
@@ -721,6 +838,112 @@ describe("WebApp", () => {
     await waitFor(() => {
       expect(screen.getByDisplayValue("세션 유지 메모")).toBeInTheDocument();
     });
+  });
+
+  it("serializes restore across two tabs and reloads the remote tab before unlock", async () => {
+    const restoreLocks = installExclusiveWebLocks();
+    const initialMemo = createMemo({
+      id: "web-cross-tab-shared",
+      now: "2026-07-12T19:10:00.000Z",
+      plainText: "두 탭의 복원 전 메모",
+    });
+    const restoredMemo = createMemo({
+      id: initialMemo.id,
+      now: "2026-07-12T19:11:00.000Z",
+      plainText: "두 탭에 적용된 복원 메모",
+    });
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([initialMemo])]],
+    });
+    const firstSave = deferred<void>();
+    const originalSave = LocalStorageMemoRepository.prototype.saveMemo;
+    let shouldDelayFirstSave = true;
+    const saveSpy = vi
+      .spyOn(LocalStorageMemoRepository.prototype, "saveMemo")
+      .mockImplementation(async function (this: LocalStorageMemoRepository, memo) {
+        if (shouldDelayFirstSave) {
+          shouldDelayFirstSave = false;
+          await firstSave.promise;
+        }
+        return originalSave.call(this, memo);
+      });
+
+    try {
+      const firstTab = render(<WebApp />);
+      const secondTab = render(<WebApp />);
+      const firstView = within(firstTab.container);
+      const secondView = within(secondTab.container);
+      await waitFor(() => {
+        expect(firstView.getByRole("textbox", { name: "메모 내용" })).toHaveValue(
+          "두 탭의 복원 전 메모"
+        );
+        expect(secondView.getByRole("textbox", { name: "메모 내용" })).toHaveValue(
+          "두 탭의 복원 전 메모"
+        );
+      });
+
+      fireEvent.change(firstView.getByRole("textbox", { name: "메모 내용" }), {
+        target: { value: "복원과 겹친 오래된 저장" },
+      });
+      await waitFor(() => expect(saveSpy).toHaveBeenCalledTimes(1));
+      fireEvent.change(firstView.getByRole("textbox", { name: "메모 내용" }), {
+        target: { value: "복원 전에 큐에 남은 오래된 저장" },
+      });
+
+      const file = new File(
+        [
+          JSON.stringify({
+            version: 1,
+            userId: "local",
+            createdAt: "2026-07-12T19:12:00.000Z",
+            memos: [restoredMemo],
+          }),
+        ],
+        "cross-tab-restore.json",
+        { type: "application/json" }
+      );
+      fireEvent.change(
+        secondView.getByLabelText("JSON 백업 파일 선택"),
+        { target: { files: [file] } }
+      );
+
+      await waitFor(
+        () => {
+          expect(
+            firstView.getByRole("textbox", { name: "메모 내용" })
+          ).toHaveAttribute("readonly");
+        },
+        { timeout: 500 }
+      );
+      expect(secondView.getByRole("status")).not.toHaveTextContent(
+        "JSON 복원 완료"
+      );
+
+      firstSave.resolve();
+      await waitFor(() => {
+        expect(secondView.getByRole("status")).toHaveTextContent(
+          "JSON 복원 완료: 1개 메모"
+        );
+        expect(firstView.getByRole("textbox", { name: "메모 내용" })).toHaveValue(
+          "두 탭에 적용된 복원 메모"
+        );
+        expect(
+          firstView.getByRole("textbox", { name: "메모 내용" })
+        ).not.toHaveAttribute("readonly");
+      });
+      expect(
+        JSON.parse(window.localStorage.getItem(LOCAL_MEMO_KEY) ?? "[]").map(
+          (memo: { id: string }) => memo.id
+        )
+      ).toEqual([restoredMemo.id]);
+      expect(saveSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ plainText: "복원 전에 큐에 남은 오래된 저장" })
+      );
+    } finally {
+      firstSave.resolve();
+      saveSpy.mockRestore();
+      restoreLocks();
+    }
   });
 
   it("loads corrupt legacy localStorage records without crashing", async () => {
