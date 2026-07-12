@@ -1343,6 +1343,7 @@ describe("restore lock coordinator", () => {
       const unlockLocal = vi.fn();
       const nativeLease = {
         acquire: vi.fn(() => new Promise<never>(() => {})),
+        cancelAcquire: vi.fn(async () => {}),
         current: vi.fn(async () => null),
         renew: vi.fn(),
         activate: vi.fn(),
@@ -1386,6 +1387,192 @@ describe("restore lock coordinator", () => {
         );
       }
       expect(unlockLocal).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a timed-out acquire and ignores its late resolution after authoritative unlock", async () => {
+    vi.useFakeTimers();
+    try {
+      const acquireResponse = deferred<void>();
+      const cancelledTokens = new Set<string>();
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = null;
+      let locallyLocked = false;
+      const notifyLockRequested = vi.fn(async () => {});
+      const applyStore = vi.fn(async () => {});
+      const unlockLocal = vi.fn(() => {
+        locallyLocked = false;
+      });
+      const nativeLease = {
+        acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          const record = {
+            token,
+            owner,
+            expiresAtMs: Date.now() + ttlMs,
+            operationActive: false,
+          };
+          await acquireResponse.promise;
+          if (!cancelledTokens.has(token)) {
+            lease = record;
+          }
+          return record;
+        }),
+        cancelAcquire: vi.fn(async (token: string) => {
+          cancelledTokens.add(token);
+          if (lease?.token === token) {
+            lease = null;
+          }
+        }),
+        current: vi.fn(async () => lease),
+        renew: vi.fn(),
+        activate: vi.fn(),
+        release: vi.fn(async () => {
+          lease = null;
+          return true;
+        }),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: vi.fn(async () => ["main"]),
+        notifyLockRequested,
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        applyStore,
+        nativeLease,
+        lockLocal: async () => {
+          locallyLocked = true;
+        },
+        unlockLocal,
+        bridgeTimeoutMs: 5,
+        cleanupTimeoutMs: 5,
+        cleanupRetryIntervalMs: 10,
+      });
+
+      await coordinator.start();
+      nativeLease.current.mockClear();
+      const acquireResult = coordinator.acquire().then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error })
+      );
+      await vi.advanceTimersByTimeAsync(5);
+      await flushMicrotasks(50);
+      const outcome = await acquireResult;
+
+      expect(outcome.ok).toBe(false);
+      expect(nativeLease.cancelAcquire).toHaveBeenCalledTimes(1);
+      expect(nativeLease.release).not.toHaveBeenCalled();
+      expect(applyStore).toHaveBeenCalledTimes(1);
+      expect(unlockLocal).toHaveBeenCalledTimes(1);
+      expect(locallyLocked).toBe(false);
+      expect(notifyLockRequested).not.toHaveBeenCalled();
+      expect(nativeLease.renew).not.toHaveBeenCalled();
+
+      acquireResponse.resolve();
+      await flushMicrotasks(50);
+      await expect(nativeLease.current()).resolves.toBeNull();
+      expect(nativeLease.cancelAcquire).toHaveBeenCalledTimes(1);
+      expect(applyStore).toHaveBeenCalledTimes(1);
+      expect(unlockLocal).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(nativeLease.renew).not.toHaveBeenCalled();
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the local lock closed until timed-out acquire cancellation is confirmed", async () => {
+    vi.useFakeTimers();
+    try {
+      const nativeAcquire = deferred<{
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      }>();
+      const firstCancellation = deferred<void>();
+      let locallyLocked = false;
+      const applyStore = vi.fn(async () => {});
+      const unlockLocal = vi.fn(() => {
+        locallyLocked = false;
+      });
+      const nativeLease = {
+        acquire: vi.fn(() => nativeAcquire.promise),
+        cancelAcquire: vi
+          .fn<(token: string) => Promise<void>>()
+          .mockImplementationOnce(() => firstCancellation.promise)
+          .mockImplementationOnce(async () => {}),
+        current: vi.fn(async () => null),
+        renew: vi.fn(),
+        activate: vi.fn(),
+        release: vi.fn(async () => true),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => ["main"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        applyStore,
+        nativeLease,
+        lockLocal: async () => {
+          locallyLocked = true;
+        },
+        unlockLocal,
+        bridgeTimeoutMs: 5,
+        cleanupTimeoutMs: 5,
+        cleanupRetryIntervalMs: 10,
+      });
+
+      await coordinator.start();
+      nativeLease.current.mockClear();
+      const acquireResult = coordinator.acquire().then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error })
+      );
+      await vi.advanceTimersByTimeAsync(5);
+      await flushMicrotasks(50);
+      expect(nativeLease.cancelAcquire).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(5);
+      await flushMicrotasks(50);
+      const outcome = await acquireResult;
+
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.error).toHaveProperty(
+          "message",
+          expect.stringContaining("acquire 취소 확인이 시간 초과")
+        );
+      }
+      expect(locallyLocked).toBe(true);
+      expect(unlockLocal).not.toHaveBeenCalled();
+      expect(applyStore).not.toHaveBeenCalled();
+      expect(nativeLease.current).not.toHaveBeenCalled();
+      expect(nativeLease.release).not.toHaveBeenCalled();
+
+      firstCancellation.resolve();
+      await vi.advanceTimersByTimeAsync(10);
+      await flushMicrotasks(50);
+
+      expect(nativeLease.cancelAcquire).toHaveBeenCalledTimes(2);
+      expect(applyStore).toHaveBeenCalledTimes(1);
+      expect(unlockLocal).toHaveBeenCalledTimes(1);
+      expect(locallyLocked).toBe(false);
+      expect(nativeLease.current).not.toHaveBeenCalled();
+      expect(nativeLease.release).not.toHaveBeenCalled();
+      await coordinator.stop();
     } finally {
       vi.useRealTimers();
     }

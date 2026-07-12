@@ -33,6 +33,7 @@ export type RestoreLockLease = {
 
 export type RestoreLockLeaseAdapter = {
   acquire: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
+  cancelAcquire?: (token: string) => Promise<void>;
   current: () => Promise<RestoreLockLease | null>;
   renew: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
   activate: (token: string, owner: string) => Promise<RestoreLockLease>;
@@ -110,6 +111,8 @@ export function createTauriRestoreLockLeaseAdapter(): RestoreLockLeaseAdapter {
   return {
     acquire: (token, owner, ttlMs) =>
       invoke<RestoreLockLease>("acquire_restore_lock_lease", { token, owner, ttlMs }),
+    cancelAcquire: (token) =>
+      invoke<void>("cancel_abandoned_restore_lock_acquire", { token }),
     current: () => invoke<RestoreLockLease | null>("current_restore_lock_lease"),
     renew: (token, owner, ttlMs) =>
       invoke<RestoreLockLease>("renew_restore_lock_lease", { token, owner, ttlMs }),
@@ -222,6 +225,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let pendingLocalRecovery: {
     token: string;
     finalApplyGeneration: number;
+    nativeAcquireCancellationComplete: boolean;
     nativeFinished: boolean;
     applyComplete: boolean;
     notificationComplete: boolean;
@@ -1322,6 +1326,30 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       cause: error,
     });
 
+  const attemptCancelAbandonedAcquire = async (
+    recovery: NonNullable<typeof pendingLocalRecovery>
+  ) => {
+    if (recovery.nativeAcquireCancellationComplete) {
+      return null;
+    }
+    if (!nativeLease?.cancelAcquire) {
+      return wrapNativeCleanupError(
+        new Error("복원 잠금 acquire 취소 bridge를 사용할 수 없습니다.")
+      );
+    }
+    const error = await runBoundedCleanup(
+      () => nativeLease.cancelAcquire!(recovery.token),
+      "복원 잠금 acquire 취소 확인이 시간 초과되었습니다."
+    );
+    if (!error) {
+      recovery.nativeAcquireCancellationComplete = true;
+      recovery.nativeFinished = true;
+      recovery.nativeComplete = true;
+      recovery.postRemovalVerificationComplete = !options.applyStore;
+    }
+    return error ? wrapNativeCleanupError(error) : null;
+  };
+
   const attemptFinishNativeLease = async (
     recovery: NonNullable<typeof pendingLocalRecovery>
   ) => {
@@ -1509,6 +1537,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   const isRecoveryComplete = (
     recovery: NonNullable<typeof pendingLocalRecovery>
   ) =>
+    recovery.nativeAcquireCancellationComplete &&
     recovery.nativeFinished &&
     recovery.applyComplete &&
     (recovery.notificationComplete ||
@@ -1520,6 +1549,11 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     recovery: NonNullable<typeof pendingLocalRecovery>
   ) => {
     const errors: unknown[] = [];
+    const cancellationError = await attemptCancelAbandonedAcquire(recovery);
+    if (cancellationError) {
+      errors.push(cancellationError);
+      return errors;
+    }
     const finishError = await attemptFinishNativeLease(recovery);
     if (finishError) {
       errors.push(finishError);
@@ -1714,6 +1748,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     pendingLocalRecovery = null;
     activeLeaseFailureToken = token;
     activeLeaseFailureGeneration = generation;
+    let nativeAcquireConfirmed = !nativeLease;
     let pending = false;
 
     try {
@@ -1721,13 +1756,20 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       const localDrain = options.lockLocal(token);
       void Promise.resolve(localDrain).catch(() => {});
       if (nativeLease) {
+        const nativeAcquirePromise = nativeLease.acquire(token, owner, leaseTtlMs);
+        // Late settlement is owned by the native cancellation tombstone, never coordinator state.
+        void nativeAcquirePromise.then(
+          () => {},
+          () => {}
+        );
         const acquired = await runWithTimeout(
-          () => nativeLease.acquire(token, owner, leaseTtlMs),
+          () => nativeAcquirePromise,
           "복원 잠금 lease 획득이 시간 초과되었습니다."
         );
         if (acquired.token !== token || acquired.owner !== owner) {
           throw new Error("복원 잠금 lease 소유자 확인에 실패했습니다.");
         }
+        nativeAcquireConfirmed = true;
         startLeaseRenewal(token, generation);
       }
 
@@ -1772,6 +1814,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       const recovery = {
         token,
         finalApplyGeneration: failedAcquireGeneration,
+        nativeAcquireCancellationComplete: nativeAcquireConfirmed,
         nativeFinished: !nativeLease?.finish,
         applyComplete: true,
         notificationComplete: false,
@@ -1818,6 +1861,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         : {
             token,
             finalApplyGeneration,
+            nativeAcquireCancellationComplete: true,
             nativeFinished: !nativeLease || !nativeLease.finish,
             applyComplete: !options.applyStore,
             notificationComplete: false,

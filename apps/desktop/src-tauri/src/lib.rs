@@ -35,6 +35,8 @@ const GOOGLE_OAUTH_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/aut
 const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_OAUTH_SCOPE: &str = "openid email profile";
 const GOOGLE_OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
+const RESTORE_ACQUIRE_CANCELLATION_TTL_MS: u64 = 60_000;
+const MAX_CANCELLED_RESTORE_ACQUIRES: usize = 256;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -54,7 +56,13 @@ struct MemoRecord {
 struct DatabaseState(Mutex<Connection>);
 
 #[derive(Default)]
-struct RestoreLockLeaseState(Mutex<Option<RestoreLockLease>>);
+struct RestoreLockLeaseData {
+  lease: Option<RestoreLockLease>,
+  cancelled_acquires: HashMap<String, SystemTime>,
+}
+
+#[derive(Default)]
+struct RestoreLockLeaseState(Mutex<RestoreLockLeaseData>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RestoreLockLease {
@@ -153,7 +161,7 @@ fn save_memo(
   memo: MemoRecord,
   restore_token: Option<String>,
 ) -> Result<MemoRecord, String> {
-  let mut lease = restore_lock
+  let mut restore_state = restore_lock
     .0
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
@@ -163,7 +171,7 @@ fn save_memo(
     .map_err(|_| "database lock is unavailable".to_string())?;
   save_memo_inner(
     &connection,
-    &mut lease,
+    &mut restore_state.lease,
     &memo,
     restore_token.as_deref(),
     SystemTime::now(),
@@ -206,22 +214,53 @@ fn acquire_restore_lock_lease(
   owner: String,
   ttl_ms: u64,
 ) -> Result<RestoreLockLeaseRecord, String> {
-  let mut lease = state
+  let mut restore_state = state
     .0
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  acquire_restore_lock_lease_inner(&mut lease, &token, &owner, ttl_ms, SystemTime::now())
+  acquire_restore_lock_lease_fenced_inner(
+    &mut restore_state,
+    &token,
+    &owner,
+    ttl_ms,
+    SystemTime::now(),
+  )
+}
+
+#[tauri::command]
+fn cancel_abandoned_restore_lock_acquire(
+  state: State<'_, RestoreLockLeaseState>,
+  token: String,
+) -> Result<(), String> {
+  let mut restore_state = state
+    .0
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  cancel_abandoned_restore_lock_acquire_inner(
+    &mut restore_state,
+    &token,
+    RESTORE_ACQUIRE_CANCELLATION_TTL_MS,
+    SystemTime::now(),
+  )
+  .map(|_| ())
 }
 
 #[tauri::command]
 fn current_restore_lock_lease(
   state: State<'_, RestoreLockLeaseState>,
 ) -> Result<Option<RestoreLockLeaseRecord>, String> {
-  let mut lease = state
+  let mut restore_state = state
     .0
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  Ok(current_restore_lock_lease_inner(&mut lease, SystemTime::now()))
+  prune_cancelled_restore_acquires(
+    &mut restore_state.cancelled_acquires,
+    SystemTime::now(),
+  );
+  Ok(current_restore_lock_lease_inner(
+    &mut restore_state.lease,
+    SystemTime::now(),
+  ))
 }
 
 #[tauri::command]
@@ -231,11 +270,17 @@ fn renew_restore_lock_lease(
   owner: String,
   ttl_ms: u64,
 ) -> Result<RestoreLockLeaseRecord, String> {
-  let mut lease = state
+  let mut restore_state = state
     .0
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  renew_restore_lock_lease_inner(&mut lease, &token, &owner, ttl_ms, SystemTime::now())
+  renew_restore_lock_lease_inner(
+    &mut restore_state.lease,
+    &token,
+    &owner,
+    ttl_ms,
+    SystemTime::now(),
+  )
 }
 
 #[tauri::command]
@@ -244,11 +289,16 @@ fn activate_restore_lock_lease(
   token: String,
   owner: String,
 ) -> Result<RestoreLockLeaseRecord, String> {
-  let mut lease = state
+  let mut restore_state = state
     .0
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  activate_restore_lock_lease_inner(&mut lease, &token, &owner, SystemTime::now())
+  activate_restore_lock_lease_inner(
+    &mut restore_state.lease,
+    &token,
+    &owner,
+    SystemTime::now(),
+  )
 }
 
 #[tauri::command]
@@ -258,12 +308,12 @@ fn finish_restore_lock_lease(
   owner: String,
   cleanup_ttl_ms: u64,
 ) -> Result<RestoreLockLeaseRecord, String> {
-  let mut lease = state
+  let mut restore_state = state
     .0
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
   finish_restore_lock_lease_inner(
-    &mut lease,
+    &mut restore_state.lease,
     &token,
     &owner,
     cleanup_ttl_ms,
@@ -277,16 +327,66 @@ fn release_restore_lock_lease(
   token: String,
   owner: String,
 ) -> Result<bool, String> {
-  let mut lease = state
+  let mut restore_state = state
     .0
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
   Ok(release_restore_lock_lease_inner(
-    &mut lease,
+    &mut restore_state.lease,
     &token,
     &owner,
     SystemTime::now(),
   ))
+}
+
+fn acquire_restore_lock_lease_fenced_inner(
+  state: &mut RestoreLockLeaseData,
+  token: &str,
+  owner: &str,
+  ttl_ms: u64,
+  now: SystemTime,
+) -> Result<RestoreLockLeaseRecord, String> {
+  validate_restore_lock_identity(token, owner)?;
+  prune_cancelled_restore_acquires(&mut state.cancelled_acquires, now);
+  if state.cancelled_acquires.contains_key(token) {
+    return Err("취소된 복원 잠금 acquire token은 다시 사용할 수 없습니다.".to_string());
+  }
+  acquire_restore_lock_lease_inner(&mut state.lease, token, owner, ttl_ms, now)
+}
+
+fn cancel_abandoned_restore_lock_acquire_inner(
+  state: &mut RestoreLockLeaseData,
+  token: &str,
+  tombstone_ttl_ms: u64,
+  now: SystemTime,
+) -> Result<bool, String> {
+  if token.trim().is_empty() {
+    return Err("복원 잠금 token은 비어 있을 수 없습니다.".to_string());
+  }
+  prune_cancelled_restore_acquires(&mut state.cancelled_acquires, now);
+  let removed = state
+    .lease
+    .as_ref()
+    .is_some_and(|current| current.token == token);
+  if removed {
+    state.lease = None;
+  }
+  if !state.cancelled_acquires.contains_key(token)
+    && state.cancelled_acquires.len() >= MAX_CANCELLED_RESTORE_ACQUIRES
+  {
+    return Err("복원 잠금 acquire 취소 기록이 가득 차 정리 후 재시도가 필요합니다.".to_string());
+  }
+  state
+    .cancelled_acquires
+    .insert(token.to_string(), expires_at(now, tombstone_ttl_ms));
+  Ok(removed)
+}
+
+fn prune_cancelled_restore_acquires(
+  cancelled_acquires: &mut HashMap<String, SystemTime>,
+  now: SystemTime,
+) {
+  cancelled_acquires.retain(|_, expires_at| *expires_at > now);
 }
 
 fn acquire_restore_lock_lease_inner(
@@ -438,11 +538,11 @@ fn claim_memo_window(
   memo_id: String,
   window_label: String,
 ) -> Result<MemoWindowClaim, String> {
-  let mut lease = restore_lock
+  let mut restore_state = restore_lock
     .0
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  ensure_no_live_restore_lock(&mut lease, SystemTime::now())?;
+  ensure_no_live_restore_lock(&mut restore_state.lease, SystemTime::now())?;
 
   let claim = {
     let mut owners = registry
@@ -1152,6 +1252,7 @@ pub fn run() {
       list_memos,
       save_memo,
       acquire_restore_lock_lease,
+      cancel_abandoned_restore_lock_acquire,
       current_restore_lock_lease,
       renew_restore_lock_lease,
       activate_restore_lock_lease,
@@ -1290,6 +1391,78 @@ mod tests {
       lease_time(2_100),
     ));
     assert!(current_restore_lock_lease_inner(&mut lease, lease_time(2_100)).is_none());
+  }
+
+  #[test]
+  fn cancelled_restore_acquire_rejects_when_cancel_wins_before_acquire() {
+    let mut state = RestoreLockLeaseData::default();
+
+    let removed = cancel_abandoned_restore_lock_acquire_inner(
+      &mut state,
+      "cancel-before-acquire",
+      100,
+      lease_time(2_200),
+    )
+    .expect("cancellation tombstone should be recorded");
+    assert!(!removed);
+
+    let late_acquire = acquire_restore_lock_lease_fenced_inner(
+      &mut state,
+      "cancel-before-acquire",
+      "main",
+      500,
+      lease_time(2_250),
+    );
+    assert!(late_acquire
+      .expect_err("cancelled token must reject a late acquire")
+      .contains("취소"));
+    assert!(state.lease.is_none());
+  }
+
+  #[test]
+  fn cancelled_restore_acquire_removes_existing_lease_and_prunes_tombstone() {
+    let mut state = RestoreLockLeaseData::default();
+    acquire_restore_lock_lease_fenced_inner(
+      &mut state,
+      "cancel-after-acquire",
+      "main",
+      500,
+      lease_time(2_300),
+    )
+    .expect("lease should acquire before cancellation");
+
+    let removed = cancel_abandoned_restore_lock_acquire_inner(
+      &mut state,
+      "cancel-after-acquire",
+      100,
+      lease_time(2_310),
+    )
+    .expect("existing lease cancellation should succeed");
+    assert!(removed);
+    assert!(state.lease.is_none());
+    assert!(acquire_restore_lock_lease_fenced_inner(
+      &mut state,
+      "cancel-after-acquire",
+      "main",
+      500,
+      lease_time(2_350),
+    )
+    .is_err());
+    assert_eq!(state.cancelled_acquires.len(), 1);
+
+    prune_cancelled_restore_acquires(
+      &mut state.cancelled_acquires,
+      lease_time(2_411),
+    );
+    assert!(state.cancelled_acquires.is_empty());
+    acquire_restore_lock_lease_fenced_inner(
+      &mut state,
+      "new-unique-token",
+      "main",
+      500,
+      lease_time(2_411),
+    )
+    .expect("pruned tombstones must not block unique future tokens");
   }
 
   #[test]
