@@ -1146,6 +1146,92 @@ describe("desktop App", () => {
     expect(screen.getByRole("status")).toHaveTextContent("메모 2개를 열었습니다.");
   });
 
+  it("fences a stale open-all read that resolves after the final restore apply", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const survivingMemo = createMemo({
+      id: "open-all-survivor",
+      now: "2026-07-13T09:20:00.000Z",
+      plainText: "복원 전 메모",
+    });
+    const removedByRestore = createMemo({
+      id: "open-all-removed",
+      now: "2026-07-13T09:21:00.000Z",
+      plainText: "복원에서 삭제된 메모",
+    });
+    const restoredMemo = {
+      ...survivingMemo,
+      plainText: "최종 복원 메모",
+      updatedAt: "2026-07-13T09:22:00.000Z",
+    };
+    tauriRepositoryState.set(survivingMemo.id, survivingMemo);
+    tauriRepositoryState.set(removedByRestore.id, removedByRestore);
+    const staleOpenAllRead = deferred<typeof survivingMemo[]>();
+    let deferNextRead = false;
+    mockListMemos.mockImplementation(async () => {
+      if (deferNextRead) {
+        deferNextRead = false;
+        return staleOpenAllRead.promise;
+      }
+      return [...tauriRepositoryState.values()];
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("복원 전 메모")).toBeInTheDocument();
+      expect(tauriEventState.trayOpenAllMemosListener).toEqual(expect.any(Function));
+      expect(tauriEventState.restoreLockRequestedListener).not.toBeNull();
+    });
+    mockOpenMemoWindow.mockClear();
+
+    deferNextRead = true;
+    let openAllPromise!: Promise<void>;
+    act(() => {
+      openAllPromise = Promise.resolve(tauriEventState.trayOpenAllMemosListener?.());
+    });
+    await waitFor(() => expect(mockListMemos).toHaveBeenCalledTimes(2));
+
+    nativeLeaseState.lease = {
+      token: "open-all-restore",
+      owner: "restore-owner",
+      expiresAtMs: Date.now() + 10_000,
+      operationActive: true,
+    };
+    await act(async () => {
+      await tauriEventState.restoreLockRequestedListener?.({ token: "open-all-restore" });
+    });
+    tauriRepositoryState.clear();
+    tauriRepositoryState.set(restoredMemo.id, restoredMemo);
+    await act(async () => {
+      await tauriEventState.restoreStoreApplyRequestedListener?.({
+        token: "open-all-restore",
+        generation: 1,
+      });
+    });
+    nativeLeaseState.lease = null;
+    await act(async () => {
+      tauriEventState.restoreLockReleasedListener?.({
+        token: "open-all-restore",
+        finalApplyGeneration: 2,
+      });
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("최종 복원 메모")).toBeInTheDocument();
+    });
+
+    staleOpenAllRead.resolve([survivingMemo, removedByRestore]);
+    await act(async () => {
+      await openAllPromise;
+    });
+
+    expect(screen.getByDisplayValue("최종 복원 메모")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("복원 전 메모")).not.toBeInTheDocument();
+    expect(mockOpenMemoWindow).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: removedByRestore.id })
+    );
+  });
+
   it("creates a new independent memo when the tray asks to create a memo", async () => {
     setTauriRuntime(true);
     mockGetStartupEnabled.mockResolvedValue(false);
@@ -2768,6 +2854,12 @@ describe("desktop App", () => {
       tauriEventState.restoreLockReleasedListener?.({ token: "remote-lock-token" });
       await Promise.resolve();
     });
+    expect(screen.getByLabelText("메모 내용")).toHaveAttribute("readonly");
+    nativeLeaseState.lease = null;
+    await act(async () => {
+      tauriEventState.restoreLockReleasedListener?.({ token: "remote-lock-token" });
+      await Promise.resolve();
+    });
     await waitFor(() => {
       expect(screen.getByLabelText("메모 내용")).not.toHaveAttribute("readonly");
     });
@@ -2792,6 +2884,12 @@ describe("desktop App", () => {
     fireEvent.click(screen.getByRole("button", { name: "새 메모" }));
     expect(mockSaveMemo).not.toHaveBeenCalled();
 
+    await act(async () => {
+      tauriEventState.restoreLockReleasedListener?.({ token: "startup-lease-token" });
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "새 메모" })).toBeDisabled();
+    nativeLeaseState.lease = null;
     await act(async () => {
       tauriEventState.restoreLockReleasedListener?.({ token: "startup-lease-token" });
       await Promise.resolve();

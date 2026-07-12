@@ -48,7 +48,10 @@ import {
   WEB_MEMO_STORAGE_CHANGED_EVENT,
   WEB_MEMO_STORAGE_KEY,
 } from "./adapters/localStorageMemoRepository";
-import { WebMutationBarrier } from "./adapters/webMutationBarrier";
+import {
+  WEB_LOCKS_REQUIRED_MESSAGE,
+  WebMutationBarrier,
+} from "./adapters/webMutationBarrier";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
@@ -175,6 +178,7 @@ function broadcastRestoreSafetyChanged() {
 
 export function WebApp() {
   const mutationBarrier = useMemo(() => new WebMutationBarrier(), []);
+  const supportsSafeMutations = mutationBarrier.isSupported();
   const repository = useMemo<MemoRepository>(
     () => createRepository(mutationBarrier),
     [mutationBarrier]
@@ -242,22 +246,27 @@ export function WebApp() {
   }, [firebaseClientEnv, hasFirebaseConfigSet]);
 
   const reloadMemos = useCallback(async () => {
-    const epochBeforeRead = mutationBarrier.getEpoch();
-    const all = await repository.listMemos();
-    const epochAfterRead = mutationBarrier.getEpoch();
-    if (epochBeforeRead !== epochAfterRead) {
-      throw new Error("메모를 읽는 동안 다른 탭의 복원 리비전이 변경되었습니다.");
+    const readAndApply = async () => {
+      const all = await repository.listMemos();
+      setMemos(sortMemos(all));
+      return all;
+    };
+    if (!supportsSafeMutations) {
+      return readAndApply();
     }
-    mutationBarrier.markObservedEpoch(epochAfterRead);
-    setMemos(sortMemos(all));
-  }, [mutationBarrier, repository]);
+    return mutationBarrier.runReconciliation(readAndApply);
+  }, [mutationBarrier, repository, supportsSafeMutations]);
 
   useEffect(() => {
     let remoteReleaseGeneration = 0;
     let remoteReleasePromise: Promise<void> | null = null;
     let revisionReloadPromise: Promise<void> | null = null;
     const reconcileObservedEpoch = (durableEpoch: number) => {
-      if (restoreLockRef.current || revisionReloadPromise) {
+      if (
+        !supportsSafeMutations ||
+        restoreLockRef.current ||
+        revisionReloadPromise
+      ) {
         return;
       }
       try {
@@ -267,7 +276,22 @@ export function WebApp() {
       } catch {
         // The first successful repository read establishes the observed epoch.
       }
+      const releaseToken = `remote:revision:${durableEpoch}:${++remoteReleaseGeneration}`;
+      restoreLockRef.current = releaseToken;
+      setIsRestoreLocked(true);
       revisionReloadPromise = reloadMemos()
+        .then(() => {
+          if (restoreLockRef.current !== releaseToken) {
+            return;
+          }
+          const currentLease = mutationBarrier.getRemoteLease();
+          if (currentLease) {
+            restoreLockRef.current = `remote:${currentLease.token}`;
+            return;
+          }
+          restoreLockRef.current = null;
+          setIsRestoreLocked(false);
+        })
         .catch((error) => {
           setBackupStatus(`메모 저장소 리비전 적용 실패: ${getErrorMessage(error)}`);
         })
@@ -315,7 +339,7 @@ export function WebApp() {
           remoteReleasePromise = null;
         });
     });
-  }, [mutationBarrier, reloadMemos]);
+  }, [mutationBarrier, reloadMemos, supportsSafeMutations]);
 
   useEffect(() => {
     const reloadWhenUnlocked = () => {
@@ -343,13 +367,17 @@ export function WebApp() {
 
   useEffect(() => {
     setBackupStatus(
-      hasFirebaseConfigSet ? BROWSER_BACKUP_READY_MESSAGE : FIREBASE_UNAVAILABLE_MESSAGE
+      !supportsSafeMutations
+        ? WEB_LOCKS_REQUIRED_MESSAGE
+        : hasFirebaseConfigSet
+          ? BROWSER_BACKUP_READY_MESSAGE
+          : FIREBASE_UNAVAILABLE_MESSAGE
     );
     setServicesAvailableState(hasFirebaseConfigSet);
     void reloadMemos().catch((error) => {
       setBackupStatus(`메모 저장소 읽기 실패: ${getErrorMessage(error)}`);
     });
-  }, [hasFirebaseConfigSet, reloadMemos]);
+  }, [hasFirebaseConfigSet, reloadMemos, supportsSafeMutations]);
 
   useEffect(() => {
     if (!restoreSafetyStorage) {
@@ -508,6 +536,7 @@ export function WebApp() {
     }
     let expectedEpoch: number;
     try {
+      mutationBarrier.assertSupported();
       expectedEpoch = mutationBarrier.getObservedEpoch();
     } catch (error) {
       return Promise.reject(error);
@@ -692,6 +721,12 @@ export function WebApp() {
 
   const handleMemoChange = (nextMemo: Memo) => {
     if (restoreLockRef.current) {
+      return;
+    }
+    try {
+      mutationBarrier.assertSupported();
+    } catch (error) {
+      setBackupStatus(`메모 저장 실패: ${getErrorMessage(error)}`);
       return;
     }
     upsertMemo(nextMemo);
@@ -1262,7 +1297,7 @@ export function WebApp() {
         onMemoChange={handleMemoChange}
         onDeleteMemo={handleDeleteMemo}
         onCloseMemo={handleCloseMemo}
-        isMemoEditingDisabled={isRestoreLocked}
+        isMemoEditingDisabled={isRestoreLocked || !supportsSafeMutations}
         actions={
           <button
             type="button"

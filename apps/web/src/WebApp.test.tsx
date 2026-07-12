@@ -279,6 +279,31 @@ describe("WebApp", () => {
     expect(screen.queryByRole("textbox", { name: "메모 내용" })).not.toBeInTheDocument();
   });
 
+  it("does not show an optimistic edit when Web Locks are unavailable", async () => {
+    const memo = createMemo({
+      id: "unsupported-existing-edit",
+      now: "2026-07-13T09:10:00.000Z",
+      plainText: "저장 가능한 것처럼 보이면 안 되는 메모",
+    });
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([memo])]],
+    });
+    Reflect.deleteProperty(navigator, "locks");
+    render(<WebApp />);
+
+    const editor = await screen.findByRole("textbox", { name: "메모 내용" });
+    fireEvent.change(editor, {
+      target: { value: "저장되지 않은 낙관적 편집" },
+    });
+
+    expect(editor).toHaveValue(memo.plainText);
+    expect(editor).toHaveAttribute("readonly");
+    expect(screen.getByRole("status")).toHaveTextContent("Web Locks");
+    expect(
+      JSON.parse(window.localStorage.getItem(LOCAL_MEMO_KEY) ?? "[]")[0].plainText
+    ).toBe(memo.plainText);
+  });
+
   it("exports TXT backup for edited memo", async () => {
     const user = userEvent.setup();
     const appendSpy = vi.spyOn(document.body, "append");

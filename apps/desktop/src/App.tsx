@@ -400,6 +400,24 @@ export function App() {
     setUser(null);
   }, [firebaseClientEnv, hasFirebaseConfigSet]);
 
+  const runAuthoritativeMemoReload = useCallback(
+    async (isStillCurrent?: () => boolean) => {
+      const reloadGeneration = ++memoReloadGenerationRef.current;
+      const all = await repository.listMemos();
+      if (
+        memoReloadGenerationRef.current !== reloadGeneration ||
+        (isStillCurrent && !isStillCurrent())
+      ) {
+        return null;
+      }
+      memosRef.current = all;
+      setMemos(all);
+      setHasLoadedMemos(true);
+      return { memos: all, generation: reloadGeneration };
+    },
+    [repository]
+  );
+
   const reloadMemos = useCallback(async () => {
     const activeRestoreToken = restoreLockRef.current;
     const activeRestoreApply = restoreStoreApplyGenerationRef.current;
@@ -407,17 +425,10 @@ export function App() {
       activeRestoreToken &&
       activeRestoreApply?.token === activeRestoreToken
     ) {
-      return;
+      return null;
     }
-    const reloadGeneration = ++memoReloadGenerationRef.current;
-    const all = await repository.listMemos();
-    if (memoReloadGenerationRef.current !== reloadGeneration) {
-      return;
-    }
-    memosRef.current = all;
-    setMemos(all);
-    setHasLoadedMemos(true);
-  }, [repository]);
+    return runAuthoritativeMemoReload();
+  }, [runAuthoritativeMemoReload]);
   restoreStoreApplyRef.current = async ({ token, generation }) => {
     const currentApply = restoreStoreApplyGenerationRef.current;
     if (currentApply?.token === token && generation < currentApply.generation) {
@@ -435,21 +446,14 @@ export function App() {
       return inFlight.promise;
     }
     restoreStoreApplyGenerationRef.current = { token, generation };
-    const reloadGeneration = ++memoReloadGenerationRef.current;
     const applyPromise = (async () => {
-      const all = await repository.listMemos();
-      const latestApply = restoreStoreApplyGenerationRef.current;
-      if (
-        latestApply?.token !== token ||
-        latestApply.generation !== generation ||
-        memoReloadGenerationRef.current !== reloadGeneration
-      ) {
-        return;
+      const appliedReload = await runAuthoritativeMemoReload(() => {
+        const latestApply = restoreStoreApplyGenerationRef.current;
+        return latestApply?.token === token && latestApply.generation === generation;
+      });
+      if (appliedReload) {
+        restoreStoreAppliedRef.current = { token, generation };
       }
-      memosRef.current = all;
-      setMemos(all);
-      setHasLoadedMemos(true);
-      restoreStoreAppliedRef.current = { token, generation };
     })();
     restoreStoreApplyInFlightRef.current = {
       token,
@@ -1307,9 +1311,17 @@ export function App() {
     }
 
     await waitForPendingPersists();
-    const storedMemos = sortMemos(await repository.listMemos());
+    const reloaded = await reloadMemos();
+    if (
+      !reloaded ||
+      restoreLockRef.current ||
+      !restoreLockReadyRef.current ||
+      memoReloadGenerationRef.current !== reloaded.generation
+    ) {
+      return;
+    }
+    const storedMemos = sortMemos(reloaded.memos);
     const visibleStoredMemos = storedMemos.filter((memo) => memo.deletedAt === null);
-
     memosRef.current = storedMemos;
     setMemos(storedMemos);
 
@@ -1328,7 +1340,10 @@ export function App() {
     }
 
     for (const memo of visibleStoredMemos) {
-      if (restoreLockRef.current) {
+      if (
+        restoreLockRef.current ||
+        memoReloadGenerationRef.current !== reloaded.generation
+      ) {
         return;
       }
       if (memo.id === mainWindowMemo.id) {

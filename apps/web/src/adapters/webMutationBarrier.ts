@@ -124,6 +124,9 @@ export class WebMutationBarrier {
   }
 
   markObservedEpoch(epoch: number) {
+    if ((this.activeWebLocks.get(MUTATION_LOCK_NAME) ?? 0) === 0) {
+      throw new Error("탭 간 변경 잠금 안에서만 메모 리비전을 확정할 수 있습니다.");
+    }
     if (!Number.isSafeInteger(epoch) || epoch < 0 || this.getEpoch() !== epoch) {
       throw new Error("메모를 읽는 동안 다른 탭의 복원 리비전이 변경되었습니다.");
     }
@@ -158,21 +161,36 @@ export class WebMutationBarrier {
     return parsed;
   }
 
-  private readLiveLease(): RestoreLease | null {
-    const storage = getStorage();
-    const raw = storage.getItem(RESTORE_LEASE_STORAGE_KEY);
+  private readStoredLease(): RestoreLease | null {
+    const raw = getStorage().getItem(RESTORE_LEASE_STORAGE_KEY);
     if (raw === null) {
       return null;
     }
-    const parsed = this.parseStoredLease(raw);
-    if (parsed.expiresAtMs <= Date.now()) {
-      if (storage.getItem(RESTORE_LEASE_STORAGE_KEY) === raw) {
-        storage.removeItem(RESTORE_LEASE_STORAGE_KEY);
-        this.dispatchLeaseChanged();
-      }
-      return null;
+    return this.parseStoredLease(raw);
+  }
+
+  private readLiveLease(): RestoreLease | null {
+    const stored = this.readStoredLease();
+    return stored && stored.expiresAtMs > Date.now() ? stored : null;
+  }
+
+  private clearExpiredLeaseWhileMutationLocked() {
+    if ((this.activeWebLocks.get(MUTATION_LOCK_NAME) ?? 0) === 0) {
+      throw new Error("만료된 복원 알림은 탭 간 변경 잠금 안에서만 정리할 수 있습니다.");
     }
-    return parsed;
+    const storage = getStorage();
+    const raw = storage.getItem(RESTORE_LEASE_STORAGE_KEY);
+    if (raw === null) {
+      return;
+    }
+    const current = this.parseStoredLease(raw);
+    if (current.owner === this.owner || current.expiresAtMs > Date.now()) {
+      return;
+    }
+    if (storage.getItem(RESTORE_LEASE_STORAGE_KEY) === raw) {
+      storage.removeItem(RESTORE_LEASE_STORAGE_KEY);
+      this.dispatchLeaseChanged();
+    }
   }
 
   private writeLease(lease: RestoreLease) {
@@ -215,13 +233,21 @@ export class WebMutationBarrier {
   }
 
   assertMutationWriteAllowed() {
-    if (!getLockRequest()) {
-      throw new Error(WEB_LOCKS_REQUIRED_MESSAGE);
-    }
+    this.assertSupported();
     if ((this.activeWebLocks.get(MUTATION_LOCK_NAME) ?? 0) > 0) {
       return;
     }
     throw new Error("탭 간 변경 잠금 밖에서는 메모 저장소를 변경할 수 없습니다.");
+  }
+
+  isSupported() {
+    return getLockRequest() !== null;
+  }
+
+  assertSupported() {
+    if (!this.isSupported()) {
+      throw new Error(WEB_LOCKS_REQUIRED_MESSAGE);
+    }
   }
 
   getRemoteLease(): RestoreLease | null {
@@ -231,6 +257,7 @@ export class WebMutationBarrier {
 
   runMutation<T>(expectedEpoch: number, operation: () => Promise<T>) {
     return this.runExclusive(MUTATION_LOCK_NAME, async () => {
+      this.clearExpiredLeaseWhileMutationLocked();
       if (this.getEpoch() !== expectedEpoch) {
         throw new Error(
           "다른 탭의 복원 이후 대기 중이던 오래된 메모 변경을 취소했습니다."
@@ -243,14 +270,56 @@ export class WebMutationBarrier {
     });
   }
 
+  runReconciliation<T>(operation: () => Promise<T>) {
+    const reconcileWhileLocked = async () => {
+      this.clearExpiredLeaseWhileMutationLocked();
+      const epochBeforeRead = this.getEpoch();
+      const result = await operation();
+      const epochAfterRead = this.getEpoch();
+      if (epochBeforeRead !== epochAfterRead) {
+        throw new Error("메모를 읽는 동안 다른 탭의 복원 리비전이 변경되었습니다.");
+      }
+      this.markObservedEpoch(epochAfterRead);
+      return result;
+    };
+    if ((this.activeWebLocks.get(MUTATION_LOCK_NAME) ?? 0) > 0) {
+      return reconcileWhileLocked();
+    }
+    return this.runExclusive(MUTATION_LOCK_NAME, reconcileWhileLocked);
+  }
+
   async runRestore<T>(operation: () => Promise<T>): Promise<T> {
     const token = createToken("web-restore");
     let leaseAcquired = false;
-    try {
-      await this.runExclusive(RESTORE_LEASE_LOCK_NAME, async () => {
-        const current = this.readLiveLease();
-        if (current) {
+
+    const preparationFailure = (error: unknown, cleanupErrors: unknown[] = []) => {
+      if (error instanceof Error && error.message.includes("다른 탭에서 복원")) {
+        return (
+          combineErrors(
+            [error, ...cleanupErrors],
+            "복원 잠금 거부와 정리가 함께 실패했습니다"
+          ) ?? error
+        );
+      }
+      const contextual = new Error(
+        `복원 안전 지점 및 탭 간 잠금을 저장하지 못했습니다. 저장 공간을 확인해 주세요. ${getErrorMessage(error)}`
+      );
+      return (
+        combineErrors(
+          [contextual, error, ...cleanupErrors],
+          "복원 잠금 준비 및 정리에 실패했습니다"
+        ) ?? contextual
+      );
+    };
+
+    const prepareLease = (replaceExpired: boolean) =>
+      this.runExclusive(RESTORE_LEASE_LOCK_NAME, async () => {
+        const stored = this.readStoredLease();
+        if (stored && stored.expiresAtMs > Date.now()) {
           throw new Error("다른 탭에서 복원 작업이 진행 중입니다.");
+        }
+        if (stored && !replaceExpired) {
+          return false;
         }
         this.writeEpoch(this.getEpoch() + 1);
         this.writeLease({
@@ -260,84 +329,115 @@ export class WebMutationBarrier {
           expiresAtMs: Date.now() + this.leaseTtlMs,
         });
         leaseAcquired = true;
+        return true;
       });
-    } catch (error) {
-      const cleanupErrors: unknown[] = [];
-      if (leaseAcquired) {
-        try {
-          this.clearLease(token);
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-      }
-      if (error instanceof Error && error.message.includes("다른 탭에서 복원")) {
-        const combined = combineErrors(
-          [error, ...cleanupErrors],
-          "복원 잠금 거부와 정리가 함께 실패했습니다"
-        );
-        throw combined ?? error;
-      }
-      const contextual = new Error(
-        `복원 안전 지점 및 탭 간 잠금을 저장하지 못했습니다. 저장 공간을 확인해 주세요. ${getErrorMessage(error)}`
-      );
-      const combined = combineErrors(
-        [contextual, error, ...cleanupErrors],
-        "복원 잠금 준비 및 정리에 실패했습니다"
-      );
-      throw combined ?? contextual;
-    }
 
-    let heartbeatError: unknown;
-    const heartbeatId = window.setInterval(() => {
-      if (heartbeatError) {
-        return;
-      }
-      try {
-        const current = this.readLiveLease();
-        if (current?.token !== token || current.owner !== this.owner) {
-          heartbeatError = new Error("탭 간 복원 잠금 소유권을 잃었습니다.");
+    const startHeartbeat = () => {
+      let heartbeatError: unknown;
+      const heartbeatId = window.setInterval(() => {
+        if (heartbeatError) {
           return;
         }
-        this.writeLease({
-          ...current,
-          expiresAtMs: Date.now() + this.leaseTtlMs,
-        });
-      } catch (error) {
-        heartbeatError = error;
-      }
-    }, this.heartbeatMs);
+        try {
+          const current = this.readLiveLease();
+          if (current?.token !== token || current.owner !== this.owner) {
+            heartbeatError = new Error("탭 간 복원 잠금 소유권을 잃었습니다.");
+            return;
+          }
+          this.writeLease({
+            ...current,
+            expiresAtMs: Date.now() + this.leaseTtlMs,
+          });
+        } catch (error) {
+          heartbeatError = error;
+        }
+      }, this.heartbeatMs);
+      return () => {
+        window.clearInterval(heartbeatId);
+        return heartbeatError;
+      };
+    };
 
-    const errors: unknown[] = [];
-    let result!: T;
-    try {
-      result = await this.runExclusive(MUTATION_LOCK_NAME, async () => {
+    const executeOwnedRestore = async (stopHeartbeat: () => unknown) => {
+      const errors: unknown[] = [];
+      let result!: T;
+      try {
         const current = this.readLiveLease();
         if (current?.token !== token || current.owner !== this.owner) {
           throw new Error("탭 간 복원 잠금 소유권을 잃었습니다.");
         }
-        return operation();
-      });
-    } catch (error) {
-      errors.push(error);
-    } finally {
-      window.clearInterval(heartbeatId);
-      if (heartbeatError) {
-        errors.push(heartbeatError);
-      }
-      try {
-        await this.runExclusive(RESTORE_LEASE_LOCK_NAME, async () => {
-          this.clearLease(token);
-        });
+        result = await operation();
       } catch (error) {
         errors.push(error);
+      } finally {
+        const heartbeatError = stopHeartbeat();
+        if (heartbeatError) {
+          errors.push(heartbeatError);
+        }
+        try {
+          await this.runExclusive(RESTORE_LEASE_LOCK_NAME, async () => {
+            this.clearLease(token);
+          });
+          leaseAcquired = false;
+        } catch (error) {
+          errors.push(error);
+        }
       }
+      const combined = combineErrors(errors, "웹 복원 작업 및 잠금 정리에 실패했습니다");
+      if (combined !== undefined) {
+        throw combined;
+      }
+      return result;
+    };
+
+    let preparedEarly: boolean;
+    try {
+      preparedEarly = await prepareLease(false);
+    } catch (error) {
+      throw preparationFailure(error);
     }
 
-    const combined = combineErrors(errors, "웹 복원 작업 및 잠금 정리에 실패했습니다");
-    if (combined !== undefined) {
-      throw combined;
+    if (!preparedEarly) {
+      return this.runExclusive(MUTATION_LOCK_NAME, async () => {
+        try {
+          await prepareLease(true);
+        } catch (error) {
+          throw preparationFailure(error);
+        }
+        return executeOwnedRestore(startHeartbeat());
+      });
     }
-    return result;
+
+    const stopHeartbeat = startHeartbeat();
+    let enteredMutationLock = false;
+    try {
+      return await this.runExclusive(MUTATION_LOCK_NAME, async () => {
+        enteredMutationLock = true;
+        return executeOwnedRestore(stopHeartbeat);
+      });
+    } catch (error) {
+      if (enteredMutationLock) {
+        throw error;
+      }
+      const cleanupErrors: unknown[] = [];
+      const heartbeatError = stopHeartbeat();
+      if (heartbeatError) {
+        cleanupErrors.push(heartbeatError);
+      }
+      if (leaseAcquired) {
+        try {
+          await this.runExclusive(RESTORE_LEASE_LOCK_NAME, async () => {
+            this.clearLease(token);
+          });
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      throw combineErrors(
+        [error, ...cleanupErrors],
+        "웹 복원 잠금 진입 및 정리에 실패했습니다"
+      );
+    }
   }
 
   subscribe(listener: (lease: RestoreLease | null, epoch: number) => void) {

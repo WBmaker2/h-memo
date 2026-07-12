@@ -76,6 +76,323 @@ describe("restore lock coordinator", () => {
     expect(nativeLease.release).toHaveBeenCalledWith(token, "main");
   });
 
+  it("retains the inactive native lease through final authority and release notification", async () => {
+    const releaseNotification = deferred<void>();
+    const events: string[] = [];
+    let lease: {
+      token: string;
+      owner: string;
+      expiresAtMs: number;
+      operationActive: boolean;
+    } | null = null;
+    const nativeLease = {
+      acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+        lease = {
+          token,
+          owner,
+          expiresAtMs: Date.now() + ttlMs,
+          operationActive: false,
+        };
+        return lease;
+      }),
+      current: vi.fn(async () => lease),
+      renew: vi.fn(async (token: string, owner: string, ttlMs: number) => ({
+        token,
+        owner,
+        expiresAtMs: Date.now() + ttlMs,
+        operationActive: lease?.operationActive ?? false,
+      })),
+      activate: vi.fn(async () => {
+        if (!lease) {
+          throw new Error("lease missing");
+        }
+        lease.operationActive = true;
+        return lease;
+      }),
+      finish: vi.fn(async (_token: string, _owner: string, cleanupTtlMs: number) => {
+        if (!lease) {
+          throw new Error("lease missing");
+        }
+        events.push("finish");
+        lease.operationActive = false;
+        lease.expiresAtMs = Date.now() + cleanupTtlMs;
+        return lease;
+      }),
+      release: vi.fn(async () => {
+        events.push("native-release");
+        lease = null;
+        return true;
+      }),
+    };
+    const unlockLocal = vi.fn(() => {
+      events.push("local-unlock");
+    });
+    const notifyLockReleased = vi.fn(async () => {
+      events.push("notify-start");
+      await releaseNotification.promise;
+      events.push("notify-end");
+    });
+    const coordinator = createRestoreLockCoordinator({
+      getCurrentWindowLabel: () => "main",
+      listLiveWindowLabels: async () => ["main"],
+      notifyLockRequested: async () => {},
+      listenLockRequested: async () => () => {},
+      notifyLockAcknowledged: async () => {},
+      listenLockAcknowledged: async () => () => {},
+      notifyLockReleased,
+      listenLockReleased: async () => () => {},
+      applyStore: async () => {
+        events.push("owner-apply");
+      },
+      nativeLease,
+      lockLocal: async () => {},
+      unlockLocal,
+      bridgeTimeoutMs: 100,
+      cleanupTimeoutMs: 100,
+    });
+
+    const run = coordinator.run(async () => "restored");
+    await vi.waitFor(() => expect(notifyLockReleased).toHaveBeenCalledTimes(1));
+
+    expect(lease).toEqual(expect.objectContaining({ operationActive: false }));
+    expect(nativeLease.release).not.toHaveBeenCalled();
+    expect(unlockLocal).not.toHaveBeenCalled();
+    expect(events).toEqual(["finish", "owner-apply", "notify-start"]);
+
+    releaseNotification.resolve();
+    await expect(run).resolves.toBe("restored");
+    expect(events).toEqual([
+      "finish",
+      "owner-apply",
+      "notify-start",
+      "notify-end",
+      "native-release",
+      "local-unlock",
+    ]);
+  });
+
+  it("revalidates owner state when the inactive native lease disappears unexpectedly", async () => {
+    let durableState = "restored-state";
+    let lease: {
+      token: string;
+      owner: string;
+      expiresAtMs: number;
+      operationActive: boolean;
+    } | null = null;
+    const appliedStates: string[] = [];
+    const nativeLease = {
+      acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+        lease = {
+          token,
+          owner,
+          expiresAtMs: Date.now() + ttlMs,
+          operationActive: false,
+        };
+        return lease;
+      }),
+      current: vi.fn(async () => lease),
+      renew: vi.fn(async (token: string, owner: string, ttlMs: number) => ({
+        token,
+        owner,
+        expiresAtMs: Date.now() + ttlMs,
+        operationActive: lease?.operationActive ?? false,
+      })),
+      activate: vi.fn(async () => {
+        if (!lease) {
+          throw new Error("lease missing");
+        }
+        lease.operationActive = true;
+        return lease;
+      }),
+      finish: vi.fn(async () => {
+        if (!lease) {
+          throw new Error("lease missing");
+        }
+        lease.operationActive = false;
+        return lease;
+      }),
+      release: vi.fn(async () => {
+        lease = null;
+        durableState = "newer-state-after-expiry";
+        return false;
+      }),
+    };
+    const coordinator = createRestoreLockCoordinator({
+      getCurrentWindowLabel: () => "main",
+      listLiveWindowLabels: async () => ["main"],
+      notifyLockRequested: async () => {},
+      listenLockRequested: async () => () => {},
+      notifyLockAcknowledged: async () => {},
+      listenLockAcknowledged: async () => () => {},
+      notifyLockReleased: async () => {},
+      listenLockReleased: async () => () => {},
+      applyStore: async () => {
+        appliedStates.push(durableState);
+      },
+      nativeLease,
+      lockLocal: async () => {},
+      unlockLocal: vi.fn(),
+    });
+
+    await expect(coordinator.run(async () => "restored")).resolves.toBe("restored");
+
+    expect(appliedStates).toEqual([
+      "restored-state",
+      "newer-state-after-expiry",
+    ]);
+  });
+
+  it("keeps a remote window locked on release until the native lease disappears", async () => {
+    vi.useFakeTimers();
+    try {
+      const token = "retained-release-token";
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = {
+        token,
+        owner: "main",
+        expiresAtMs: Date.now() + 10_000,
+        operationActive: true,
+      };
+      let released:
+        | ((payload: {
+            token: string;
+            finalApplyGeneration?: number;
+          }) => void | Promise<void>)
+        | null = null;
+      const applyStore = vi.fn(async () => {});
+      const unlockLocal = vi.fn();
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "memo-1",
+        listLiveWindowLabels: async () => ["memo-1"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async (handler) => {
+          released = handler;
+          return () => {};
+        },
+        applyStore,
+        nativeLease: {
+          acquire: vi.fn(),
+          current: vi.fn(async () => lease),
+          renew: vi.fn(),
+          activate: vi.fn(),
+          release: vi.fn(),
+        },
+        lockLocal: async () => {},
+        unlockLocal,
+        leasePollIntervalMs: 250,
+      });
+
+      await coordinator.start();
+      lease.operationActive = false;
+      await released!({ token, finalApplyGeneration: 5 });
+
+      expect(applyStore).toHaveBeenCalledWith({ token, generation: 5 });
+      expect(unlockLocal).not.toHaveBeenCalled();
+
+      lease = null;
+      await vi.advanceTimersByTimeAsync(250);
+
+      expect(applyStore).toHaveBeenLastCalledWith({ token, generation: 6 });
+      expect(unlockLocal).toHaveBeenCalledWith(token);
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stop cancels renewal for a never-settling callback and fences late writes", async () => {
+    vi.useFakeTimers({ now: new Date("2026-07-13T09:30:00.000Z") });
+    try {
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = null;
+      const nativeLease = {
+        acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          lease = {
+            token,
+            owner,
+            expiresAtMs: Date.now() + ttlMs,
+            operationActive: false,
+          };
+          return lease;
+        }),
+        current: vi.fn(async () => {
+          if (lease && lease.expiresAtMs <= Date.now()) {
+            lease = null;
+          }
+          return lease;
+        }),
+        renew: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.expiresAtMs = Date.now() + ttlMs;
+          return { ...lease, token, owner };
+        }),
+        activate: vi.fn(async () => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.operationActive = true;
+          return lease;
+        }),
+        finish: vi.fn(),
+        release: vi.fn(),
+      };
+      const neverSettles = deferred<void>();
+      let assertActive: (() => void) | null = null;
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => ["main"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        nativeLease,
+        lockLocal: async () => {},
+        unlockLocal: vi.fn(),
+        leaseTtlMs: 40,
+        leaseRenewIntervalMs: 10,
+        bridgeTimeoutMs: 5,
+        cleanupTimeoutMs: 30,
+      });
+
+      const run = coordinator.run(async (_token, guard) => {
+        assertActive = guard;
+        await neverSettles.promise;
+      });
+      void run.catch(() => {});
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(nativeLease.renew).toHaveBeenCalledTimes(1);
+
+      const stop = coordinator.stop();
+      const renewCountAtStop = nativeLease.renew.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(31);
+      await stop;
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(nativeLease.renew).toHaveBeenCalledTimes(renewCountAtStop);
+      await expect(nativeLease.current()).resolves.toBeNull();
+      expect(() => assertActive?.()).toThrow("종료");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("times out when a live window never acknowledges", async () => {
     vi.useFakeTimers();
     try {
@@ -182,7 +499,9 @@ describe("restore lock coordinator", () => {
         operationActive: boolean;
       } | null = null;
       let requestHandler: ((payload: { token: string }) => void | Promise<void>) | null = null;
-      let releaseHandler: ((payload: { token: string }) => void) | null = null;
+      let releaseHandler:
+        | ((payload: { token: string }) => void | Promise<void>)
+        | null = null;
       const unlocked = vi.fn();
       const nativeLease = {
         acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => ({
@@ -250,9 +569,12 @@ describe("restore lock coordinator", () => {
       };
       await requestHandler!({ token: "token-b" });
       await flushMicrotasks(50);
-      releaseHandler!({ token: "token-a" });
+      await releaseHandler!({ token: "token-a" });
       expect(unlocked).toHaveBeenCalledTimes(1);
-      releaseHandler!({ token: "token-b" });
+      await releaseHandler!({ token: "token-b" });
+      expect(unlocked).toHaveBeenCalledTimes(1);
+      lease = null;
+      await vi.advanceTimersByTimeAsync(50);
       expect(unlocked).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -352,7 +674,9 @@ describe("restore lock coordinator", () => {
       const currentCalls: Array<ReturnType<typeof deferred<Lease | null>>> = [];
       let startupCurrent = true;
       let requestHandler: ((payload: { token: string }) => void | Promise<void>) | null = null;
-      let releaseHandler: ((payload: { token: string }) => void) | null = null;
+      let releaseHandler:
+        | ((payload: { token: string }) => void | Promise<void>)
+        | null = null;
       const notifyLockAcknowledged = vi.fn(async () => {});
       const lockLocal = vi.fn(async () => {});
       const unlockLocal = vi.fn();
@@ -433,7 +757,11 @@ describe("restore lock coordinator", () => {
         expect.objectContaining({ token: "request-a" })
       );
 
-      releaseHandler!({ token: "request-b" });
+      const release = releaseHandler!({ token: "request-b" });
+      await flushMicrotasks();
+      expect(currentCalls).toHaveLength(4);
+      currentCalls[3]!.resolve(null);
+      await release;
       expect(unlockLocal).toHaveBeenCalledWith("request-b");
       await coordinator.stop();
     } finally {
@@ -693,29 +1021,44 @@ describe("restore lock coordinator", () => {
     expect(events).toContain("unlock-local");
   });
 
-  it("unlocks locally when the mutation finishes with a failure", async () => {
-    const unlocked = vi.fn();
-    const coordinator = createRestoreLockCoordinator({
-      getCurrentWindowLabel: () => "main",
-      listLiveWindowLabels: async () => ["main"],
-      notifyLockRequested: async () => {},
-      listenLockRequested: async () => () => {},
-      notifyLockAcknowledged: async () => {},
-      listenLockAcknowledged: async () => () => {},
-      notifyLockReleased: async () => {
-        throw new Error("release broadcast failed");
-      },
-      listenLockReleased: async () => () => {},
-      lockLocal: async () => {},
-      unlockLocal: unlocked,
-    });
+  it("keeps the local lock until a failed release notification recovers", async () => {
+    vi.useFakeTimers();
+    try {
+      let notificationAvailable = false;
+      const unlocked = vi.fn();
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => ["main"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {
+          if (!notificationAvailable) {
+            throw new Error("release broadcast failed");
+          }
+        },
+        listenLockReleased: async () => () => {},
+        lockLocal: async () => {},
+        unlockLocal: unlocked,
+        cleanupRetryIntervalMs: 10,
+      });
 
-    await coordinator.start();
-    const token = await coordinator.acquire();
-    await expect(coordinator.release(token)).rejects.toThrow(
-      "release broadcast failed"
-    );
-    expect(unlocked).toHaveBeenCalledWith(token);
+      await coordinator.start();
+      const token = await coordinator.acquire();
+      await expect(coordinator.release(token)).rejects.toThrow(
+        "release broadcast failed"
+      );
+      expect(unlocked).not.toHaveBeenCalled();
+
+      notificationAvailable = true;
+      await vi.advanceTimersByTimeAsync(10);
+      await flushMicrotasks();
+      expect(unlocked).toHaveBeenCalledWith(token);
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("preserves primary failures with final apply or release event failures", async () => {
@@ -876,7 +1219,7 @@ describe("restore lock coordinator", () => {
     expect(cleanupRequested).not.toHaveBeenCalled();
 
     operation.resolve();
-    await expect(runPromise).resolves.toBeUndefined();
+    await expect(runPromise).rejects.toThrow("종료");
     await stopPromise;
 
     expect(nativeLease.release).toHaveBeenCalledTimes(1);
@@ -1508,7 +1851,8 @@ describe("restore lock coordinator", () => {
 
       expect(outcome.ok).toBe(false);
       expect(applyStore).toHaveBeenCalledTimes(1);
-      expect(nativeLease.release).toHaveBeenCalledTimes(1);
+      expect(nativeLease.release).not.toHaveBeenCalled();
+      expect(lease).toEqual(expect.objectContaining({ operationActive: false }));
       expect(locallyLocked).toBe(true);
       expect(unlockLocal).not.toHaveBeenCalled();
 
@@ -1520,6 +1864,7 @@ describe("restore lock coordinator", () => {
       expect(applyStore.mock.calls[0]?.[0].generation).not.toBe(
         applyStore.mock.calls[1]?.[0].generation
       );
+      expect(nativeLease.release).toHaveBeenCalledTimes(1);
       expect(unlockLocal).toHaveBeenCalledTimes(1);
       expect(locallyLocked).toBe(false);
       hungFinalApply.resolve();
@@ -2412,7 +2757,9 @@ describe("restore lock coordinator", () => {
     await remote.start();
     await main.start();
     let runSettled = false;
+    let restoreToken = "";
     const runPromise = main.run(async (token) => {
+      restoreToken = token;
       await main.synchronize(token);
       return "restored";
     });
@@ -2428,6 +2775,8 @@ describe("restore lock coordinator", () => {
     remoteApply.resolve();
     await expect(runPromise).resolves.toBe("restored");
     expect(nativeLease.release).toHaveBeenCalledTimes(1);
+    expect(remoteUnlock).not.toHaveBeenCalled();
+    await remoteReleased!({ token: restoreToken });
     expect(remoteUnlock).toHaveBeenCalledTimes(1);
 
     await main.stop();
@@ -2436,7 +2785,12 @@ describe("restore lock coordinator", () => {
 
   it("reapplies the store when rollback uses the same restore token", async () => {
     const token = "restore-with-rollback";
-    const lease = {
+    let lease: {
+      token: string;
+      owner: string;
+      expiresAtMs: number;
+      operationActive: boolean;
+    } | null = {
       token,
       owner: "main",
       expiresAtMs: Date.now() + 10_000,
@@ -2562,7 +2916,12 @@ describe("restore lock coordinator", () => {
 
   it("performs a final authoritative reload before unlock when rollback request is lost", async () => {
     const token = "lost-rollback-request";
-    const lease = {
+    let lease: {
+      token: string;
+      owner: string;
+      expiresAtMs: number;
+      operationActive: boolean;
+    } | null = {
       token,
       owner: "main",
       expiresAtMs: Date.now() + 10_000,
@@ -2633,6 +2992,10 @@ describe("restore lock coordinator", () => {
 
     finalApply.resolve();
     await releasePromise;
+    expect(unlockLocal).not.toHaveBeenCalled();
+    lease = null;
+    await released!({ token, finalApplyGeneration: 3 });
+    expect(applyStore).toHaveBeenCalledWith({ token, generation: 4 });
     expect(unlockLocal).toHaveBeenCalledWith(token);
     await remote.stop();
   });
