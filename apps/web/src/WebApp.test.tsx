@@ -1966,7 +1966,7 @@ describe("WebApp", () => {
     });
   });
 
-  it("removes server memo from manager even when delete API returns 0", async () => {
+  it("reconciles the server list and reports a stale delete when delete API returns 0", async () => {
     const user = userEvent.setup();
     vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
     vi.mocked(listBackedUpMemos).mockResolvedValue([SERVER_BACKED_UP_MEMO]);
@@ -1986,9 +1986,11 @@ describe("WebApp", () => {
 
     await waitFor(() => {
       expect(deleteBackedUpMemo).toHaveBeenCalledWith(expect.anything(), LOGGED_IN_USER.uid, "server-memo-1");
-      expect(within(dialog).queryByRole("button", { name: "서버에서 가져온 웹 메모 서버 삭제" })).toBeNull();
-      expect(within(dialog).getByText("서버에 저장된 메모가 없습니다.")).toBeInTheDocument();
-      expect(within(dialog).getByRole("status")).toHaveTextContent("서버 메모를 삭제했습니다.");
+      expect(listBackedUpMemos).toHaveBeenCalledTimes(2);
+      expect(within(dialog).getByRole("button", { name: "서버에서 가져온 웹 메모 서버 삭제" })).toBeInTheDocument();
+      expect(within(dialog).getByRole("status")).toHaveTextContent(
+        '서버 백업에서 "서버에서 가져온 웹 메모" 메모를 삭제하지 못했습니다. 서버 목록을 새로고침했습니다.'
+      );
     });
   });
 

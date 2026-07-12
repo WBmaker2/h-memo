@@ -15,12 +15,27 @@ import {
   writeBatch as firestoreWriteBatch,
   type Firestore,
 } from "firebase/firestore";
+import { validateLegacyFirestoreV1Payload } from "./legacyBackupPayload";
+import {
+  canUseLegacyRawMemoDocumentId,
+  decodeMemoDocumentId,
+  encodeMemoDocumentId,
+  isMemoDocumentIdFor,
+} from "./memoDocumentId";
+
+export {
+  canUseLegacyRawMemoDocumentId,
+  decodeMemoDocumentId,
+  encodeMemoDocumentId,
+  isMemoDocumentIdFor,
+} from "./memoDocumentId";
 
 export type MemoBackupPayload = BackupPayload;
 export type StoredBackupSnapshot = {
   id: string;
   payload: MemoBackupPayload;
   savedAt: string;
+  source?: "firestore-v1";
 };
 export type StoredCurrentMemo = {
   memo: Memo;
@@ -141,8 +156,12 @@ function normalizeFirestoreTimestamp(value: unknown): string | null {
   }
 
   if (isRecord(value) && typeof value.toDate === "function") {
-    const date = (value as unknown as FirestoreTimestamp).toDate();
-    return date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : null;
+    try {
+      const date = (value as unknown as FirestoreTimestamp).toDate();
+      return date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : null;
+    } catch {
+      return null;
+    }
   }
 
   return null;
@@ -162,7 +181,10 @@ function toStoredBackupSnapshot(
 
   const record = isRecord(value) ? value : null;
   const payloadValue = record && "payload" in record ? record.payload : value;
-  const parsed = validateBackupPayload(payloadValue, userId);
+  const parsed =
+    record?.source === "firestore-v1"
+      ? validateLegacyFirestoreV1Payload(payloadValue, userId)
+      : validateBackupPayload(payloadValue, userId);
   if (!parsed.ok) {
     throw new Error(parsed.reason);
   }
@@ -252,9 +274,22 @@ function assertUniqueActiveMemoIds(memos: Memo[]) {
   }
 }
 
+function assertValidNewBackupPayload(payload: MemoBackupPayload, userId: string) {
+  const parsed = validateBackupPayload(payload, userId);
+  if (!parsed.ok) {
+    throw new Error(parsed.reason);
+  }
+  return parsed.payload;
+}
+
 type CanonicalReference = {
   snapshotId: string;
   savedAt: unknown;
+};
+
+type CanonicalMemoCandidate = {
+  ref: unknown;
+  snapshot: DriverDocumentSnapshot;
 };
 
 function readCanonicalReference(value: unknown): CanonicalReference | null {
@@ -314,7 +349,24 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   private canonicalMemoDoc(userId: string, memoId: string) {
-    return this.driver.doc(this.firestore, "users", userId, canonicalMemosCollection, memoId);
+    return this.driver.doc(
+      this.firestore,
+      "users",
+      userId,
+      canonicalMemosCollection,
+      encodeMemoDocumentId(memoId)
+    );
+  }
+
+  private canonicalMemoDocCandidates(userId: string, memoId: string) {
+    const encodedDocumentId = encodeMemoDocumentId(memoId);
+    const candidates = [this.canonicalMemoDoc(userId, memoId)];
+    if (canUseLegacyRawMemoDocumentId(memoId) && encodedDocumentId !== memoId) {
+      candidates.push(
+        this.driver.doc(this.firestore, "users", userId, canonicalMemosCollection, memoId)
+      );
+    }
+    return candidates;
   }
 
   private deletedMemoCollection(userId: string) {
@@ -322,12 +374,25 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   private deletedMemoDoc(userId: string, memoId: string) {
-    return this.driver.doc(this.firestore, "users", userId, serverMemoDeletesCollection, memoId);
+    return this.driver.doc(
+      this.firestore,
+      "users",
+      userId,
+      serverMemoDeletesCollection,
+      encodeMemoDocumentId(memoId)
+    );
   }
 
   async saveBackup(userId: string, payload: MemoBackupPayload): Promise<string> {
+    if (isRecord(payload) && Array.isArray(payload.memos)) {
+      assertUniqueActiveMemoIds(
+        payload.memos.filter(
+          (memo): memo is Memo => isRecord(memo) && memo.deletedAt === null
+        )
+      );
+    }
+    payload = assertValidNewBackupPayload(payload, userId);
     const activeMemos = payload.memos.filter((memo) => memo.deletedAt === null);
-    assertUniqueActiveMemoIds(activeMemos);
     const snapshotRef = this.driver.doc(this.snapshotCollection(userId));
     const snapshotId = this.driver.id(snapshotRef);
 
@@ -366,38 +431,75 @@ export class FirestoreBackupGateway implements BackupGateway {
         );
 
         const canonicalMemos = await Promise.all(
-          memoChunk.map((memo) => transaction.get(this.canonicalMemoDoc(userId, memo.id)))
+          memoChunk.map(async (memo) => {
+            const candidates = this.canonicalMemoDocCandidates(userId, memo.id);
+            const snapshots = await Promise.all(
+              candidates.map((candidate) => transaction.get(candidate))
+            );
+            const entries: CanonicalMemoCandidate[] = candidates.map((ref, index) => ({
+              ref,
+              snapshot: snapshots[index]!,
+            }));
+            let previousActiveReference: CanonicalReference | null = null;
+            if (activeSnapshotId) {
+              for (const entry of entries) {
+                if (!entry.snapshot.exists()) {
+                  continue;
+                }
+                const reference = canonicalReferenceForSnapshot(
+                  entry.snapshot.data(),
+                  activeSnapshotId
+                );
+                if (reference) {
+                  previousActiveReference = reference;
+                  break;
+                }
+              }
+            }
+            return {
+              primary: entries[0]!,
+              existing: entries.filter((entry) => entry.snapshot.exists()),
+              previousActiveReference,
+            };
+          })
         );
 
         for (const [index, memo] of memoChunk.entries()) {
-          const canonicalMemoRef = this.canonicalMemoDoc(userId, memo.id);
-          const existingCanonicalMemo = canonicalMemos[index]!;
-          const previousActiveReference =
-            activeSnapshotId && existingCanonicalMemo.exists()
-              ? canonicalReferenceForSnapshot(existingCanonicalMemo.data(), activeSnapshotId)
-              : null;
+          const canonicalMemo = canonicalMemos[index]!;
           const stagedReferences = {
-            active: canonicalReferenceData(previousActiveReference),
+            active: canonicalReferenceData(canonicalMemo.previousActiveReference),
             pending: {
               snapshotId,
               savedAt: this.driver.serverTimestamp(),
             },
           };
 
-          if (existingCanonicalMemo.exists()) {
-            transaction.update(canonicalMemoRef, stagedReferences);
+          if (canonicalMemo.primary.snapshot.exists()) {
+            transaction.update(canonicalMemo.primary.ref, stagedReferences);
           } else {
-            transaction.set(canonicalMemoRef, {
+            transaction.set(canonicalMemo.primary.ref, {
               userId,
               memoId: memo.id,
               ...stagedReferences,
             });
           }
-          transaction.set(this.driver.doc(snapshotRef, snapshotMemosCollection, memo.id), {
-            userId,
-            memoId: memo.id,
-            memo,
-          });
+          for (const existingCanonicalMemo of canonicalMemo.existing) {
+            if (existingCanonicalMemo !== canonicalMemo.primary) {
+              transaction.update(existingCanonicalMemo.ref, stagedReferences);
+            }
+          }
+          transaction.set(
+            this.driver.doc(
+              snapshotRef,
+              snapshotMemosCollection,
+              encodeMemoDocumentId(memo.id)
+            ),
+            {
+              userId,
+              memoId: memo.id,
+              memo,
+            }
+          );
         }
       });
     }
@@ -458,7 +560,7 @@ export class FirestoreBackupGateway implements BackupGateway {
       return this.loadCompleteSchemaV2Snapshot(snapshot, userId);
     }
 
-    const parsed = validateBackupPayload(data, userId);
+    const parsed = validateLegacyFirestoreV1Payload(data, userId);
     if (!parsed.ok) {
       return null;
     }
@@ -467,6 +569,7 @@ export class FirestoreBackupGateway implements BackupGateway {
       id: snapshot.id,
       payload: parsed.payload,
       savedAt: normalizeFirestoreTimestamp(data.savedAt) ?? parsed.payload.createdAt,
+      source: "firestore-v1",
     };
   }
 
@@ -503,11 +606,13 @@ export class FirestoreBackupGateway implements BackupGateway {
     for (const memoSnapshot of memoDocs.docs) {
       const wrapper = memoSnapshot.data();
       const memo = wrapper.memo;
+      const memoId = wrapper.memoId;
       if (
         wrapper.userId !== userId ||
-        wrapper.memoId !== memoSnapshot.id ||
+        typeof memoId !== "string" ||
+        !isMemoDocumentIdFor(memoSnapshot.id, memoId) ||
         !isValidMemo(memo, userId) ||
-        memo.id !== memoSnapshot.id
+        memo.id !== memoId
       ) {
         return null;
       }
@@ -555,21 +660,26 @@ export class FirestoreBackupGateway implements BackupGateway {
     );
     const memoDocs = await this.driver.getDocs(this.canonicalMemoCollection(userId));
     const currentMemos: StoredCurrentMemo[] = [];
+    const seenMemoIds = new Set<string>();
     for (const memoSnapshot of memoDocs.docs) {
       const data = memoSnapshot.data();
       const reference = canonicalReferenceForSnapshot(data, activeSnapshotId);
-      const memo = snapshotMemosById.get(memoSnapshot.id);
+      const memoId = data.memoId;
+      const memo = typeof memoId === "string" ? snapshotMemosById.get(memoId) : undefined;
       const savedAt = normalizeFirestoreTimestamp(reference?.savedAt);
       if (
         data.userId !== userId ||
-        data.memoId !== memoSnapshot.id ||
+        typeof memoId !== "string" ||
+        !isMemoDocumentIdFor(memoSnapshot.id, memoId) ||
         reference?.snapshotId !== activeSnapshotId ||
         !isValidMemo(memo, userId) ||
-        memo.id !== memoSnapshot.id ||
+        memo.id !== memoId ||
+        seenMemoIds.has(memoId) ||
         savedAt === null
       ) {
         continue;
       }
+      seenMemoIds.add(memoId);
       currentMemos.push({ memo, savedAt, snapshotId: activeSnapshotId });
     }
     return currentMemos;
@@ -584,15 +694,17 @@ export class FirestoreBackupGateway implements BackupGateway {
     return querySnapshot.docs
       .flatMap((snapshot) => {
         const data = snapshot.data();
+        const memoId = data.memoId;
         if (
           data.userId !== userId ||
-          data.memoId !== snapshot.id ||
+          typeof memoId !== "string" ||
+          !isMemoDocumentIdFor(snapshot.id, memoId) ||
           snapshot.id.trim() === "" ||
-          activeMemoIds.has(snapshot.id)
+          activeMemoIds.has(memoId)
         ) {
           return [];
         }
-        return [snapshot.id];
+        return [memoId];
       });
   }
 
@@ -605,26 +717,51 @@ export class FirestoreBackupGateway implements BackupGateway {
         return 0;
       }
 
-      const canonicalMemoRef = this.canonicalMemoDoc(userId, memoId);
-      const canonicalMemo = await transaction.get(canonicalMemoRef);
+      const canonicalCandidates = this.canonicalMemoDocCandidates(userId, memoId);
+      const canonicalSnapshots = await Promise.all(
+        canonicalCandidates.map((candidate) => transaction.get(candidate))
+      );
+      const matchingCanonicalMemos = canonicalSnapshots.flatMap((canonicalMemo, index) => {
+        if (!canonicalMemo.exists()) {
+          return [];
+        }
+        const data = canonicalMemo.data();
+        const active = readCanonicalReference(data.active);
+        const pending = readCanonicalReference(data.pending);
+        const activeMatches = active?.snapshotId === activeSnapshotId;
+        const pendingMatches = pending?.snapshotId === activeSnapshotId;
+        if (
+          data.userId !== userId ||
+          data.memoId !== memoId ||
+          (!activeMatches && !pendingMatches)
+        ) {
+          return [];
+        }
+        return [{
+          ref: canonicalCandidates[index]!,
+          active,
+          pending,
+          activeMatches,
+          pendingMatches,
+        }];
+      });
+      if (matchingCanonicalMemos.length === 0) {
+        return 0;
+      }
+
       transaction.set(this.deletedMemoDoc(userId, memoId), {
         userId,
         memoId,
         snapshotId: activeSnapshotId,
         deletedAt: this.driver.serverTimestamp(),
       });
-      if (canonicalMemo.exists()) {
-        const data = canonicalMemo.data();
-        const active = readCanonicalReference(data.active);
-        const pending = readCanonicalReference(data.pending);
-        const activeMatches = active?.snapshotId === activeSnapshotId;
-        const pendingMatches = pending?.snapshotId === activeSnapshotId;
-        if (data.userId === userId && data.memoId === memoId && (activeMatches || pendingMatches)) {
-          transaction.update(canonicalMemoRef, {
-            active: activeMatches ? null : canonicalReferenceData(active),
-            pending: pendingMatches ? null : canonicalReferenceData(pending),
-          });
-        }
+      for (const canonicalMemo of matchingCanonicalMemos) {
+        transaction.update(canonicalMemo.ref, {
+          active: canonicalMemo.activeMatches ? null : canonicalReferenceData(canonicalMemo.active),
+          pending: canonicalMemo.pendingMatches
+            ? null
+            : canonicalReferenceData(canonicalMemo.pending),
+        });
       }
       return 1;
     });
@@ -663,6 +800,7 @@ export async function backupMemos(
     memos,
     createdAt: now,
   });
+  assertValidNewBackupPayload(payload, userId);
   const path = await gateway.saveBackup(userId, payload);
   return {
     path,

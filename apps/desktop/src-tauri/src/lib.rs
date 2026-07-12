@@ -39,6 +39,7 @@ const MAX_CANCELLED_RESTORE_ACQUIRES: usize = 256;
 const MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS: u64 = 30_000;
 const MAX_RESTORE_ACQUIRE_CLOCK_SKEW_MS: u64 = 250;
 const MAX_RESTORE_RENEWAL_CLEANUP_GRACE_MS: u64 = 30_000;
+const MEMO_WINDOW_CREATION_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -149,6 +150,8 @@ struct MemoWindowOwner {
   window_label: String,
   claim_token: String,
   state: MemoWindowOwnerState,
+  pending_created_at_monotonic_ms: Option<u64>,
+  pending_expires_at_monotonic_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1023,9 +1026,21 @@ fn claim_memo_window(
       .0
       .lock()
       .map_err(|_| "memo window registry lock is unavailable".to_string())?;
+    let now_monotonic_ms = restore_lock.clock_snapshot().monotonic_ms;
     owners.retain(|_, owner| {
-      owner.state == MemoWindowOwnerState::Pending
-        || app.get_webview_window(&owner.window_label).is_some()
+      let native_window_exists = app.get_webview_window(&owner.window_label).is_some();
+      match owner.state {
+        MemoWindowOwnerState::Live => native_window_exists,
+        MemoWindowOwnerState::Pending if native_window_exists => {
+          owner.state = MemoWindowOwnerState::Live;
+          owner.pending_created_at_monotonic_ms = None;
+          owner.pending_expires_at_monotonic_ms = None;
+          true
+        }
+        MemoWindowOwnerState::Pending => owner
+          .pending_expires_at_monotonic_ms
+          .is_some_and(|expires_at| expires_at > now_monotonic_ms),
+      }
     });
     let native_window_exists = app.get_webview_window(&window_label).is_some();
     claim_memo_window_owner_locked(
@@ -1034,6 +1049,7 @@ fn claim_memo_window(
       &window_label,
       &random_urlsafe(16),
       native_window_exists,
+      now_monotonic_ms,
     )
   };
 
@@ -1513,11 +1529,30 @@ fn claim_memo_window_owner(
   window_label: &str,
   claim_token: &str,
 ) -> MemoWindowClaim {
+  claim_memo_window_owner_at(registry, memo_id, window_label, claim_token, false, 0)
+}
+
+#[cfg(test)]
+fn claim_memo_window_owner_at(
+  registry: &MemoWindowRegistry,
+  memo_id: &str,
+  window_label: &str,
+  claim_token: &str,
+  native_window_exists: bool,
+  now_monotonic_ms: u64,
+) -> MemoWindowClaim {
   let mut owners = registry
     .0
     .lock()
     .expect("memo window registry lock should not be poisoned");
-  claim_memo_window_owner_locked(&mut owners, memo_id, window_label, claim_token, false)
+  claim_memo_window_owner_locked(
+    &mut owners,
+    memo_id,
+    window_label,
+    claim_token,
+    native_window_exists,
+    now_monotonic_ms,
+  )
 }
 
 #[cfg(test)]
@@ -1527,11 +1562,7 @@ fn claim_memo_window_owner_with_native_window(
   window_label: &str,
   claim_token: &str,
 ) -> MemoWindowClaim {
-  let mut owners = registry
-    .0
-    .lock()
-    .expect("memo window registry lock should not be poisoned");
-  claim_memo_window_owner_locked(&mut owners, memo_id, window_label, claim_token, true)
+  claim_memo_window_owner_at(registry, memo_id, window_label, claim_token, true, 0)
 }
 
 fn claim_memo_window_owner_locked(
@@ -1540,7 +1571,19 @@ fn claim_memo_window_owner_locked(
   window_label: &str,
   claim_token: &str,
   native_window_exists: bool,
+  now_monotonic_ms: u64,
 ) -> MemoWindowClaim {
+  let expired_pending = owners.get(memo_id).is_some_and(|owner| {
+    owner.state == MemoWindowOwnerState::Pending
+      && !native_window_exists
+      && owner
+        .pending_expires_at_monotonic_ms
+        .is_some_and(|expires_at| expires_at <= now_monotonic_ms)
+  });
+  if expired_pending {
+    owners.remove(memo_id);
+  }
+
   match owners.get_mut(memo_id) {
     Some(owner) if owner.window_label != window_label => MemoWindowClaim {
       claimed: false,
@@ -1551,6 +1594,8 @@ fn claim_memo_window_owner_locked(
     Some(owner) if owner.state == MemoWindowOwnerState::Pending => {
       if native_window_exists {
         owner.state = MemoWindowOwnerState::Live;
+        owner.pending_created_at_monotonic_ms = None;
+        owner.pending_expires_at_monotonic_ms = None;
         MemoWindowClaim {
           claimed: true,
           should_create: false,
@@ -1573,17 +1618,26 @@ fn claim_memo_window_owner_locked(
       claim_token: Some(owner.claim_token.clone()),
     },
     None => {
+      let state = if native_window_exists {
+        MemoWindowOwnerState::Live
+      } else {
+        MemoWindowOwnerState::Pending
+      };
       owners.insert(
         memo_id.to_string(),
         MemoWindowOwner {
           window_label: window_label.to_string(),
           claim_token: claim_token.to_string(),
-          state: MemoWindowOwnerState::Pending,
+          pending_created_at_monotonic_ms: (state == MemoWindowOwnerState::Pending)
+            .then_some(now_monotonic_ms),
+          pending_expires_at_monotonic_ms: (state == MemoWindowOwnerState::Pending)
+            .then_some(now_monotonic_ms.saturating_add(MEMO_WINDOW_CREATION_TIMEOUT_MS)),
+          state,
         },
       );
       MemoWindowClaim {
         claimed: true,
-        should_create: true,
+        should_create: !native_window_exists,
         window_label: window_label.to_string(),
         claim_token: Some(claim_token.to_string()),
       }
@@ -1610,6 +1664,8 @@ fn complete_memo_window_owner(
 
   if owner.state == MemoWindowOwnerState::Pending {
     owner.state = MemoWindowOwnerState::Live;
+    owner.pending_created_at_monotonic_ms = None;
+    owner.pending_expires_at_monotonic_ms = None;
   }
   true
 }
@@ -2971,6 +3027,57 @@ mod tests {
     assert!(claimed.claimed);
     assert!(claimed.should_create);
     assert_eq!(claimed.claim_token.as_deref(), Some("token-4"));
+  }
+
+  #[test]
+  fn pending_window_reservation_expires_without_a_native_creation_event() {
+    let registry = MemoWindowRegistry::default();
+    let first = claim_memo_window_owner_at(&registry, "memo-timeout", "memo-timeout", "token-1", false, 0);
+    let blocked = claim_memo_window_owner_at(
+      &registry,
+      "memo-timeout",
+      "memo-timeout",
+      "token-2",
+      false,
+      MEMO_WINDOW_CREATION_TIMEOUT_MS - 1,
+    );
+    let replacement = claim_memo_window_owner_at(
+      &registry,
+      "memo-timeout",
+      "memo-timeout",
+      "token-3",
+      false,
+      MEMO_WINDOW_CREATION_TIMEOUT_MS,
+    );
+
+    assert!(first.should_create);
+    assert!(blocked.claimed);
+    assert!(!blocked.should_create);
+    assert!(replacement.should_create);
+    assert_eq!(replacement.claim_token.as_deref(), Some("token-3"));
+    assert!(!complete_memo_window_owner(&registry, "memo-timeout", "memo-timeout", "token-1"));
+    release_memo_window_owner(&registry, "memo-timeout", "memo-timeout", "token-1");
+    assert!(!complete_memo_window_owner(&registry, "memo-timeout", "memo-timeout", "token-1"));
+    assert!(complete_memo_window_owner(&registry, "memo-timeout", "memo-timeout", "token-3"));
+  }
+
+  #[test]
+  fn live_native_window_owner_is_preserved_while_pending_expiry_is_recoverable() {
+    let registry = MemoWindowRegistry::default();
+    claim_memo_window_owner(&registry, "memo-live", "main", "live-token");
+    assert!(complete_memo_window_owner(&registry, "memo-live", "main", "live-token"));
+
+    let other_owner = claim_memo_window_owner_at(
+      &registry,
+      "memo-live",
+      "memo-live-child",
+      "new-token",
+      false,
+      MEMO_WINDOW_CREATION_TIMEOUT_MS + 10_000,
+    );
+
+    assert!(!other_owner.claimed);
+    assert_eq!(other_owner.window_label, "main");
   }
 
   #[test]

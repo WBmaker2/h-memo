@@ -3,6 +3,7 @@ import { createMemo } from "@h-memo/memo-core";
 import {
   FirestoreBackupGateway,
   backupMemos,
+  encodeMemoDocumentId,
   deleteBackedUpMemo,
   listBackupSnapshots,
   listBackedUpMemos,
@@ -556,6 +557,42 @@ describe("memo-sync backup", () => {
     expect(snapshots[0]?.createdAt).toBe("2026-05-13T09:01:00.000Z");
   });
 
+  it("keeps a pre-branch inline legacy snapshot with malformed timestamps readable", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = new FirestoreBackupGateway({} as never, driver as never);
+    const legacyMemo = {
+      ...createMemo({
+        id: "legacy-malformed-time",
+        now: "2026-05-13T09:00:00.000Z",
+        plainText: "시간 메타데이터 보존",
+      }),
+      createdAt: "",
+      updatedAt: "legacy non-ISO time",
+      deletedAt: "legacy deleted-at metadata",
+    };
+    driver.seed("users/user-1/backupSnapshots/legacy-inline", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "",
+      memos: [legacyMemo],
+      savedAt: "",
+    });
+
+    const backups = await gateway.loadBackups("user-1");
+    const restored = await restoreLatestBackup(gateway, "user-1");
+    const snapshots = await listBackupSnapshots(gateway, "user-1");
+
+    expect(backups).toHaveLength(1);
+    expect(restored?.memos[0]).toMatchObject({
+      id: legacyMemo.id,
+      createdAt: "",
+      updatedAt: "legacy non-ISO time",
+      deletedAt: "legacy deleted-at metadata",
+    });
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.createdAt).toBe("");
+  });
+
   it("rejects an invalid backup payload", async () => {
     class InvalidPayloadGateway implements BackupGateway {
       async saveBackup(): Promise<string> {
@@ -643,6 +680,120 @@ describe("FirestoreBackupGateway driver contract", () => {
     expect(currentMemos.map((entry) => entry.memo.id)).toHaveLength(201);
     expect(currentMemos[0]).toMatchObject({ snapshotId: id });
     expect(currentMemos[0]?.savedAt).toMatch(/2026-05-13T09:00:/);
+  });
+
+  it("rejects an invalid new v2 payload before any remote mutation", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "memo-invalid-write", now: "2026-05-13T09:00:00.000Z" });
+
+    await expect(
+      gateway.saveBackup("user-1", {
+        version: 1,
+        userId: "user-1",
+        createdAt: "not-a-timestamp",
+        memos: [{ ...memo, updatedAt: "" }],
+      })
+    ).rejects.toThrow("잘못된 메모 데이터가 포함되어 있습니다.");
+
+    expect(driver.docs).toEqual(new Map());
+    expect(driver.transactionOperationCounts).toEqual([]);
+  });
+
+  it("returns zero and does not write a tombstone for an absent canonical memo", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    driver.seed("users/user-1/backupState/current", {
+      userId: "user-1",
+      activeSnapshotId: "snapshot-active",
+      pendingSnapshotId: null,
+      activatedAt: new FakeTimestamp("2026-05-13T09:00:00.000Z"),
+    });
+
+    expect(await gateway.deleteCurrentMemo("user-1", "missing/memo")).toBe(0);
+    expect(
+      driver.read(
+        `users/user-1/serverMemoDeletes/${encodeMemoDocumentId("missing/memo")}`
+      )
+    ).toBeUndefined();
+  });
+
+  it("uses one collision-resistant memo document codec for backup, restore, and delete paths", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memoIds = ["a/b", "a?b", "a#b", "유니코드", "memo~legacy", ".", ".."];
+    const memos = memoIds.map((id) => createMemo({ id, now: "2026-05-13T09:00:00.000Z" }));
+
+    await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:05:00.000Z",
+      memos,
+    });
+
+    for (const memoId of memoIds) {
+      const documentId = encodeMemoDocumentId(memoId);
+      expect(driver.read(`users/user-1/memos/${documentId}`)).toMatchObject({ memoId });
+      expect(
+        driver.read(`users/user-1/backupSnapshots/1/memos/${documentId}`)
+      ).toMatchObject({ memoId, memo: { id: memoId } });
+    }
+    expect((await listBackedUpMemos(gateway, "user-1")).map(({ memo }) => memo.id).sort()).toEqual(
+      [...memoIds].sort()
+    );
+    expect((await restoreLatestBackup(gateway, "user-1"))?.memos.map((memo) => memo.id).sort()).toEqual(
+      [...memoIds].sort()
+    );
+
+    expect(await deleteBackedUpMemo(gateway, "user-1", "a/b")).toBe(1);
+    expect(driver.read(`users/user-1/serverMemoDeletes/${encodeMemoDocumentId("a/b")}`)).toMatchObject({
+      memoId: "a/b",
+    });
+    expect((await listBackedUpMemos(gateway, "user-1")).map(({ memo }) => memo.id)).not.toContain("a/b");
+    expect((await listBackedUpMemos(gateway, "user-1")).map(({ memo }) => memo.id)).toContain("a#b");
+  });
+
+  it("migrates an existing raw legacy canonical document to the encoded path", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "a?b", now: "2026-05-13T09:00:00.000Z" });
+    const legacyRef = "users/user-1/memos/a?b";
+    const encodedRef = `users/user-1/memos/${encodeMemoDocumentId(memo.id)}`;
+    driver.seed("users/user-1/backupState/current", {
+      userId: "user-1",
+      activeSnapshotId: "legacy-active",
+      pendingSnapshotId: null,
+      activatedAt: new FakeTimestamp("2026-05-13T08:59:00.000Z"),
+    });
+    driver.seed(legacyRef, {
+      userId: "user-1",
+      memoId: memo.id,
+      active: {
+        snapshotId: "legacy-active",
+        savedAt: new FakeTimestamp("2026-05-13T08:59:00.000Z"),
+      },
+      pending: null,
+    });
+
+    const path = await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:05:00.000Z",
+      memos: [memo],
+    });
+
+    expect(driver.read(encodedRef)).toMatchObject({ memoId: memo.id });
+    expect(driver.read(legacyRef)).toMatchObject({ memoId: memo.id });
+    expect(driver.read(encodedRef)?.pending).toMatchObject({ snapshotId: snapshotId(path) });
+    expect(driver.read(legacyRef)?.pending).toMatchObject({ snapshotId: snapshotId(path) });
+    expect((await gateway.loadCurrentMemos("user-1")).map((entry) => entry.memo.id)).toEqual([
+      memo.id,
+    ]);
+
+    expect(await gateway.deleteCurrentMemo("user-1", memo.id)).toBe(1);
+    expect(driver.read(encodedRef)).toMatchObject({ pending: null });
+    expect(driver.read(legacyRef)).toMatchObject({ pending: null });
+    expect(await gateway.loadCurrentMemos("user-1")).toEqual([]);
   });
 
   it("keeps the previous complete generation and tombstones authoritative when a later memo chunk fails", async () => {

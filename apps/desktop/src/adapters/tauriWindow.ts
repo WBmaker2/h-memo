@@ -25,6 +25,8 @@ export type MemoWindowClaim = {
   claimToken: string | null;
 };
 
+export const MEMO_WINDOW_CREATION_TIMEOUT_MS = 10_000;
+
 export function getCurrentWindowLabel() {
   return getCurrentWindow().label;
 }
@@ -49,8 +51,20 @@ export function closeWindow() {
   return currentWindow.label === "main" ? currentWindow.hide() : currentWindow.close();
 }
 
-export function getMemoWindowLabel(memoId: string) {
-  return `memo_${memoId.replace(/[^a-zA-Z0-9-/:_]/g, "_")}`;
+function toBase64Url(bytes: Uint8Array) {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+export async function getMemoWindowLabel(memoId: string) {
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(memoId)
+  );
+  return `memo_${toBase64Url(new Uint8Array(digest))}`;
 }
 
 function getMemoWindowUrl(memoId: string) {
@@ -142,20 +156,13 @@ async function resolveVisibleWindowBounds(bounds: WindowBounds): Promise<WindowB
 }
 
 export async function openMemoWindow(memo: Memo) {
-  const label = getMemoWindowLabel(memo.id);
-  const existingWindow = await WebviewWindow.getByLabel(label);
-  if (existingWindow) {
-    await focusMemoWindow(existingWindow);
-    return;
-  }
+  const label = await getMemoWindowLabel(memo.id);
 
   const claim = await claimMemoWindow(memo.id, label);
   if (!claim.shouldCreate) {
-    if (!claim.claimed) {
-      const owner = await WebviewWindow.getByLabel(claim.windowLabel);
-      if (owner) {
-        await focusMemoWindow(owner);
-      }
+    const owner = await WebviewWindow.getByLabel(claim.windowLabel);
+    if (owner) {
+      await focusMemoWindow(owner);
     }
     return;
   }
@@ -190,10 +197,33 @@ export async function openMemoWindow(memo: Memo) {
     });
 
     await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timeoutId = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(new Error("메모 창 생성 시간이 초과되었습니다."));
+      }, MEMO_WINDOW_CREATION_TIMEOUT_MS);
+      const finish = (callback: () => void) => {
+        if (settled) {
+          return false;
+        }
+        settled = true;
+        clearTimeout(timeoutId);
+        callback();
+        return true;
+      };
+
       void memoWindow.once("tauri://created", () => {
+        if (!finish(() => undefined)) {
+          return;
+        }
         void completeMemoWindow(memo.id, label, claimToken).then(resolve, reject);
       });
-      void memoWindow.once("tauri://error", (event) => reject(event.payload));
+      void memoWindow.once("tauri://error", (event) => {
+        finish(() => reject(event?.payload ?? new Error("메모 창을 생성하지 못했습니다.")));
+      });
     });
   } catch (error) {
     try {
@@ -206,7 +236,7 @@ export async function openMemoWindow(memo: Memo) {
 }
 
 export async function closeMemoWindow(memoId: string) {
-  const memoWindow = await WebviewWindow.getByLabel(getMemoWindowLabel(memoId));
+  const memoWindow = await WebviewWindow.getByLabel(await getMemoWindowLabel(memoId));
   if (!memoWindow) {
     return;
   }

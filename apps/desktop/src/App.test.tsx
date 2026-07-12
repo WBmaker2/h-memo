@@ -2691,6 +2691,40 @@ describe("desktop App", () => {
     });
   });
 
+  it("deletes locally but reports that the server memo was already absent when delete returns 0", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({ uid: "user-1", displayName: "테스터", email: "test@example.com", photoURL: "" });
+      return mockAuthUnsubscribe;
+    });
+    mockDeleteBackedUpMemo.mockResolvedValue(0);
+    mockListBackedUpMemos.mockResolvedValue([]);
+
+    render(<App />);
+    await createMemoFromAppMenu(user);
+    fireEvent.change(screen.getByLabelText("메모 내용"), { target: { value: "서버 없음 후보" } });
+    await user.click(screen.getByRole("button", { name: "새 메모" }));
+    await user.click(screen.getByRole("button", { name: "서버 없음 후보 삭제" }));
+    await user.click(screen.getByRole("button", { name: "삭제하기" }));
+
+    await waitFor(() => {
+      expect(mockDeleteBackedUpMemo).toHaveBeenCalledTimes(1);
+      expect(mockSoftDeleteMemo).toHaveBeenCalledTimes(1);
+      expect(mockListBackedUpMemos).toHaveBeenCalled();
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "로컬에서 메모를 삭제했습니다. 서버에는 이미 메모가 없습니다."
+      );
+    });
+  });
+
   it("toggles startup registration switch", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -4277,7 +4311,7 @@ describe("desktop App", () => {
     expect(tauriRepositoryState.has(memo.id)).toBe(true);
   });
 
-  it("keeps server memo visible when server delete reports no stored record", async () => {
+  it("reconciles and keeps the server memo visible when server delete reports no stored record", async () => {
     const user = userEvent.setup();
     setMockFirebaseClientEnv({
       apiKey: "api-key",
@@ -4330,9 +4364,10 @@ describe("desktop App", () => {
         "server-user",
         "memo-server-empty"
       );
+      expect(mockListBackedUpMemos).toHaveBeenCalledTimes(2);
       const serverDialog = screen.getByRole("dialog", { name: "서버 메모 관리" });
       expect(screen.getByRole("status")).toHaveTextContent(
-        '서버 백업에서 "빈 메모" 메모를 찾지 못했습니다. 목록을 새로고침해 주세요.'
+        '서버 백업에서 "빈 메모" 메모를 삭제하지 못했습니다. 서버 목록을 새로고침했습니다.'
       );
       expect(within(serverDialog).getByRole("listitem")).toHaveTextContent("빈 메모");
     });

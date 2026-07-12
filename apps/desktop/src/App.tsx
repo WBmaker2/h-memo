@@ -127,6 +127,16 @@ const DELETE_MEMO_CONFIRM_MESSAGE =
   "아직 백업되지 않는 내용이 있습니다. 정말 삭제하겠습니까?";
 const DELETE_SERVER_MEMO_CONFIRM_MESSAGE =
   "서버 백업에서 이 메모를 삭제합니다. 삭제한 뒤에는 서버에서 복원할 수 없습니다. 계속할까요?";
+type ServerMemoDeleteState = "absent" | "present" | "unknown";
+const SERVER_MEMO_STALE_DELETE_MESSAGE = (label: string, state: ServerMemoDeleteState) => {
+  if (state === "absent") {
+    return `서버 백업에서 "${label}" 메모를 찾지 못했습니다. 서버 목록을 새로고침했습니다.`;
+  }
+  if (state === "present") {
+    return `서버 백업에서 "${label}" 메모를 삭제하지 못했습니다. 서버 목록을 새로고침했습니다.`;
+  }
+  return `서버 백업에서 "${label}" 메모를 삭제하지 못했습니다. 서버 목록을 확인하지 못했습니다.`;
+};
 const COLLAPSED_WINDOW_HEIGHT = 46;
 const MIN_EXPANDED_WINDOW_HEIGHT = 160;
 const RESTORE_SAFETY_POLL_INTERVAL_MS = 250;
@@ -1986,9 +1996,20 @@ export function App() {
         return;
       }
 
-      setBackupStatus(
-        `서버 백업에서 "${targetMemoLabel}" 메모를 찾지 못했습니다. 목록을 새로고침해 주세요.`
-      );
+      let reconciliation: ServerMemoDeleteState = "unknown";
+      try {
+        const reconciledItems = await listBackedUpMemos(services.gateway, user.uid);
+        setServerMemoManager((previous) => ({
+          ...previous,
+          memos: reconciledItems,
+        }));
+        reconciliation = reconciledItems.some((item) => item.memo.id === memoId)
+          ? "present"
+          : "absent";
+      } catch {
+        // Keep the stale result visible even if the reconciliation read fails.
+      }
+      setBackupStatus(SERVER_MEMO_STALE_DELETE_MESSAGE(targetMemoLabel, reconciliation));
     } catch (error) {
       setBackupStatus(`서버 메모 삭제 실패: ${getErrorMessage(error)}`);
     } finally {
@@ -2035,30 +2056,65 @@ export function App() {
     setIsBusy(true);
     try {
       const pendingMemo = pendingDeleteMemo;
-      const shouldCloseWindow = await runWithDesktopRestoreLock(async (
+      const deleteOutcome = await runWithDesktopRestoreLock(async (
         _synchronize,
         assertActive
       ) => {
-        let deletedFromServer = false;
+        let deletedServerRecordCount: number | null = null;
         if (user) {
           const services = ensureSyncServices();
           if (!services || !servicesAvailable) {
             throw new Error("서버 연결 상태를 확인해 주세요.");
           }
           assertActive();
-          await deleteBackedUpMemo(services.gateway, user.uid, pendingMemo.id);
-          deletedFromServer = true;
+          deletedServerRecordCount = await deleteBackedUpMemo(
+            services.gateway,
+            user.uid,
+            pendingMemo.id
+          );
         }
 
         assertActive();
-        return performDeleteMemoLocked(
+        const shouldCloseWindow = await performDeleteMemoLocked(
           pendingMemo.id,
-          deletedFromServer
-            ? "로컬과 서버에서 메모를 삭제했습니다."
-            : "메모를 로컬에서 삭제했습니다."
+          deletedServerRecordCount === null
+            ? "메모를 로컬에서 삭제했습니다."
+            : deletedServerRecordCount > 0
+              ? "로컬과 서버에서 메모를 삭제했습니다."
+              : "로컬에서 메모를 삭제했습니다. 서버에는 이미 메모가 없습니다."
         );
+        return { shouldCloseWindow, deletedServerRecordCount };
       });
-      if (shouldCloseWindow) {
+      if (deleteOutcome.deletedServerRecordCount === 0 && user) {
+        let reconciliation: ServerMemoDeleteState = "unknown";
+        try {
+          const reconciliationServices = ensureSyncServices();
+          if (!reconciliationServices) {
+            throw new Error("서버 연결 상태를 확인해 주세요.");
+          }
+          const reconciledItems = await listBackedUpMemos(
+            reconciliationServices.gateway,
+            user.uid
+          );
+          setServerMemoManager((previous) => ({
+            ...previous,
+            memos: reconciledItems,
+          }));
+          reconciliation = reconciledItems.some((item) => item.memo.id === pendingMemo.id)
+            ? "present"
+            : "absent";
+        } catch {
+          // Local deletion remains successful even if the reconciliation read fails.
+        }
+        setBackupStatus(
+          reconciliation === "absent"
+            ? "로컬에서 메모를 삭제했습니다. 서버에는 이미 메모가 없습니다."
+            : reconciliation === "present"
+              ? "로컬에서 메모를 삭제했습니다. 서버 백업은 변경되지 않았습니다. 서버 목록을 새로고침했습니다."
+              : "로컬에서 메모를 삭제했습니다. 서버 상태를 확인하지 못했습니다."
+        );
+      }
+      if (deleteOutcome.shouldCloseWindow) {
         await closeWindow();
       }
     } catch (error) {

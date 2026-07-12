@@ -6,6 +6,12 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid == uid;
     }
 
+    function hasValidEncodedMemoDocumentId(pathMemoId, originalMemoId) {
+      return originalMemoId is string
+        && originalMemoId != ""
+        && pathMemoId.matches("memo~[0-9a-fA-F]{4}([0-9a-fA-F]{4})*");
+    }
+
     function hasValidSchemaV2SnapshotShape(uid) {
       return request.resource.data.keys().hasOnly([
           "schemaVersion",
@@ -73,7 +79,13 @@ service cloud.firestore {
           "pending"
         ])
         && request.resource.data.userId == uid
-        && request.resource.data.memoId == memoId
+        && (
+          (
+            request.resource.data.memoId == memoId
+            && !memoId.matches("memo~[0-9a-fA-F]{4}([0-9a-fA-F]{4})*")
+          )
+          || hasValidEncodedMemoDocumentId(memoId, request.resource.data.memoId)
+        )
         && hasValidCanonicalReference(request.resource.data.active)
         && hasValidCanonicalReference(request.resource.data.pending);
     }
@@ -115,9 +127,15 @@ service cloud.firestore {
           "memo"
         ])
         && request.resource.data.userId == uid
-        && request.resource.data.memoId == memoId
+        && (
+          (
+            request.resource.data.memoId == memoId
+            && !memoId.matches("memo~[0-9a-fA-F]{4}([0-9a-fA-F]{4})*")
+          )
+          || hasValidEncodedMemoDocumentId(memoId, request.resource.data.memoId)
+        )
         && request.resource.data.memo is map
-        && request.resource.data.memo.id == memoId;
+        && request.resource.data.memo.id == request.resource.data.memoId;
     }
 
     function hasValidServerMemoDeleteShape(uid, memoId) {
@@ -134,7 +152,13 @@ service cloud.firestore {
           "deletedAt"
         ])
         && request.resource.data.userId == uid
-        && request.resource.data.memoId == memoId
+        && (
+          (
+            request.resource.data.memoId == memoId
+            && !memoId.matches("memo~[0-9a-fA-F]{4}([0-9a-fA-F]{4})*")
+          )
+          || hasValidEncodedMemoDocumentId(memoId, request.resource.data.memoId)
+        )
         && request.resource.data.snapshotId is string
         && request.resource.data.deletedAt is timestamp;
     }

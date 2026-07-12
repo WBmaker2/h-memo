@@ -26,11 +26,13 @@ const {
   const mockInvoke = vi.fn();
   const webviewWindowState: {
     createdOptions: Record<string, unknown> | null;
+    createdLabels: string[];
     createdHandlers: Map<string, (event?: { payload?: unknown }) => void>;
     constructorCalls: number;
     creationMode: "created" | "error" | "deferred";
   } = {
     createdOptions: null,
+    createdLabels: [],
     createdHandlers: new Map(),
     constructorCalls: 0,
     creationMode: "created",
@@ -114,8 +116,9 @@ vi.mock("@tauri-apps/api/webviewWindow", () => {
   class WebviewWindow {
     static getByLabel = mockGetByLabel;
 
-    constructor(_label: string, options: Record<string, unknown>) {
+    constructor(label: string, options: Record<string, unknown>) {
       webviewWindowState.createdOptions = options;
+      webviewWindowState.createdLabels.push(label);
       webviewWindowState.constructorCalls += 1;
     }
 
@@ -138,6 +141,7 @@ describe("tauriWindow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     webviewWindowState.createdOptions = null;
+    webviewWindowState.createdLabels = [];
     webviewWindowState.createdHandlers.clear();
     webviewWindowState.constructorCalls = 0;
     webviewWindowState.creationMode = "created";
@@ -216,6 +220,12 @@ describe("tauriWindow", () => {
 
   it("focuses an existing memo window without changing its bounds", async () => {
     const { openMemoWindow } = await import("./tauriWindow");
+    mockInvoke.mockResolvedValue({
+      claimed: true,
+      shouldCreate: false,
+      windowLabel: "memo-owner",
+      claimToken: "owner-token",
+    });
     mockGetByLabel.mockResolvedValue({
       unminimize: mockUnminimize,
       show: mockShow,
@@ -228,6 +238,7 @@ describe("tauriWindow", () => {
     }));
 
     expect(webviewWindowState.createdOptions).toBeNull();
+    expect(mockInvoke).toHaveBeenCalledWith("claim_memo_window", expect.objectContaining({ memoId: "memo-existing" }));
     expect(mockUnminimize).toHaveBeenCalledTimes(1);
     expect(mockShow).toHaveBeenCalledTimes(1);
     expect(mockSetFocus).toHaveBeenCalledTimes(1);
@@ -260,7 +271,7 @@ describe("tauriWindow", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("claim_memo_window", {
       memoId: "memo-1",
-      windowLabel: "memo_memo-1",
+      windowLabel: expect.stringMatching(/^memo_[A-Za-z0-9_-]+$/),
     });
     expect(webviewWindowState.createdOptions).toBeNull();
     expect(mockUnminimize).toHaveBeenCalledTimes(1);
@@ -269,8 +280,9 @@ describe("tauriWindow", () => {
   });
 
   it("serializes concurrent child reservations so only the first caller creates the window", async () => {
-    const { openMemoWindow } = await import("./tauriWindow");
+    const { getMemoWindowLabel, openMemoWindow } = await import("./tauriWindow");
     const memo = createMemo({ id: "memo-1", now: "2026-07-11T09:00:00.000Z" });
+    const expectedLabel = await getMemoWindowLabel(memo.id);
     webviewWindowState.creationMode = "deferred";
     let claimCount = 0;
     mockInvoke.mockImplementation((command: string) => {
@@ -306,14 +318,15 @@ describe("tauriWindow", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("complete_memo_window", {
       memoId: "memo-1",
-      windowLabel: "memo_memo-1",
+      windowLabel: expectedLabel,
       claimToken: "token-1",
     });
     expect(mockInvoke).not.toHaveBeenCalledWith("release_memo_window", expect.anything());
   });
 
   it("releases exactly the matching pending token when child construction fails", async () => {
-    const { openMemoWindow } = await import("./tauriWindow");
+    const { getMemoWindowLabel, openMemoWindow } = await import("./tauriWindow");
+    const expectedLabel = await getMemoWindowLabel("memo-1");
     webviewWindowState.creationMode = "error";
     mockInvoke.mockResolvedValueOnce({
       claimed: true,
@@ -329,7 +342,7 @@ describe("tauriWindow", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith("release_memo_window", {
       memoId: "memo-1",
-      windowLabel: "memo_memo-1",
+      windowLabel: expectedLabel,
       claimToken: "token-1",
     });
   });
@@ -343,5 +356,71 @@ describe("tauriWindow", () => {
     ).rejects.toThrow("복원 잠금");
 
     expect(webviewWindowState.constructorCalls).toBe(0);
+  });
+
+  it("claims before looking up an existing label", async () => {
+    const { openMemoWindow } = await import("./tauriWindow");
+    const events: string[] = [];
+    mockInvoke.mockImplementation(async () => {
+      events.push("claim");
+      return {
+        claimed: true,
+        shouldCreate: false,
+        windowLabel: "memo-owner",
+        claimToken: "owner-token",
+      };
+    });
+    mockGetByLabel.mockImplementation(async () => {
+      events.push("lookup");
+      return { unminimize: mockUnminimize, show: mockShow, setFocus: mockSetFocus };
+    });
+
+    await openMemoWindow(createMemo({ id: "memo-order", now: "2026-07-11T09:00:00.000Z" }));
+
+    expect(events).toEqual(["claim", "lookup"]);
+    expect(mockSetFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates distinct stable native labels for a collision pair", async () => {
+    const { getMemoWindowLabel, openMemoWindow } = await import("./tauriWindow");
+    const firstLabel = await getMemoWindowLabel("a?b");
+    const secondLabel = await getMemoWindowLabel("a#b");
+
+    expect(firstLabel).not.toBe(secondLabel);
+    expect(await getMemoWindowLabel("a?b")).toBe(firstLabel);
+
+    await openMemoWindow(createMemo({ id: "a?b", now: "2026-07-11T09:00:00.000Z" }));
+    await openMemoWindow(createMemo({ id: "a#b", now: "2026-07-11T09:00:00.000Z" }));
+
+    expect(webviewWindowState.createdLabels).toEqual([firstLabel, secondLabel]);
+  });
+
+  it("releases a pending claim when native creation emits no event before timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const { MEMO_WINDOW_CREATION_TIMEOUT_MS, getMemoWindowLabel, openMemoWindow } = await import("./tauriWindow");
+      const expectedLabel = await getMemoWindowLabel("memo-timeout");
+      webviewWindowState.creationMode = "deferred";
+      mockInvoke.mockResolvedValueOnce({
+        claimed: true,
+        shouldCreate: true,
+        windowLabel: expectedLabel,
+        claimToken: "timeout-token",
+      });
+
+      const opening = openMemoWindow(createMemo({ id: "memo-timeout", now: "2026-07-11T09:00:00.000Z" }));
+      const openingRejection = expect(opening).rejects.toThrow("시간");
+      await vi.waitFor(() => expect(webviewWindowState.constructorCalls).toBe(1));
+      await vi.advanceTimersByTimeAsync(MEMO_WINDOW_CREATION_TIMEOUT_MS);
+
+      await openingRejection;
+      expect(mockInvoke).toHaveBeenCalledWith("release_memo_window", {
+        memoId: "memo-timeout",
+        windowLabel: expectedLabel,
+        claimToken: "timeout-token",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

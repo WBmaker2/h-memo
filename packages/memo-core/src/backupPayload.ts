@@ -10,10 +10,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
 }
 
-function isParseableDate(value: unknown): value is string {
+const ISO_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function isStrictTimestamp(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.trim() !== "" &&
+    ISO_TIMESTAMP_PATTERN.test(value) &&
     !Number.isNaN(Date.parse(value))
   );
 }
@@ -25,7 +29,7 @@ function isValidMemoShape(memo: unknown): memo is Memo {
 
   const candidate = memo as JsonUnknown;
 
-  if (typeof candidate.id !== "string") {
+  if (typeof candidate.id !== "string" || candidate.id.trim() === "") {
     return false;
   }
   if (typeof candidate.title !== "string") {
@@ -34,10 +38,10 @@ function isValidMemoShape(memo: unknown): memo is Memo {
   if (typeof candidate.plainText !== "string") {
     return false;
   }
-  if (!isParseableDate(candidate.createdAt)) {
+  if (!isStrictTimestamp(candidate.createdAt)) {
     return false;
   }
-  if (!isParseableDate(candidate.updatedAt)) {
+  if (!isStrictTimestamp(candidate.updatedAt)) {
     return false;
   }
   if (typeof candidate.syncState !== "string" || !SYNC_STATES.includes(candidate.syncState)) {
@@ -47,7 +51,7 @@ function isValidMemoShape(memo: unknown): memo is Memo {
     return false;
   }
 
-  if (!(candidate.deletedAt === null || isParseableDate(candidate.deletedAt))) {
+  if (!(candidate.deletedAt === null || isStrictTimestamp(candidate.deletedAt))) {
     return false;
   }
 
@@ -146,7 +150,7 @@ function validateBackupPayloadShape(
     return { ok: false, reason: "메모 목록이 없습니다." };
   }
 
-  if (!isParseableDate(candidate.createdAt)) {
+  if (!isStrictTimestamp(candidate.createdAt)) {
     return { ok: false, reason: INVALID_MEMO_REASON };
   }
 

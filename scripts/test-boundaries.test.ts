@@ -12,12 +12,15 @@ import {
 describe("Vitest discovery boundaries", () => {
   it("includes only repository test file patterns", () => {
     const configSource = readFileSync(path.resolve("vitest.config.ts"), "utf8");
+    const webConfigSource = readFileSync(path.resolve("apps/web/vite.config.ts"), "utf8");
 
     expect(VITEST_INCLUDE_PATTERNS).toEqual([
       "**/*.{test,spec}.{js,mjs,cjs,ts,tsx}",
     ]);
     expect(configSource).toContain("include: VITEST_INCLUDE_PATTERNS");
     expect(configSource).toContain("exclude: VITEST_EXCLUDE_PATTERNS");
+    expect(webConfigSource).toContain("include: VITEST_INCLUDE_PATTERNS");
+    expect(webConfigSource).toContain("exclude: VITEST_EXCLUDE_PATTERNS");
   });
 
   it("excludes generated and nested repository paths", () => {

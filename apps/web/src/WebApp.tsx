@@ -66,6 +66,22 @@ const JSON_RESTORE_CONFIRM_MESSAGE =
   "JSON 백업 파일 내용으로 현재 메모를 대체합니다. 백업에 없는 메모는 삭제됩니다. 계속할까요?";
 const SERVER_DELETE_CONFIRM_MESSAGE =
   "서버 백업에서 이 메모를 삭제합니다. 삭제한 뒤에는 서버에서 복원할 수 없습니다. 계속할까요?";
+type ServerMemoDeleteState = "deleted" | "absent" | "present" | "unknown";
+const SERVER_MEMO_STALE_DELETE_MESSAGE = (
+  label: string,
+  state: ServerMemoDeleteState
+) => {
+  if (state === "deleted") {
+    return "서버 메모를 삭제했습니다.";
+  }
+  if (state === "absent") {
+    return `서버 백업에서 "${label}" 메모를 찾지 못했습니다. 서버 목록을 새로고침했습니다.`;
+  }
+  if (state === "present") {
+    return `서버 백업에서 "${label}" 메모를 삭제하지 못했습니다. 서버 목록을 새로고침했습니다.`;
+  }
+  return `서버 백업에서 "${label}" 메모를 삭제하지 못했습니다. 서버 목록을 확인하지 못했습니다.`;
+};
 const NO_BACKUP_MESSAGE = "복원할 백업이 없습니다.";
 const SERVER_MEMO_INITIAL_STATUS = "서버 메모를 불러오지 않았습니다.";
 const RESTORE_SAFETY_CHANGED_EVENT = "h-memo:restore-safety-changed";
@@ -1042,14 +1058,31 @@ export function WebApp() {
   const deleteServerMemoLocked = async (
     session: { user: WebPreviewUser; services: SyncServices },
     memoId: string
-  ) => {
+  ): Promise<{ count: number; state: ServerMemoDeleteState }> => {
     const deletedServerRecordCount = await deleteBackedUpMemo(
       session.services.gateway,
       session.user.uid,
       memoId
     );
-    void deletedServerRecordCount;
-    setServerMemoItems((previous) => previous.filter((item) => item.memo.id !== memoId));
+    if (deletedServerRecordCount > 0) {
+      setServerMemoItems((previous) => previous.filter((item) => item.memo.id !== memoId));
+      return { count: deletedServerRecordCount, state: "deleted" };
+    }
+
+    try {
+      const reconciledItems = await listBackedUpMemos(
+        session.services.gateway,
+        session.user.uid
+      );
+      setServerMemoItems(reconciledItems);
+      return {
+        count: 0,
+        state: reconciledItems.some((item) => item.memo.id === memoId) ? "present" : "absent",
+      };
+    } catch {
+      // The delete result remains stale even if the reconciliation read fails.
+      return { count: 0, state: "unknown" };
+    }
   };
 
   const handleBackup = async () => {
@@ -1258,9 +1291,17 @@ export function WebApp() {
 
     setIsBusy(true);
     try {
-      await runWithWebRestoreLock(() =>
+      const target = serverMemoItems.find((item) => item.memo.id === memoId);
+      const targetLabel = target ? getMemoLabel(target.memo) : "메모";
+      const deleteOutcome = await runWithWebRestoreLock(() =>
         deleteServerMemoLocked(confirmedSession, memoId)
       );
+      if (deleteOutcome.count === 0) {
+        const message = SERVER_MEMO_STALE_DELETE_MESSAGE(targetLabel, deleteOutcome.state);
+        setBackupStatus(message);
+        setServerMemoStatus(message);
+        return;
+      }
       setBackupStatus("서버 메모를 삭제했습니다.");
       setServerMemoStatus("서버 메모를 삭제했습니다.");
     } catch (error) {

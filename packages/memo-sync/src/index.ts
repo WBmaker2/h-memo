@@ -11,6 +11,16 @@ export {
   listBackupSnapshots,
   restoreLatestBackup,
 } from "./backup";
+export {
+  parseLegacyFirestoreV1Payload,
+  validateLegacyFirestoreV1Payload,
+} from "./legacyBackupPayload";
+export {
+  canUseLegacyRawMemoDocumentId,
+  decodeMemoDocumentId,
+  encodeMemoDocumentId,
+  isMemoDocumentIdFor,
+} from "./memoDocumentId";
 export type {
   BackedUpMemo,
   BackedUpSnapshot,

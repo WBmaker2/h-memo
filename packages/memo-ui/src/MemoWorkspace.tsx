@@ -1,7 +1,25 @@
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { type Memo } from "@h-memo/memo-core";
 import { StickyMemo } from "./StickyMemo";
 import { SettingsPanel, type SettingsPanelProps } from "./SettingsPanel";
+
+const UPDATE_HISTORY = [
+  {
+    date: "2026-05-13",
+    title: "개발 시작",
+    detail: "메모 작성, 로컬 저장, 데스크톱 창 작업을 시작했습니다.",
+  },
+  {
+    date: "2026-07-11",
+    title: "데이터 안전성 하드닝",
+    detail: "서버 백업 세대, 복원 안전 잠금, 메뉴 접근성을 보강했습니다.",
+  },
+  {
+    date: "2026-07-13",
+    title: "최종 호환성 보강",
+    detail: "legacy 백업, memo ID codec, 창 예약 복구, 삭제 재조정을 보강했습니다.",
+  },
+] as const;
 
 type MemoWorkspaceShellProps = {
   appClassName: string;
@@ -54,6 +72,7 @@ export function MemoWorkspace({
   actions,
   authStatus,
 }: MemoWorkspaceShellProps) {
+  const [isUpdateHistoryOpen, setIsUpdateHistoryOpen] = useState(false);
   const hasMemos = memos.length > 0;
   const menuMemos = managedMemos ?? memos;
   const hasManagedMemos = menuMemos.length > 0;
@@ -103,6 +122,28 @@ export function MemoWorkspace({
           <p className="memo-list__empty">관리할 메모가 없습니다.</p>
         )}
       </section>
+      <button
+        type="button"
+        className="memo-menu__updates-button"
+        aria-expanded={isUpdateHistoryOpen}
+        onClick={() => setIsUpdateHistoryOpen((isOpen) => !isOpen)}
+      >
+        {isUpdateHistoryOpen ? "업데이트 내역 닫기" : "업데이트 내역"}
+      </button>
+      {isUpdateHistoryOpen ? (
+        <section className="memo-menu__updates" aria-label="업데이트 내역">
+          <h2 className="memo-menu__updates-title">업데이트 내역</h2>
+          <ul className="memo-menu__updates-list">
+            {UPDATE_HISTORY.map((entry) => (
+              <li key={entry.date}>
+                <time dateTime={entry.date}>{entry.date}</time>
+                <strong>{entry.title}</strong>
+                <span>{entry.detail}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <SettingsPanel
         userName={settingsProps.userName}
         backupStatus={settingsProps.backupStatus}

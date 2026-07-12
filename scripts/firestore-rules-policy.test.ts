@@ -50,7 +50,7 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain("match /users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId}");
     expect(rules).toContain("allow create: if isOwner(uid)");
     expect(rules).toContain("&& hasValidSnapshotMemoShape(uid, memoId)");
-    expect(rules).toContain("request.resource.data.memo.id == memoId");
+    expect(rules).toContain("request.resource.data.memo.id == request.resource.data.memoId");
     expect(rules).toContain("allow update, delete: if false;");
     const nestedMemoRules = rules.slice(
       rules.indexOf("match /users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId}"),
@@ -69,6 +69,13 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain("allow delete: if isOwner(uid);");
     expect(rules).toContain('"snapshotId"');
     expect(rules).toContain("request.resource.data.snapshotId is string");
+    expect(rules).toContain("function hasValidEncodedMemoDocumentId(pathMemoId, originalMemoId)");
+    expect(rules).toContain(
+      "pathMemoId.matches(\"memo~[0-9a-fA-F]{4}([0-9a-fA-F]{4})*\")"
+    );
+    expect(rules).toContain(
+      "!memoId.matches(\"memo~[0-9a-fA-F]{4}([0-9a-fA-F]{4})*\")"
+    );
   });
 
   it("binds the active generation to a complete v2 snapshot without permitting legacy writes", () => {
