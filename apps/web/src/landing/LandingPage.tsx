@@ -19,6 +19,14 @@ type ReleaseHistoryEntry = {
 
 const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
   {
+    date: "2026-07-13",
+    title: "접근성 검토 보완",
+    items: [
+      "데스크톱 서버 메모의 백업 시각과 삭제 동작 표시를 일관되게 정리했습니다.",
+      "좁은 메뉴의 세로 배치와 시작프로그램 스위치 클릭 영역을 보완했습니다.",
+    ],
+  },
+  {
     date: "2026-07-12",
     title: "데이터 안전성, 복원 안전성, 접근성, 메뉴 개선",
     items: [

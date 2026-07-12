@@ -3813,8 +3813,10 @@ describe("desktop App", () => {
 
     await waitFor(() => {
       expect(mockListBackedUpMemos).toHaveBeenCalledWith(expect.anything(), "server-user");
-      expect(screen.getByRole("dialog", { name: "서버 메모 관리" })).toHaveTextContent(
-        "서버에 남은 삭제 메모"
+      const serverDialog = screen.getByRole("dialog", { name: "서버 메모 관리" });
+      expect(serverDialog).toHaveTextContent("서버에 남은 삭제 메모");
+      expect(within(serverDialog).getByRole("button", { name: "서버 삭제" })).toHaveClass(
+        "destructive-action"
       );
       expect(screen.getByRole("status")).toHaveTextContent("서버 메모 1개를 불러왔습니다.");
     });
@@ -3844,6 +3846,54 @@ describe("desktop App", () => {
       expect(within(serverDialog).queryByRole("listitem")).not.toBeInTheDocument();
       expect(screen.getByText("서버에 저장된 메모가 없습니다.")).toBeInTheDocument();
     });
+  });
+
+  it("formats valid and invalid server memo backup timestamps", async () => {
+    const user = userEvent.setup();
+    setMockFirebaseClientEnv({
+      apiKey: "api-key",
+      authDomain: "project.firebaseapp.com",
+      projectId: "project-id",
+      appId: "app-id",
+    });
+    mockSubscribeAuthUser.mockImplementation((_, callback: (signedInUser: unknown) => void) => {
+      callback({
+        uid: "server-user",
+        displayName: "서버 사용자",
+        email: "server@example.com",
+        photoURL: "",
+      });
+      return mockAuthUnsubscribe;
+    });
+    mockListBackedUpMemos.mockResolvedValue([
+      {
+        memo: createMemo({
+          id: "memo-valid-backup-time",
+          now: "2026-05-13T09:00:00.000Z",
+          plainText: "유효 백업 시각 메모",
+        }),
+        backupCreatedAt: "2026-05-13T09:11:00.000Z",
+      },
+      {
+        memo: createMemo({
+          id: "memo-invalid-backup-time",
+          now: "2026-05-13T09:00:00.000Z",
+          plainText: "잘못된 백업 시각 메모",
+        }),
+        backupCreatedAt: "invalid-backup-date",
+      },
+    ]);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "서버 메모 관리" })).toBeEnabled();
+    });
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+
+    const serverDialog = await screen.findByRole("dialog", { name: "서버 메모 관리" });
+    expect(within(serverDialog).getByText("백업 시각: 2026. 5. 13. 오후 6:11:00")).toBeInTheDocument();
+    expect(within(serverDialog).getByText("백업 시각: 날짜 정보 없음")).toBeInTheDocument();
   });
 
   it("captures all desktop memos before individual server restore and undo", async () => {

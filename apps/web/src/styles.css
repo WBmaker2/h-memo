@@ -278,8 +278,8 @@ body {
   gap: 8px;
 }
 
-.settings-panel header,
-.settings-panel div,
+.settings-panel__section-content > div,
+.firebase-config-form > div,
 .memo-toolbar__row {
   display: flex;
   flex-wrap: wrap;
@@ -388,8 +388,19 @@ body {
 .settings-panel label.settings-panel__switch-row {
   display: flex;
   flex-direction: row;
+  min-height: 40px;
+  width: 100%;
   justify-content: space-between;
   align-items: center;
+}
+
+.settings-panel__switch-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  flex: 0 0 auto;
+  margin: 0;
 }
 
 .firebase-config-form {

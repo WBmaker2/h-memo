@@ -2332,7 +2332,7 @@ export function App() {
                   <li key={item.memo.id} className="server-memo-list__item">
                     <div className="server-memo-list__content">
                       <strong>{getMemoLabel(item.memo)}</strong>
-                      <span>백업 시각: {item.backupCreatedAt}</span>
+                      <span>백업 시각: {formatDateTime(item.backupCreatedAt)}</span>
                       {item.memo.deletedAt ? <span>로컬 삭제 기록 있음</span> : null}
                     </div>
                     <div className="server-memo-list__actions">
@@ -2345,6 +2345,7 @@ export function App() {
                       </button>
                       <button
                         type="button"
+                        className="server-memo-dialog__action--destructive destructive-action"
                         onClick={() => handleDeleteServerMemo(item.memo.id, getMemoLabel(item.memo))}
                         disabled={isBusy || isRestoreLocked}
                       >

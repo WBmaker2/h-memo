@@ -155,7 +155,9 @@ describe("LandingPage", () => {
       screen.getByText("서버 복원 시 최신본을 바로 덮어쓰지 않고 시간대별 백업 기록 중 선택해 복원합니다."),
     ).toBeInTheDocument();
     expect(screen.getByText("2026-07-12")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-13")).toBeInTheDocument();
     expect(screen.getByText("2026-05-13")).toBeInTheDocument();
+    expect(screen.getByText("접근성 검토 보완")).toBeInTheDocument();
     expect(
       screen.getByText("데이터 안전성, 복원 안전성, 접근성, 메뉴 개선"),
     ).toBeInTheDocument();
