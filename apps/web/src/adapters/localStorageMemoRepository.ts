@@ -12,12 +12,17 @@ import {
 export const WEB_MEMO_STORAGE_KEY = "h-memo:web-memo-repository-v1";
 export const WEB_MEMO_STORAGE_CHANGED_EVENT = "h-memo:web-memo-storage-changed";
 const DEFAULT_RICH_CONTENT = { type: "doc", content: [{ type: "paragraph" }] } as const;
+const STORAGE_READ_ERROR = "로컬 메모 저장소 데이터를 읽을 수 없습니다.";
 const SYNC_STATES = new Set<SyncState>([
   "local-only",
   "queued",
   "backed-up",
   "conflict",
 ]);
+
+type LocalStorageMemoRepositoryOptions = {
+  beforeWrite?: () => void;
+};
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -114,10 +119,6 @@ function normalizeMemo(value: unknown): Memo | null {
   };
 }
 
-function isMemo(value: Memo | null): value is Memo {
-  return value !== null;
-}
-
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -128,26 +129,42 @@ function getErrorMessage(error: unknown): string {
   return "알 수 없는 오류";
 }
 
-function safeReadStorage(): Memo[] {
+function readStorage(): Memo[] {
   if (typeof window === "undefined" || typeof window.localStorage === "undefined") {
-    return [];
+    throw new Error(`${STORAGE_READ_ERROR} localStorage를 사용할 수 없습니다.`);
   }
 
+  let raw: string | null;
   try {
-    const raw = window.localStorage.getItem(WEB_MEMO_STORAGE_KEY);
-    if (!raw) {
-      return [];
-    }
-
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed.map(normalizeMemo).filter(isMemo).map(clone);
-  } catch {
+    raw = window.localStorage.getItem(WEB_MEMO_STORAGE_KEY);
+  } catch (error) {
+    throw new Error(`${STORAGE_READ_ERROR} ${getErrorMessage(error)}`);
+  }
+  if (raw === null) {
     return [];
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${STORAGE_READ_ERROR} ${getErrorMessage(error)}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${STORAGE_READ_ERROR} 메모 목록 형식이 올바르지 않습니다.`);
+  }
+
+  const normalized: Memo[] = [];
+  const ids = new Set<string>();
+  for (const value of parsed) {
+    const memo = normalizeMemo(value);
+    if (!memo || memo.id.trim() === "" || ids.has(memo.id)) {
+      throw new Error(`${STORAGE_READ_ERROR} 메모 스키마가 올바르지 않습니다.`);
+    }
+    ids.add(memo.id);
+    normalized.push(clone(memo));
+  }
+  return normalized;
 }
 
 function writeStorage(value: Memo[]) {
@@ -169,14 +186,14 @@ function sortMemos(memos: Memo[]): Memo[] {
 
 export class LocalStorageMemoRepository implements MemoRepository {
   private readonly records = new Map<string, Memo>();
+  private readonly beforeWrite: () => void;
 
-  constructor() {
-    for (const memo of safeReadStorage()) {
-      this.records.set(memo.id, memo);
-    }
+  constructor(options: LocalStorageMemoRepositoryOptions = {}) {
+    this.beforeWrite = options.beforeWrite ?? (() => {});
   }
 
   private persistRecords(records: Map<string, Memo>) {
+    this.beforeWrite();
     writeStorage(sortMemos(Array.from(records.values())));
   }
 
@@ -189,7 +206,7 @@ export class LocalStorageMemoRepository implements MemoRepository {
 
   private refreshRecords() {
     const latestRecords = new Map<string, Memo>();
-    for (const memo of safeReadStorage()) {
+    for (const memo of readStorage()) {
       latestRecords.set(memo.id, memo);
     }
     this.replaceRecords(latestRecords);

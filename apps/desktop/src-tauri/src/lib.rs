@@ -411,7 +411,7 @@ fn expires_at(now: SystemTime, ttl_ms: u64) -> SystemTime {
 fn prune_restore_lock_lease(lease: &mut Option<RestoreLockLease>, now: SystemTime) {
   if lease
     .as_ref()
-    .is_some_and(|current| current.expires_at <= now && !current.operation_active)
+    .is_some_and(|current| current.expires_at <= now)
   {
     *lease = None;
   }
@@ -1395,23 +1395,23 @@ mod tests {
     );
 
     let expired = test_memo("memo-save-boundary", "expired", "2026-07-12T09:02:00Z");
-    save_memo_inner(
+    assert!(save_memo_inner(
       &connection,
       &mut lease,
       &expired,
       Some("token-current"),
       lease_time(3_111),
     )
-    .expect("the exact live lease token should remain valid after ttl expiry");
-    assert!(save_memo_inner(
+    .is_err());
+    save_memo_inner(
       &connection,
       &mut lease,
       &expired,
       None,
       lease_time(3_112),
     )
-    .is_err());
-    assert!(release_restore_lock_lease_inner(
+    .expect("ordinary saves should resume after owner liveness expires");
+    assert!(!release_restore_lock_lease_inner(
       &mut lease,
       "token-current",
       "main",
@@ -1447,7 +1447,7 @@ mod tests {
   }
 
   #[test]
-  fn active_restore_operation_remains_authoritative_after_lease_expiry() {
+  fn active_restore_operation_remains_authoritative_while_renewed() {
     let connection = Connection::open_in_memory().expect("in-memory database should open");
     initialize_database(&connection).expect("database should initialize");
     let mut lease = None;
@@ -1472,9 +1472,17 @@ mod tests {
     .expect("lease should be acquired");
     activate_restore_lock_lease_inner(&mut lease, "active-token", "main", lease_time(5_050))
       .expect("operation should become active");
+    renew_restore_lock_lease_inner(
+      &mut lease,
+      "active-token",
+      "main",
+      500,
+      lease_time(5_090),
+    )
+    .expect("live owner renewal should extend the active deadline");
 
     let current = current_restore_lock_lease_inner(&mut lease, lease_time(5_500))
-      .expect("active lease should survive ttl expiry");
+      .expect("renewed active lease should remain live");
     assert!(current.operation_active);
     assert!(save_memo_inner(
       &connection,
@@ -1491,24 +1499,71 @@ mod tests {
       Some("active-token"),
       lease_time(5_500),
     )
-    .expect("matching token should remain controlled while operation is active");
+      .expect("matching token should remain controlled while the renewed operation is active");
     assert!(ensure_no_live_restore_lock(&mut lease, lease_time(5_500)).is_err());
 
     assert!(release_restore_lock_lease_inner(
       &mut lease,
       "active-token",
       "main",
-      lease_time(5_600),
+      lease_time(5_520),
     ));
-    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(5_600)).is_none());
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(5_520)).is_none());
     save_memo_inner(
       &connection,
       &mut lease,
       &replacement,
       None,
-      lease_time(5_601),
+      lease_time(5_521),
     )
     .expect("ordinary saves should resume after matching release");
+  }
+
+  #[test]
+  fn active_restore_lease_requires_live_owner_renewal() {
+    let connection = Connection::open_in_memory().expect("in-memory database should open");
+    initialize_database(&connection).expect("database should initialize");
+    let mut lease = None;
+    let memo = test_memo("memo-owner-loss", "after owner loss", "2026-07-12T09:03:00Z");
+
+    acquire_restore_lock_lease_inner(
+      &mut lease,
+      "owner-loss-token",
+      "main",
+      100,
+      lease_time(5_700),
+    )
+    .expect("lease should be acquired");
+    activate_restore_lock_lease_inner(
+      &mut lease,
+      "owner-loss-token",
+      "main",
+      lease_time(5_710),
+    )
+    .expect("operation should activate");
+    renew_restore_lock_lease_inner(
+      &mut lease,
+      "owner-loss-token",
+      "main",
+      100,
+      lease_time(5_750),
+    )
+    .expect("a live owner should extend the active deadline");
+
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(5_849)).is_some());
+    assert!(ensure_no_live_restore_lock(&mut lease, lease_time(5_849)).is_err());
+
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(5_851)).is_none());
+    save_memo_inner(
+      &connection,
+      &mut lease,
+      &memo,
+      None,
+      lease_time(5_851),
+    )
+    .expect("ordinary saves should recover after owner heartbeat expiry");
+    ensure_no_live_restore_lock(&mut lease, lease_time(5_851))
+      .expect("window claims should recover after owner heartbeat expiry");
   }
 
   #[test]
@@ -1524,6 +1579,14 @@ mod tests {
     .expect("lease should be acquired");
     activate_restore_lock_lease_inner(&mut lease, "cleanup-token", "main", lease_time(6_050))
       .expect("operation should activate");
+    renew_restore_lock_lease_inner(
+      &mut lease,
+      "cleanup-token",
+      "main",
+      500,
+      lease_time(6_090),
+    )
+    .expect("active callback should still have a live owner heartbeat");
 
     let finished = finish_restore_lock_lease_inner(
       &mut lease,

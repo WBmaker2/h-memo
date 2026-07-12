@@ -73,6 +73,8 @@ const SERVER_BACKED_UP_MEMO: BackedUpMemo = {
 
 const LOCAL_MEMO_KEY = "h-memo:web-memo-repository-v1";
 const RESTORE_SAFETY_KEY = "h-memo:restore-safety-v1";
+const RESTORE_LEASE_KEY = "h-memo:web-restore-lease-v1";
+const RESTORE_EPOCH_KEY = "h-memo:web-restore-epoch-v1";
 
 vi.mock("firebase/firestore", () => ({
   getFirestore: vi.fn(() => ({})),
@@ -537,13 +539,15 @@ describe("WebApp", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("status")).toHaveTextContent("JSON 복원 실패: 복원 안전 지점");
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "복원 안전 지점 및 탭 간 잠금을 저장하지 못했습니다"
+      );
       expect(screen.getByDisplayValue("저장 실패에도 유지할 웹 메모")).toBeInTheDocument();
     });
     expect(screen.queryByDisplayValue("저장 실패로 복원되지 않을 메모")).not.toBeInTheDocument();
   });
 
-  it("surfaces restore and rollback failures together", async () => {
+  it("surfaces restore, rollback, and lease cleanup failures together", async () => {
     const currentMemo = createMemo({
       id: "web-rollback-current",
       now: "2026-07-12T10:10:00.000Z",
@@ -562,6 +566,14 @@ describe("WebApp", () => {
     installLocalStorageStub({
       initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([currentMemo])]],
     });
+    const storage = window.localStorage;
+    const originalRemoveItem = storage.removeItem.bind(storage);
+    storage.removeItem = (key: string) => {
+      if (key === RESTORE_LEASE_KEY) {
+        throw new Error("웹 잠금 정리 실패");
+      }
+      originalRemoveItem(key);
+    };
     const originalSave = LocalStorageMemoRepository.prototype.saveMemo;
     let saveCallCount = 0;
     const saveSpy = vi
@@ -603,9 +615,12 @@ describe("WebApp", () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByRole("status")).toHaveTextContent(
-          "JSON 복원 실패: 복원 실패 후 원상 복구에도 실패했습니다: 복원 쓰기 실패 / 롤백 삭제 실패 / 롤백 저장 실패"
-        );
+        const status = screen.getByRole("status");
+        expect(status).toHaveTextContent("JSON 복원 실패:");
+        expect(status).toHaveTextContent("복원 쓰기 실패");
+        expect(status).toHaveTextContent("롤백 삭제 실패");
+        expect(status).toHaveTextContent("롤백 저장 실패");
+        expect(status).toHaveTextContent("웹 잠금 정리 실패");
       });
     } finally {
       saveSpy.mockRestore();
@@ -946,7 +961,121 @@ describe("WebApp", () => {
     }
   });
 
-  it("loads corrupt legacy localStorage records without crashing", async () => {
+  it("rejects an edit created after another tab advances the epoch but before its event arrives", async () => {
+    const restoreLocks = installExclusiveWebLocks();
+    const initialMemo = createMemo({
+      id: "web-stale-event-order",
+      now: "2026-07-12T19:20:00.000Z",
+      plainText: "이벤트 전 오래된 화면",
+    });
+    const restoredMemo = createMemo({
+      id: initialMemo.id,
+      now: "2026-07-12T19:21:00.000Z",
+      plainText: "다른 탭의 최종 복원",
+    });
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([initialMemo])]],
+    });
+    const mutationLockEntered = deferred();
+    const releaseMutationLock = deferred();
+
+    try {
+      render(<WebApp />);
+      await waitFor(() => {
+        expect(screen.getByRole("textbox", { name: "메모 내용" })).toHaveValue(
+          initialMemo.plainText
+        );
+      });
+
+      const externalRestore = navigator.locks.request(
+        "h-memo:web-mutation-v1",
+        { mode: "exclusive" },
+        async () => {
+          mutationLockEntered.resolve();
+          await releaseMutationLock.promise;
+        }
+      );
+      await mutationLockEntered.promise;
+      window.localStorage.setItem(RESTORE_EPOCH_KEY, "1");
+      window.localStorage.setItem(LOCAL_MEMO_KEY, JSON.stringify([restoredMemo]));
+
+      fireEvent.change(screen.getByRole("textbox", { name: "메모 내용" }), {
+        target: { value: "이벤트 전에 만든 stale 편집" },
+      });
+      releaseMutationLock.resolve();
+      await externalRestore;
+
+      await waitFor(() => {
+        expect(screen.getByRole("status")).toHaveTextContent("오래된 메모 변경");
+      });
+      expect(
+        JSON.parse(window.localStorage.getItem(LOCAL_MEMO_KEY) ?? "[]")[0]
+          .plainText
+      ).toBe(restoredMemo.plainText);
+
+      act(() => {
+        window.dispatchEvent(new Event("h-memo:web-memo-storage-changed"));
+      });
+      await waitFor(() => {
+        expect(screen.getByRole("textbox", { name: "메모 내용" })).toHaveValue(
+          restoredMemo.plainText
+        );
+      });
+    } finally {
+      releaseMutationLock.resolve();
+      restoreLocks();
+    }
+  });
+
+  it("reloads repository state before observing an epoch-only storage event", async () => {
+    const initialMemo = createMemo({
+      id: "web-epoch-only-reload",
+      now: "2026-07-12T19:30:00.000Z",
+      plainText: "epoch 이벤트 전 메모",
+    });
+    const reconciledMemo = {
+      ...initialMemo,
+      plainText: "epoch 이벤트로 다시 읽은 메모",
+      updatedAt: "2026-07-12T19:31:00.000Z",
+    };
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([initialMemo])]],
+    });
+    render(<WebApp />);
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "메모 내용" })).toHaveValue(
+        initialMemo.plainText
+      );
+    });
+
+    window.localStorage.setItem(RESTORE_EPOCH_KEY, "1");
+    window.localStorage.setItem(LOCAL_MEMO_KEY, JSON.stringify([reconciledMemo]));
+    act(() => {
+      const event = new Event("storage") as StorageEvent;
+      Object.defineProperty(event, "key", {
+        configurable: true,
+        value: RESTORE_EPOCH_KEY,
+      });
+      window.dispatchEvent(event);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "메모 내용" })).toHaveValue(
+        reconciledMemo.plainText
+      );
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "메모 내용" }), {
+      target: { value: "재조정 뒤 허용된 편집" },
+    });
+    await waitFor(() => {
+      expect(
+        JSON.parse(window.localStorage.getItem(LOCAL_MEMO_KEY) ?? "[]")[0]
+          .plainText
+      ).toBe("재조정 뒤 허용된 편집");
+    });
+  });
+
+  it("fails closed when one legacy localStorage record is corrupt", async () => {
     installLocalStorageStub({
       initialEntries: [
         [
@@ -973,8 +1102,11 @@ describe("WebApp", () => {
     render(<WebApp />);
 
     await waitFor(() => {
-      expect(screen.getByDisplayValue("windowState가 없어도 렌더링됩니다.")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "로컬 메모 저장소 데이터를 읽을 수 없습니다"
+      );
     });
+    expect(screen.queryByDisplayValue("windowState가 없어도 렌더링됩니다.")).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue("무시될 메모")).not.toBeInTheDocument();
   });
 
@@ -987,7 +1119,7 @@ describe("WebApp", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent(
-        /메모 저장 실패: localStorage 저장 실패/
+        /메모 저장 실패: 탭 간 변경 잠금을 준비하지 못했습니다: quota exceeded/
       );
     });
   });

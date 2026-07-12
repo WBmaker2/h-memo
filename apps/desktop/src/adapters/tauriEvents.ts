@@ -49,16 +49,19 @@ export type RestoreLockAcknowledgedPayload = {
 export type RestoreLockReleasedPayload = {
   sourceId: string;
   token: string;
+  finalApplyGeneration: number;
 };
 
 export type RestoreStoreApplyRequestedPayload = {
   sourceId: string;
   token: string;
+  generation: number;
 };
 
 export type RestoreStoreApplyAcknowledgedPayload = {
   sourceId: string;
   token: string;
+  generation: number;
   windowLabel: string;
   ok: boolean;
   error?: string;
@@ -166,10 +169,14 @@ export function listenRestoreLockAcknowledged(
   });
 }
 
-export function notifyRestoreLockReleased(token: string) {
+export function notifyRestoreLockReleased(
+  token: string,
+  finalApplyGeneration: number
+) {
   return emit<RestoreLockReleasedPayload>(RESTORE_LOCK_RELEASED_EVENT, {
     sourceId,
     token,
+    finalApplyGeneration,
   });
 }
 
@@ -186,12 +193,14 @@ export function listenRestoreLockReleased(
   });
 }
 
-export function notifyRestoreStoreApplyRequested(token: string) {
+export function notifyRestoreStoreApplyRequested(
+  payload: Omit<RestoreStoreApplyRequestedPayload, "sourceId">
+) {
   return emit<RestoreStoreApplyRequestedPayload>(
     RESTORE_STORE_APPLY_REQUESTED_EVENT,
     {
       sourceId,
-      token,
+      ...payload,
     }
   );
 }

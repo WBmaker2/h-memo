@@ -67,6 +67,7 @@ import {
 import {
   createRestoreLockCoordinator,
   createTauriRestoreLockLeaseAdapter,
+  type RestoreStoreApplyRequest,
 } from "./adapters/restoreLock";
 import { startGoogleDesktopOAuth } from "./adapters/tauriGoogleOAuth";
 import {
@@ -294,7 +295,13 @@ export function App() {
   const restoreLockRef = useRef<string | null>(null);
   const restoreLockCoordinatorRef = useRef<ReturnType<typeof createRestoreLockCoordinator> | null>(null);
   const restoreLockWaitRef = useRef<() => Promise<void>>(() => Promise.resolve());
-  const restoreStoreApplyRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const restoreStoreApplyRef = useRef<
+    (payload: RestoreStoreApplyRequest) => Promise<void>
+  >(() => Promise.resolve());
+  const restoreStoreApplyGenerationRef = useRef<{
+    token: string;
+    generation: number;
+  } | null>(null);
   const restoreLockReadyRef = useRef(!isTauri);
   const restoreLockReadyPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const ownershipQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -335,7 +342,7 @@ export function App() {
       listenStoreApplyRequested: listenRestoreStoreApplyRequested,
       notifyStoreApplyAcknowledged: notifyRestoreStoreApplyAcknowledged,
       listenStoreApplyAcknowledged: listenRestoreStoreApplyAcknowledged,
-      applyStore: () => restoreStoreApplyRef.current(),
+      applyStore: (payload) => restoreStoreApplyRef.current(payload),
       nativeLease: createTauriRestoreLockLeaseAdapter(),
       lockLocal: (token) => {
         const activeToken = restoreLockRef.current;
@@ -389,7 +396,21 @@ export function App() {
     setMemos(all);
     setHasLoadedMemos(true);
   }, [repository]);
-  restoreStoreApplyRef.current = reloadMemos;
+  restoreStoreApplyRef.current = async ({ token, generation }) => {
+    const currentApply = restoreStoreApplyGenerationRef.current;
+    if (currentApply?.token === token && generation < currentApply.generation) {
+      return;
+    }
+    restoreStoreApplyGenerationRef.current = { token, generation };
+    const all = await repository.listMemos();
+    const latestApply = restoreStoreApplyGenerationRef.current;
+    if (latestApply?.token !== token || latestApply.generation !== generation) {
+      return;
+    }
+    memosRef.current = all;
+    setMemos(all);
+    setHasLoadedMemos(true);
+  };
 
   useEffect(() => {
     void reloadMemos();

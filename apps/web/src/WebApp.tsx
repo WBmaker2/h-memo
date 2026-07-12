@@ -81,8 +81,10 @@ type WebPreviewUser = {
   email?: string | null;
 };
 
-function createRepository() {
-  return new LocalStorageMemoRepository();
+function createRepository(mutationBarrier: WebMutationBarrier) {
+  return new LocalStorageMemoRepository({
+    beforeWrite: () => mutationBarrier.assertMutationWriteAllowed(),
+  });
 }
 
 function createMemoId(): string {
@@ -172,8 +174,11 @@ function broadcastRestoreSafetyChanged() {
 }
 
 export function WebApp() {
-  const repository = useMemo<MemoRepository>(() => createRepository(), []);
   const mutationBarrier = useMemo(() => new WebMutationBarrier(), []);
+  const repository = useMemo<MemoRepository>(
+    () => createRepository(mutationBarrier),
+    [mutationBarrier]
+  );
   const restoreSafetyStorage = useMemo(() => getRestoreSafetyStorage(), []);
   const [memos, setMemos] = useState<Memo[]>([]);
   const [restoreSafetyPoint, setRestoreSafetyPoint] = useState<RestoreSafetyPoint | null>(() =>
@@ -237,13 +242,41 @@ export function WebApp() {
   }, [firebaseClientEnv, hasFirebaseConfigSet]);
 
   const reloadMemos = useCallback(async () => {
+    const epochBeforeRead = mutationBarrier.getEpoch();
     const all = await repository.listMemos();
+    const epochAfterRead = mutationBarrier.getEpoch();
+    if (epochBeforeRead !== epochAfterRead) {
+      throw new Error("메모를 읽는 동안 다른 탭의 복원 리비전이 변경되었습니다.");
+    }
+    mutationBarrier.markObservedEpoch(epochAfterRead);
     setMemos(sortMemos(all));
-  }, [repository]);
+  }, [mutationBarrier, repository]);
 
   useEffect(() => {
     let remoteReleaseGeneration = 0;
-    return mutationBarrier.subscribe((lease) => {
+    let remoteReleasePromise: Promise<void> | null = null;
+    let revisionReloadPromise: Promise<void> | null = null;
+    const reconcileObservedEpoch = (durableEpoch: number) => {
+      if (restoreLockRef.current || revisionReloadPromise) {
+        return;
+      }
+      try {
+        if (mutationBarrier.getObservedEpoch() === durableEpoch) {
+          return;
+        }
+      } catch {
+        // The first successful repository read establishes the observed epoch.
+      }
+      revisionReloadPromise = reloadMemos()
+        .catch((error) => {
+          setBackupStatus(`메모 저장소 리비전 적용 실패: ${getErrorMessage(error)}`);
+        })
+        .finally(() => {
+          revisionReloadPromise = null;
+        });
+    };
+
+    return mutationBarrier.subscribe((lease, durableEpoch) => {
       const currentToken = restoreLockRef.current;
       if (lease) {
         if (currentToken && !currentToken.startsWith("remote:")) {
@@ -254,12 +287,16 @@ export function WebApp() {
         return;
       }
       if (!currentToken?.startsWith("remote:")) {
+        reconcileObservedEpoch(durableEpoch);
+        return;
+      }
+      if (remoteReleasePromise) {
         return;
       }
 
       const releaseToken = currentToken;
       const generation = ++remoteReleaseGeneration;
-      void reloadMemos()
+      remoteReleasePromise = reloadMemos()
         .then(() => {
           if (
             generation !== remoteReleaseGeneration ||
@@ -273,6 +310,9 @@ export function WebApp() {
         })
         .catch((error) => {
           setBackupStatus(`다른 탭 복원 상태 적용 실패: ${getErrorMessage(error)}`);
+        })
+        .finally(() => {
+          remoteReleasePromise = null;
         });
     });
   }, [mutationBarrier, reloadMemos]);
@@ -280,7 +320,9 @@ export function WebApp() {
   useEffect(() => {
     const reloadWhenUnlocked = () => {
       if (!restoreLockRef.current) {
-        void reloadMemos();
+        void reloadMemos().catch((error) => {
+          setBackupStatus(`메모 저장소 새로고침 실패: ${getErrorMessage(error)}`);
+        });
       }
     };
     const handleStorage = (event: StorageEvent) => {
@@ -304,7 +346,9 @@ export function WebApp() {
       hasFirebaseConfigSet ? BROWSER_BACKUP_READY_MESSAGE : FIREBASE_UNAVAILABLE_MESSAGE
     );
     setServicesAvailableState(hasFirebaseConfigSet);
-    void reloadMemos();
+    void reloadMemos().catch((error) => {
+      setBackupStatus(`메모 저장소 읽기 실패: ${getErrorMessage(error)}`);
+    });
   }, [hasFirebaseConfigSet, reloadMemos]);
 
   useEffect(() => {
@@ -462,7 +506,12 @@ export function WebApp() {
     if (restoreLockRef.current) {
       return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
     }
-    const expectedEpoch = mutationBarrier.getEpoch();
+    let expectedEpoch: number;
+    try {
+      expectedEpoch = mutationBarrier.getObservedEpoch();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     const queued = persistQueueRef.current.then(() =>
       mutationBarrier.runMutation(expectedEpoch, operation)
     );
@@ -506,7 +555,41 @@ export function WebApp() {
     setIsRestoreLocked(true);
     try {
       await waitForPendingPersists();
-      return await mutationBarrier.runRestore(operation);
+      return await mutationBarrier.runRestore(async () => {
+        let result!: T;
+        let operationError: unknown;
+        try {
+          result = await operation();
+        } catch (error) {
+          operationError = error;
+        }
+
+        let applyError: unknown;
+        try {
+          await reloadMemos();
+        } catch (error) {
+          applyError = error;
+        }
+
+        if (operationError !== undefined && applyError !== undefined) {
+          throw new AggregateError(
+            [operationError, applyError],
+            `복원 작업과 최종 메모 상태 적용에 함께 실패했습니다: ${getErrorMessage(
+              operationError
+            )} / ${getErrorMessage(applyError)}`
+          );
+        }
+        if (operationError !== undefined) {
+          throw operationError;
+        }
+        if (applyError !== undefined) {
+          throw new AggregateError(
+            [applyError],
+            `복원 후 최종 메모 상태 적용에 실패했습니다: ${getErrorMessage(applyError)}`
+          );
+        }
+        return result;
+      });
     } finally {
       if (restoreLockRef.current === token) {
         restoreLockRef.current = null;

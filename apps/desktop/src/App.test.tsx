@@ -15,6 +15,7 @@ const {
   mockSetStartupEnabled,
   mockSignInWithGoogle,
   mockSignOutUser,
+  mockListMemos,
   mockSaveMemo,
   mockSoftDeleteMemo,
   mockRestoreMemo,
@@ -118,12 +119,20 @@ const {
     restoreLockAcknowledgedListener:
       | ((payload: { token: string; windowLabel: string; ok: boolean; error?: string }) => void)
       | null;
-    restoreLockReleasedListener: ((payload: { token: string }) => void) | null;
+    restoreLockReleasedListener:
+      | ((payload: { token: string; finalApplyGeneration?: number }) => void)
+      | null;
     restoreStoreApplyRequestedListener:
-      | ((payload: { token: string }) => void | Promise<void>)
+      | ((payload: { token: string; generation: number }) => void | Promise<void>)
       | null;
     restoreStoreApplyAcknowledgedListener:
-      | ((payload: { token: string; windowLabel: string; ok: boolean; error?: string }) => void)
+      | ((payload: {
+          token: string;
+          generation: number;
+          windowLabel: string;
+          ok: boolean;
+          error?: string;
+        }) => void)
       | null;
     restoreSafetyChangedListener: (() => void) | null;
     unlistenMemoStore: ReturnType<typeof vi.fn>;
@@ -203,9 +212,10 @@ const {
     }
   };
 
-  const listMemos = async () => {
+  const defaultListMemos = async () => {
     return [...tauriRepositoryState.values()].map(cloneMemo);
   };
+  const mockListMemos = vi.fn(defaultListMemos);
 
   const defaultSaveMemo = async (nextMemo: any) => {
     tauriRepositoryState.set(nextMemo.id, cloneMemo(nextMemo));
@@ -242,7 +252,7 @@ const {
   };
 
   class MockTauriMemoRepository {
-    listMemos = listMemos;
+    listMemos = mockListMemos;
     saveMemo = mockSaveMemo;
     softDeleteMemo = mockSoftDeleteMemo;
     restoreMemo = mockRestoreMemo;
@@ -259,6 +269,7 @@ const {
     mockSetStartupEnabled,
     mockSignInWithGoogle,
     mockSignOutUser,
+    mockListMemos,
     mockSaveMemo,
     mockSoftDeleteMemo,
     mockRestoreMemo,
@@ -421,9 +432,10 @@ vi.mock("./adapters/tauriEvents", () => ({
   notifyRestoreLockRequested: (token: string) => mockNotifyRestoreLockRequested(token),
   notifyRestoreLockAcknowledged: (payload: unknown) =>
     mockNotifyRestoreLockAcknowledged(payload),
-  notifyRestoreLockReleased: (token: string) => mockNotifyRestoreLockReleased(token),
-  notifyRestoreStoreApplyRequested: (token: string) =>
-    mockNotifyRestoreStoreApplyRequested(token),
+  notifyRestoreLockReleased: (token: string, finalApplyGeneration: number) =>
+    mockNotifyRestoreLockReleased(token, finalApplyGeneration),
+  notifyRestoreStoreApplyRequested: (payload: unknown) =>
+    mockNotifyRestoreStoreApplyRequested(payload),
   notifyRestoreStoreApplyAcknowledged: (payload: unknown) =>
     mockNotifyRestoreStoreApplyAcknowledged(payload),
   notifyRestoreSafetyChanged: () => mockNotifyRestoreSafetyChanged(),
@@ -464,12 +476,14 @@ vi.mock("./adapters/tauriEvents", () => ({
     tauriEventState.restoreLockAcknowledgedListener = listener;
     return vi.fn();
   },
-  listenRestoreLockReleased: async (listener: (payload: { token: string }) => void) => {
+  listenRestoreLockReleased: async (
+    listener: (payload: { token: string; finalApplyGeneration?: number }) => void
+  ) => {
     tauriEventState.restoreLockReleasedListener = listener;
     return vi.fn();
   },
   listenRestoreStoreApplyRequested: async (
-    listener: (payload: { token: string }) => void | Promise<void>
+    listener: (payload: { token: string; generation: number }) => void | Promise<void>
   ) => {
     tauriEventState.restoreStoreApplyRequestedListener = listener;
     return vi.fn();
@@ -477,6 +491,7 @@ vi.mock("./adapters/tauriEvents", () => ({
   listenRestoreStoreApplyAcknowledged: async (
     listener: (payload: {
       token: string;
+      generation: number;
       windowLabel: string;
       ok: boolean;
       error?: string;
@@ -558,6 +573,7 @@ beforeEach(() => {
   mockSetStartupEnabled.mockReset();
   mockSignInWithGoogle.mockReset();
   mockSignOutUser.mockReset();
+  mockListMemos.mockReset();
   mockSaveMemo.mockReset();
   mockSoftDeleteMemo.mockReset();
   mockRestoreMemo.mockReset();
@@ -615,6 +631,7 @@ beforeEach(() => {
   nativeLeaseState.lease = null;
 
   mockSaveMemo.mockImplementation((nextMemo: any) => defaultSaveMemo(nextMemo));
+  mockListMemos.mockImplementation(async () => [...tauriRepositoryState.values()]);
   mockSoftDeleteMemo.mockImplementation((id: string, deletedAt: string) =>
     defaultSoftDeleteMemo(id, deletedAt)
   );
@@ -1336,10 +1353,10 @@ describe("desktop App", () => {
     });
     let applyRequestCount = 0;
     mockNotifyRestoreStoreApplyRequested.mockImplementation(
-      async (token: string) => {
+      async (payload: { token: string; generation: number }) => {
         applyRequestCount += 1;
         tauriEventState.restoreStoreApplyAcknowledgedListener?.({
-          token,
+          ...payload,
           windowLabel: "memo-1",
           ok: applyRequestCount > 1,
           ...(applyRequestCount === 1
@@ -1367,6 +1384,153 @@ describe("desktop App", () => {
     expect(tauriRepositoryState.get(restoredMemo.id)).toEqual(
       expect.objectContaining({ deletedAt: expect.any(String) })
     );
+  });
+
+  it("does not let a late older remote store reload overwrite the final generation", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const token = "remote-generation-fence";
+    const staleMemo = createMemo({
+      id: "desktop-generation-fence",
+      now: "2026-07-12T18:10:00.000Z",
+      plainText: "늦게 끝나는 이전 세대",
+    });
+    const finalMemo = {
+      ...staleMemo,
+      plainText: "최종 세대 메모",
+      updatedAt: "2026-07-12T18:11:00.000Z",
+    };
+    tauriRepositoryState.set(staleMemo.id, staleMemo);
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("늦게 끝나는 이전 세대")).toBeInTheDocument();
+      expect(tauriEventState.restoreLockRequestedListener).not.toBeNull();
+      expect(tauriEventState.restoreStoreApplyRequestedListener).not.toBeNull();
+    });
+
+    nativeLeaseState.lease = {
+      token,
+      owner: "main",
+      expiresAtMs: Date.now() + 10_000,
+      operationActive: true,
+    };
+    await act(async () => {
+      await tauriEventState.restoreLockRequestedListener?.({ token });
+    });
+
+    const oldReload = deferred<any[]>();
+    mockListMemos
+      .mockImplementationOnce(() => oldReload.promise)
+      .mockImplementation(async () => [...tauriRepositoryState.values()]);
+    const firstApply = tauriEventState.restoreStoreApplyRequestedListener?.({
+      token,
+      generation: 1,
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    tauriRepositoryState.set(finalMemo.id, finalMemo);
+    await act(async () => {
+      await tauriEventState.restoreStoreApplyRequestedListener?.({
+        token,
+        generation: 2,
+      });
+    });
+    expect(screen.getByDisplayValue("최종 세대 메모")).toBeInTheDocument();
+
+    oldReload.resolve([staleMemo]);
+    await act(async () => {
+      await firstApply;
+    });
+    expect(screen.getByDisplayValue("최종 세대 메모")).toBeInTheDocument();
+
+    nativeLeaseState.lease = null;
+    await act(async () => {
+      await tauriEventState.restoreLockReleasedListener?.({
+        token,
+        finalApplyGeneration: 3,
+      });
+    });
+    expect(screen.getByDisplayValue("최종 세대 메모")).not.toHaveAttribute(
+      "readonly"
+    );
+  });
+
+  it("accepts a lower apply generation for a newer restore token", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const initialMemo = createMemo({
+      id: "desktop-cross-token-generation",
+      now: "2026-07-12T18:20:00.000Z",
+      plainText: "토큰 적용 전 메모",
+    });
+    const firstTokenMemo = {
+      ...initialMemo,
+      plainText: "첫 번째 토큰 메모",
+      updatedAt: "2026-07-12T18:21:00.000Z",
+    };
+    const secondTokenMemo = {
+      ...initialMemo,
+      plainText: "두 번째 토큰 메모",
+      updatedAt: "2026-07-12T18:22:00.000Z",
+    };
+    tauriRepositoryState.set(initialMemo.id, initialMemo);
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("토큰 적용 전 메모")).toBeInTheDocument();
+      expect(tauriEventState.restoreLockRequestedListener).not.toBeNull();
+    });
+
+    nativeLeaseState.lease = {
+      token: "first-remote-token",
+      owner: "memo-1",
+      expiresAtMs: Date.now() + 10_000,
+      operationActive: true,
+    };
+    await act(async () => {
+      await tauriEventState.restoreLockRequestedListener?.({
+        token: "first-remote-token",
+      });
+    });
+    tauriRepositoryState.set(firstTokenMemo.id, firstTokenMemo);
+    await act(async () => {
+      await tauriEventState.restoreStoreApplyRequestedListener?.({
+        token: "first-remote-token",
+        generation: 5,
+      });
+    });
+    expect(screen.getByDisplayValue("첫 번째 토큰 메모")).toBeInTheDocument();
+    nativeLeaseState.lease = null;
+    await act(async () => {
+      await tauriEventState.restoreLockReleasedListener?.({
+        token: "first-remote-token",
+        finalApplyGeneration: 6,
+      });
+    });
+
+    nativeLeaseState.lease = {
+      token: "second-remote-token",
+      owner: "memo-2",
+      expiresAtMs: Date.now() + 10_000,
+      operationActive: true,
+    };
+    await act(async () => {
+      await tauriEventState.restoreLockRequestedListener?.({
+        token: "second-remote-token",
+      });
+    });
+    tauriRepositoryState.set(secondTokenMemo.id, secondTokenMemo);
+    await act(async () => {
+      await tauriEventState.restoreStoreApplyRequestedListener?.({
+        token: "second-remote-token",
+        generation: 1,
+      });
+    });
+
+    expect(screen.getByDisplayValue("두 번째 토큰 메모")).toBeInTheDocument();
   });
 
   it("bounds a hung restore-safety event before releasing the desktop barrier", async () => {
