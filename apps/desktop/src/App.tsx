@@ -795,13 +795,26 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!isTauri || !isRestoreLockReady || !hasLoadedMemos || restoreLockRef.current) {
+    if (
+      !isTauri ||
+      !isRestoreLockReady ||
+      !hasLoadedMemos ||
+      isRestoreLocked ||
+      restoreLockRef.current
+    ) {
       return;
     }
 
     const generation = ++ownershipGenerationRef.current;
     queueMemoWindowOwnership(activeMemoId, generation);
-  }, [activeMemoId, hasLoadedMemos, isRestoreLockReady, isTauri, queueMemoWindowOwnership]);
+  }, [
+    activeMemoId,
+    hasLoadedMemos,
+    isRestoreLockReady,
+    isRestoreLocked,
+    isTauri,
+    queueMemoWindowOwnership,
+  ]);
 
   useEffect(() => {
     if (!isTauri) {

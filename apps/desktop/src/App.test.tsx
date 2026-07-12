@@ -828,6 +828,69 @@ describe("desktop App", () => {
     });
   });
 
+  it("reconciles memo-window ownership after a restore lock changes the active memo", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const first = createMemo({
+      id: "memo-lock-first",
+      now: "2026-07-11T09:00:00.000Z",
+      plainText: "복원 전 메모",
+    });
+    const second = createMemo({
+      id: "memo-lock-second",
+      now: "2026-07-11T09:01:00.000Z",
+      plainText: "복원 후 메모",
+    });
+    tauriRepositoryState.set(first.id, first);
+    tauriRepositoryState.set(second.id, second);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mockClaimCurrentMemoWindow).toHaveBeenCalledWith(first.id);
+      expect(tauriEventState.restoreLockRequestedListener).toEqual(expect.any(Function));
+    });
+
+    nativeLeaseState.lease = {
+      token: "remote-restore-lock",
+      owner: "main",
+      expiresAtMs: Date.now() + 10_000,
+      operationActive: false,
+    };
+    await act(async () => {
+      await tauriEventState.restoreLockRequestedListener?.({ token: "remote-restore-lock" });
+    });
+    await waitFor(() => {
+      expect(mockNotifyRestoreLockAcknowledged).toHaveBeenCalledWith({
+        token: "remote-restore-lock",
+        windowLabel: "main",
+        ok: true,
+      });
+    });
+
+    tauriRepositoryState.set(first.id, {
+      ...first,
+      deletedAt: "2026-07-11T09:02:00.000Z",
+    });
+    await act(async () => {
+      tauriEventState.memoStoreListener?.({ deletedMemoId: first.id });
+    });
+    await waitFor(() => expect(screen.queryByDisplayValue("복원 전 메모")).not.toBeInTheDocument());
+    expect(mockReleaseCurrentMemoWindow).not.toHaveBeenCalledWith(first.id, "token-default");
+    expect(mockClaimCurrentMemoWindow).not.toHaveBeenCalledWith(second.id);
+
+    nativeLeaseState.lease = null;
+    await act(async () => {
+      tauriEventState.restoreLockReleasedListener?.({ token: "remote-restore-lock" });
+    });
+
+    await waitFor(() => {
+      expect(mockReleaseCurrentMemoWindow).toHaveBeenCalledWith(first.id, "token-default");
+      expect(mockClaimCurrentMemoWindow).toHaveBeenCalledWith(second.id);
+      expect(screen.getByDisplayValue("복원 후 메모")).toBeInTheDocument();
+    });
+  });
+
   it("serializes rapid A to B to A ownership transitions by completion order", async () => {
     setTauriRuntime(true);
     mockGetStartupEnabled.mockResolvedValue(false);

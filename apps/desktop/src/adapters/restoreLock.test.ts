@@ -11,8 +11,8 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
-async function flushMicrotasks() {
-  for (let index = 0; index < 20; index += 1) {
+async function flushMicrotasks(count = 20) {
+  for (let index = 0; index < count; index += 1) {
     await Promise.resolve();
   }
 }
@@ -253,6 +253,148 @@ describe("restore lock coordinator", () => {
       expect(unlocked).toHaveBeenCalledTimes(1);
       releaseHandler!({ token: "token-b" });
       expect(unlocked).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hands off a stale remote token to a newer native lease before polling", async () => {
+    vi.useFakeTimers();
+    try {
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = null;
+      let requestHandler: ((payload: { token: string }) => void | Promise<void>) | null = null;
+      const notifyLockAcknowledged = vi.fn(async () => {});
+      const unlockLocal = vi.fn();
+      const nativeLease = {
+        acquire: vi.fn(),
+        current: vi.fn(async () => lease),
+        renew: vi.fn(),
+        activate: vi.fn(),
+        release: vi.fn(async () => true),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "memo-1",
+        listLiveWindowLabels: async () => ["memo-1"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async (handler) => {
+          requestHandler = handler;
+          return () => {};
+        },
+        notifyLockAcknowledged,
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        nativeLease,
+        lockLocal: async () => {},
+        unlockLocal,
+        leasePollIntervalMs: 1000,
+      });
+
+      await coordinator.start();
+      lease = {
+        token: "token-a",
+        owner: "main",
+        expiresAtMs: Date.now() + 10_000,
+        operationActive: false,
+      };
+      await requestHandler!({ token: "token-a" });
+      await vi.waitFor(() =>
+        expect(notifyLockAcknowledged).toHaveBeenLastCalledWith({
+          token: "token-a",
+          windowLabel: "memo-1",
+          ok: true,
+        })
+      );
+
+      lease = {
+        token: "token-b",
+        owner: "main",
+        expiresAtMs: Date.now() + 10_000,
+        operationActive: false,
+      };
+      notifyLockAcknowledged.mockClear();
+      await requestHandler!({ token: "token-b" });
+
+      expect(unlockLocal).toHaveBeenCalledWith("token-a");
+      await vi.waitFor(() =>
+        expect(notifyLockAcknowledged).toHaveBeenCalledWith({
+          token: "token-b",
+          windowLabel: "memo-1",
+          ok: true,
+        })
+      );
+      expect(notifyLockAcknowledged).not.toHaveBeenCalledWith(
+        expect.objectContaining({ token: "token-b", ok: false })
+      );
+
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not resurrect startup after stop while native lease lookup is deferred", async () => {
+    vi.useFakeTimers();
+    try {
+      type Lease = {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      };
+      const currentLease = deferred<Lease | null>();
+      const lockLocal = vi.fn(async () => {});
+      const notifyLockAcknowledged = vi.fn(async () => {});
+      const cleanups = [vi.fn(), vi.fn(), vi.fn()];
+      const nativeLease = {
+        acquire: vi.fn(),
+        current: vi.fn(() => currentLease.promise),
+        renew: vi.fn(),
+        activate: vi.fn(),
+        release: vi.fn(async () => true),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "memo-1",
+        listLiveWindowLabels: async () => ["memo-1"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => cleanups[0]!,
+        notifyLockAcknowledged,
+        listenLockAcknowledged: async () => cleanups[1]!,
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => cleanups[2]!,
+        nativeLease,
+        lockLocal,
+        unlockLocal: vi.fn(),
+        cleanupTimeoutMs: 100,
+      });
+
+      const startPromise = coordinator.start();
+      await flushMicrotasks();
+      expect(nativeLease.current).toHaveBeenCalledTimes(1);
+
+      const stopPromise = coordinator.stop();
+      currentLease.resolve({
+        token: "stale-startup-token",
+        owner: "main",
+        expiresAtMs: Date.now() + 10_000,
+        operationActive: false,
+      });
+
+      await expect(startPromise).resolves.toBeUndefined();
+      await stopPromise;
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(lockLocal).not.toHaveBeenCalled();
+      expect(notifyLockAcknowledged).not.toHaveBeenCalled();
+      expect(nativeLease.current).toHaveBeenCalledTimes(1);
+      expect(cleanups[0]).toHaveBeenCalledTimes(1);
+      expect(cleanups[1]).toHaveBeenCalledTimes(1);
+      expect(cleanups[2]).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -824,7 +966,7 @@ describe("restore lock coordinator", () => {
       });
 
       const firstRun = coordinator.run(() => firstOperation.promise);
-      await flushMicrotasks();
+      await flushMicrotasks(100);
       expect(nativeLease.activate).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(10);
       expect(renewals).toHaveLength(1);
