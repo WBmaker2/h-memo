@@ -9,6 +9,7 @@ const TRAY_CREATE_MEMO_EVENT = "h-memo:tray-create-memo";
 const RESTORE_LOCK_REQUESTED_EVENT = "h-memo:restore-lock-requested";
 const RESTORE_LOCK_ACKNOWLEDGED_EVENT = "h-memo:restore-lock-acknowledged";
 const RESTORE_LOCK_RELEASED_EVENT = "h-memo:restore-lock-released";
+const RESTORE_SAFETY_CHANGED_EVENT = "h-memo:restore-safety-changed";
 const sourceId = `window-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 export type MemoStoreChangedPayload = {
@@ -44,6 +45,10 @@ export type RestoreLockAcknowledgedPayload = {
 export type RestoreLockReleasedPayload = {
   sourceId: string;
   token: string;
+};
+
+export type RestoreSafetyChangedPayload = {
+  sourceId: string;
 };
 
 export function notifyMemoStoreChanged(
@@ -159,6 +164,21 @@ export function listenRestoreLockReleased(
       return;
     }
     handler(event.payload);
+  });
+}
+
+export function notifyRestoreSafetyChanged() {
+  return emit<RestoreSafetyChangedPayload>(RESTORE_SAFETY_CHANGED_EVENT, {
+    sourceId,
+  });
+}
+
+export function listenRestoreSafetyChanged(handler: () => void) {
+  return listen<RestoreSafetyChangedPayload>(RESTORE_SAFETY_CHANGED_EVENT, (event) => {
+    if (event.payload.sourceId === sourceId) {
+      return;
+    }
+    handler();
   });
 }
 

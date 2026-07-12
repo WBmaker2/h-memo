@@ -65,7 +65,7 @@ export function MemoWorkspace({
     <div className="memo-menu__panel-content">
       <section className="memo-menu__group" aria-label="메모 기능">
         <h3 className="memo-menu__group-title">메모 기능</h3>
-        <button type="button" onClick={onCreateMemo}>
+        <button type="button" onClick={onCreateMemo} disabled={isMemoEditingDisabled}>
           새 메모
         </button>
         {actions}
@@ -79,9 +79,10 @@ export function MemoWorkspace({
                 <span title={memo.plainText}>{getMemoLabel(memo, index)}</span>
                 {onOpenMemo ? (
                   <button
-                    type="button"
-                    aria-label={`${getMemoLabel(memo, index)} 열기`}
-                    onClick={() => onOpenMemo(memo.id)}
+                  type="button"
+                  aria-label={`${getMemoLabel(memo, index)} 열기`}
+                  onClick={() => onOpenMemo(memo.id)}
+                  disabled={isMemoEditingDisabled}
                   >
                     열기
                   </button>
@@ -90,6 +91,7 @@ export function MemoWorkspace({
                   type="button"
                   aria-label={`${getMemoLabel(memo, index)} 삭제`}
                   onClick={() => onDeleteMemo(memo.id)}
+                  disabled={isMemoEditingDisabled}
                 >
                   삭제
                 </button>

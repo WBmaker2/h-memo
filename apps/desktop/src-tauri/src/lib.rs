@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result as AnyhowResult};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -52,6 +52,24 @@ struct MemoRecord {
 }
 
 struct DatabaseState(Mutex<Connection>);
+
+#[derive(Default)]
+struct RestoreLockLeaseState(Mutex<Option<RestoreLockLease>>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreLockLease {
+  token: String,
+  owner: String,
+  expires_at: SystemTime,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct RestoreLockLeaseRecord {
+  token: String,
+  owner: String,
+  expires_at_ms: u64,
+}
 
 #[derive(Default)]
 struct MemoWindowRegistry(Mutex<HashMap<String, MemoWindowOwner>>);
@@ -135,6 +153,166 @@ fn save_memo(database: State<'_, DatabaseState>, memo: MemoRecord) -> Result<Mem
   let updated = normalize_record(&memo);
   upsert_memo(&connection, &updated).map_err(|error| error.to_string())?;
   Ok(updated)
+}
+
+#[tauri::command]
+fn acquire_restore_lock_lease(
+  state: State<'_, RestoreLockLeaseState>,
+  token: String,
+  owner: String,
+  ttl_ms: u64,
+) -> Result<RestoreLockLeaseRecord, String> {
+  let mut lease = state
+    .0
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  acquire_restore_lock_lease_inner(&mut lease, &token, &owner, ttl_ms, SystemTime::now())
+}
+
+#[tauri::command]
+fn current_restore_lock_lease(
+  state: State<'_, RestoreLockLeaseState>,
+) -> Result<Option<RestoreLockLeaseRecord>, String> {
+  let mut lease = state
+    .0
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  Ok(current_restore_lock_lease_inner(&mut lease, SystemTime::now()))
+}
+
+#[tauri::command]
+fn renew_restore_lock_lease(
+  state: State<'_, RestoreLockLeaseState>,
+  token: String,
+  owner: String,
+  ttl_ms: u64,
+) -> Result<RestoreLockLeaseRecord, String> {
+  let mut lease = state
+    .0
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  renew_restore_lock_lease_inner(&mut lease, &token, &owner, ttl_ms, SystemTime::now())
+}
+
+#[tauri::command]
+fn release_restore_lock_lease(
+  state: State<'_, RestoreLockLeaseState>,
+  token: String,
+  owner: String,
+) -> Result<bool, String> {
+  let mut lease = state
+    .0
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  Ok(release_restore_lock_lease_inner(
+    &mut lease,
+    &token,
+    &owner,
+    SystemTime::now(),
+  ))
+}
+
+fn acquire_restore_lock_lease_inner(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  ttl_ms: u64,
+  now: SystemTime,
+) -> Result<RestoreLockLeaseRecord, String> {
+  validate_restore_lock_identity(token, owner)?;
+  prune_restore_lock_lease(lease, now);
+
+  if let Some(current) = lease {
+    if current.token == token && current.owner == owner {
+      current.expires_at = expires_at(now, ttl_ms);
+      return Ok(to_restore_lock_lease_record(current));
+    }
+    return Err("다른 복원 작업이 이미 진행 중입니다.".to_string());
+  }
+
+  let next = RestoreLockLease {
+    token: token.to_string(),
+    owner: owner.to_string(),
+    expires_at: expires_at(now, ttl_ms),
+  };
+  let record = to_restore_lock_lease_record(&next);
+  *lease = Some(next);
+  Ok(record)
+}
+
+fn current_restore_lock_lease_inner(
+  lease: &mut Option<RestoreLockLease>,
+  now: SystemTime,
+) -> Option<RestoreLockLeaseRecord> {
+  prune_restore_lock_lease(lease, now);
+  lease.as_ref().map(to_restore_lock_lease_record)
+}
+
+fn renew_restore_lock_lease_inner(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  ttl_ms: u64,
+  now: SystemTime,
+) -> Result<RestoreLockLeaseRecord, String> {
+  validate_restore_lock_identity(token, owner)?;
+  prune_restore_lock_lease(lease, now);
+
+  let current = lease
+    .as_mut()
+    .filter(|current| current.token == token && current.owner == owner)
+    .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
+  current.expires_at = expires_at(now, ttl_ms);
+  Ok(to_restore_lock_lease_record(current))
+}
+
+fn release_restore_lock_lease_inner(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  now: SystemTime,
+) -> bool {
+  prune_restore_lock_lease(lease, now);
+  if lease.as_ref().is_some_and(|current| {
+    current.token == token && current.owner == owner
+  }) {
+    *lease = None;
+    true
+  } else {
+    false
+  }
+}
+
+fn validate_restore_lock_identity(token: &str, owner: &str) -> Result<(), String> {
+  if token.trim().is_empty() || owner.trim().is_empty() {
+    return Err("복원 잠금 token과 owner는 비어 있을 수 없습니다.".to_string());
+  }
+  Ok(())
+}
+
+fn expires_at(now: SystemTime, ttl_ms: u64) -> SystemTime {
+  now + Duration::from_millis(ttl_ms)
+}
+
+fn prune_restore_lock_lease(lease: &mut Option<RestoreLockLease>, now: SystemTime) {
+  if lease
+    .as_ref()
+    .is_some_and(|current| current.expires_at <= now)
+  {
+    *lease = None;
+  }
+}
+
+fn to_restore_lock_lease_record(lease: &RestoreLockLease) -> RestoreLockLeaseRecord {
+  RestoreLockLeaseRecord {
+    token: lease.token.clone(),
+    owner: lease.owner.clone(),
+    expires_at_ms: lease
+      .expires_at
+      .duration_since(UNIX_EPOCH)
+      .unwrap_or_default()
+      .as_millis() as u64,
+  }
 }
 
 #[tauri::command]
@@ -834,12 +1012,17 @@ pub fn run() {
       initialize_database(&connection)?;
       app.manage(DatabaseState(Mutex::new(connection)));
       app.manage(MemoWindowRegistry::default());
+      app.manage(RestoreLockLeaseState::default());
       build_tray(app.handle())?;
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
       list_memos,
       save_memo,
+      acquire_restore_lock_lease,
+      current_restore_lock_lease,
+      renew_restore_lock_lease,
+      release_restore_lock_lease,
       claim_memo_window,
       complete_memo_window,
       release_memo_window,
@@ -857,6 +1040,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn lease_time(milliseconds: u64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_millis(milliseconds)
+  }
 
   fn test_memo(id: &str, plain_text: &str, updated_at: &str) -> MemoRecord {
     MemoRecord {
@@ -888,6 +1075,87 @@ mod tests {
 
     assert!(matches!(journal_mode.as_str(), "wal" | "memory"));
     assert_eq!(busy_timeout, 5_000);
+  }
+
+  #[test]
+  fn restore_lock_lease_requires_matching_identity_and_prunes_expired_state() {
+    let mut lease = None;
+    let first = acquire_restore_lock_lease_inner(
+      &mut lease,
+      "token-1",
+      "main",
+      100,
+      lease_time(1_000),
+    )
+    .expect("first lease should be acquired");
+    assert_eq!(first.token, "token-1");
+    assert_eq!(first.owner, "main");
+
+    let conflict = acquire_restore_lock_lease_inner(
+      &mut lease,
+      "token-2",
+      "memo-1",
+      100,
+      lease_time(1_050),
+    );
+    assert!(conflict.is_err());
+
+    let stale_release = release_restore_lock_lease_inner(
+      &mut lease,
+      "token-2",
+      "memo-1",
+      lease_time(1_050),
+    );
+    assert!(!stale_release);
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(1_050)).is_some());
+
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(1_101)).is_none());
+    assert!(renew_restore_lock_lease_inner(
+      &mut lease,
+      "token-1",
+      "main",
+      100,
+      lease_time(1_102),
+    )
+    .is_err());
+  }
+
+  #[test]
+  fn restore_lock_lease_renew_and_release_require_the_current_token() {
+    let mut lease = None;
+    acquire_restore_lock_lease_inner(
+      &mut lease,
+      "token-1",
+      "main",
+      100,
+      lease_time(2_000),
+    )
+    .expect("lease should be acquired");
+
+    let renewed = renew_restore_lock_lease_inner(
+      &mut lease,
+      "token-1",
+      "main",
+      500,
+      lease_time(2_050),
+    )
+    .expect("matching owner should renew the lease");
+    assert_eq!(renewed.expires_at_ms, 2_550);
+
+    assert!(!release_restore_lock_lease_inner(
+      &mut lease,
+      "token-old",
+      "main",
+      lease_time(2_100),
+    ));
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(2_100)).is_some());
+    assert!(release_restore_lock_lease_inner(
+      &mut lease,
+      "token-1",
+      "main",
+      lease_time(2_100),
+    ));
+    assert!(current_restore_lock_lease_inner(&mut lease, lease_time(2_100)).is_none());
   }
 
   #[test]

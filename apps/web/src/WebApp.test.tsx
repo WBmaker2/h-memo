@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -528,6 +528,54 @@ describe("WebApp", () => {
       expect(screen.getByRole("heading", { name: "H Memo" })).toBeInTheDocument();
     });
     expect(screen.queryByRole("button", { name: "마지막 복원 되돌리기" })).not.toBeInTheDocument();
+  });
+
+  it("reloads durable undo when another browser window restores and ignores stale event data", async () => {
+    const memo = createMemo({
+      id: "memo-cross-window-undo",
+      now: "2026-07-12T12:10:00.000Z",
+      plainText: "다른 창에서 되돌릴 메모",
+    });
+    const storage = window.localStorage;
+    render(<WebApp />);
+
+    const safetyPoint = {
+      version: 1,
+      source: "server",
+      createdAt: "2026-07-12T12:11:00.000Z",
+      payload: {
+        version: 1,
+        userId: "user-1",
+        createdAt: "2026-07-12T12:11:00.000Z",
+        memos: [memo],
+      },
+    };
+    storage.setItem(RESTORE_SAFETY_KEY, JSON.stringify(safetyPoint));
+    act(() => {
+      window.dispatchEvent(new Event("h-memo:restore-safety-changed"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "마지막 복원 되돌리기" })).toBeInTheDocument();
+    });
+
+    const stalePoint = { ...safetyPoint, createdAt: "2026-07-12T12:00:00.000Z" };
+    const newerPoint = { ...safetyPoint, createdAt: "2026-07-12T12:12:00.000Z" };
+    storage.setItem(RESTORE_SAFETY_KEY, JSON.stringify(newerPoint));
+    act(() => {
+      const staleEvent = new Event("storage") as StorageEvent;
+      Object.defineProperties(staleEvent, {
+        key: { configurable: true, value: RESTORE_SAFETY_KEY },
+        newValue: { configurable: true, value: JSON.stringify(stalePoint) },
+        storageArea: { configurable: true, value: storage },
+      });
+      window.dispatchEvent(staleEvent);
+    });
+
+    expect(JSON.parse(storage.getItem(RESTORE_SAFETY_KEY) ?? "null").createdAt).toBe(
+      newerPoint.createdAt
+    );
+    expect(screen.getByRole("button", { name: "마지막 복원 되돌리기" })).toBeInTheDocument();
   });
 
   it("retains the browser undo point when undo replacement fails", async () => {

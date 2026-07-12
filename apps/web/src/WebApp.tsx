@@ -8,6 +8,7 @@ import {
   formatMemosAsCombinedText,
   loadRestoreSafetyPoint,
   saveRestoreSafetyPoint,
+  RESTORE_SAFETY_STORAGE_KEY,
   validateLocalBackupPayload,
   type Memo,
   type MemoRepository,
@@ -57,6 +58,7 @@ const JSON_RESTORE_CONFIRM_MESSAGE =
   "JSON 백업 파일 내용으로 현재 메모를 대체합니다. 백업에 없는 메모는 삭제됩니다. 계속할까요?";
 const NO_BACKUP_MESSAGE = "복원할 백업이 없습니다.";
 const SERVER_MEMO_INITIAL_STATUS = "서버 메모를 불러오지 않았습니다.";
+const RESTORE_SAFETY_CHANGED_EVENT = "h-memo:restore-safety-changed";
 
 type BackupMessage = string;
 type SyncServices = {
@@ -157,6 +159,10 @@ function getServerRestoreConfirmMessage(snapshot: BackedUpSnapshot): string {
   return `${formatBackupTime(snapshot.createdAt)} 백업의 ${snapshot.memoCount}개 메모로 현재 로컬 메모를 대체합니다. 계속할까요?`;
 }
 
+function broadcastRestoreSafetyChanged() {
+  window.dispatchEvent(new Event(RESTORE_SAFETY_CHANGED_EVENT));
+}
+
 export function WebApp() {
   const repository = useMemo<MemoRepository>(() => createRepository(), []);
   const restoreSafetyStorage = useMemo(() => getRestoreSafetyStorage(), []);
@@ -233,6 +239,27 @@ export function WebApp() {
     setServicesAvailableState(hasFirebaseConfigSet);
     void reloadMemos();
   }, [hasFirebaseConfigSet, reloadMemos]);
+
+  useEffect(() => {
+    if (!restoreSafetyStorage) {
+      return;
+    }
+
+    const reload = () => {
+      setRestoreSafetyPoint(loadRestoreSafetyPoint(restoreSafetyStorage));
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.storageArea === restoreSafetyStorage && event.key === RESTORE_SAFETY_STORAGE_KEY) {
+        reload();
+      }
+    };
+    window.addEventListener(RESTORE_SAFETY_CHANGED_EVENT, reload);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener(RESTORE_SAFETY_CHANGED_EVENT, reload);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [restoreSafetyStorage]);
 
   const ensureSyncServices = useCallback((): SyncServices | null => {
     if (!hasFirebaseConfigSet) {
@@ -362,7 +389,7 @@ export function WebApp() {
     });
   };
 
-  const enqueuePersist = (operation: () => Promise<void>) => {
+  const enqueuePersist = <T,>(operation: () => Promise<T>) => {
     if (restoreLockRef.current) {
       return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
     }
@@ -393,6 +420,7 @@ export function WebApp() {
       if (!options?.skipStateUpdate) {
         upsertMemo(saved);
       }
+      return saved;
     });
   };
 
@@ -465,6 +493,7 @@ export function WebApp() {
       typeof nextMemos === "function" ? nextMemos(currentMemos) : nextMemos;
     await replaceMemosFromBackup(replacementMemos, currentMemos);
     setRestoreSafetyPoint(safetyPoint);
+    broadcastRestoreSafetyChanged();
   };
 
   const handleCreateMemo = async () => {
@@ -506,7 +535,7 @@ export function WebApp() {
 
     try {
       const deletedAt = new Date().toISOString();
-      const deleted = await repository.softDeleteMemo(memoId, deletedAt);
+      const deleted = await enqueuePersist(() => repository.softDeleteMemo(memoId, deletedAt));
       upsertMemo(deleted);
     } catch (error) {
       setBackupStatus(`메모 삭제 실패: ${getErrorMessage(error)}`);
@@ -627,8 +656,7 @@ export function WebApp() {
   };
 
   const handleUndoRestore = async () => {
-    const safetyPoint = restoreSafetyPoint;
-    if (!safetyPoint || isBusy) {
+    if (isBusy) {
       return;
     }
     if (!restoreSafetyStorage) {
@@ -639,11 +667,16 @@ export function WebApp() {
     setIsBusy(true);
     setBackupStatus("마지막 복원을 되돌리는 중입니다.");
     try {
-      await runWithWebRestoreLock(() =>
-        replaceMemosFromBackup(safetyPoint.payload.memos)
-      );
-      clearRestoreSafetyPoint(restoreSafetyStorage);
-      setRestoreSafetyPoint(null);
+      await runWithWebRestoreLock(async () => {
+        const safetyPoint = loadRestoreSafetyPoint(restoreSafetyStorage);
+        if (!safetyPoint) {
+          throw new Error("되돌릴 복원 안전 지점이 없습니다.");
+        }
+        await replaceMemosFromBackup(safetyPoint.payload.memos);
+        clearRestoreSafetyPoint(restoreSafetyStorage);
+        setRestoreSafetyPoint(null);
+        broadcastRestoreSafetyChanged();
+      });
       setBackupStatus("마지막 복원을 되돌렸습니다.");
     } catch (error) {
       setBackupStatus(`복원 되돌리기 실패: ${getErrorMessage(error)}`);

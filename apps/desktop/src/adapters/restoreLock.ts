@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 export type RestoreLockRequest = {
   token: string;
 };
@@ -7,6 +9,19 @@ export type RestoreLockAcknowledgement = {
   windowLabel: string;
   ok: boolean;
   error?: string;
+};
+
+export type RestoreLockLease = {
+  token: string;
+  owner: string;
+  expiresAtMs: number;
+};
+
+export type RestoreLockLeaseAdapter = {
+  acquire: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
+  current: () => Promise<RestoreLockLease | null>;
+  renew: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
+  release: (token: string, owner: string) => Promise<boolean>;
 };
 
 export type RestoreLockCoordinatorOptions = {
@@ -24,9 +39,13 @@ export type RestoreLockCoordinatorOptions = {
   listenLockReleased: (
     handler: (payload: RestoreLockRequest) => void
   ) => Promise<() => void>;
+  nativeLease?: RestoreLockLeaseAdapter;
   lockLocal: (token: string) => Promise<void>;
   unlockLocal: (token: string) => void;
   timeoutMs?: number;
+  leaseTtlMs?: number;
+  leaseRenewIntervalMs?: number;
+  leasePollIntervalMs?: number;
   onProtocolError?: (error: unknown) => void;
 };
 
@@ -35,10 +54,24 @@ type PendingAcknowledgements = {
   acknowledgedWindowLabels: Set<string>;
   resolve: () => void;
   reject: (error: unknown) => void;
-  timeoutId: ReturnType<typeof setTimeout>;
 };
 
 const DEFAULT_ACK_TIMEOUT_MS = 5000;
+const DEFAULT_LEASE_TTL_MS = 10000;
+const DEFAULT_LEASE_RENEW_INTERVAL_MS = 2000;
+const DEFAULT_LEASE_POLL_INTERVAL_MS = 250;
+
+export function createTauriRestoreLockLeaseAdapter(): RestoreLockLeaseAdapter {
+  return {
+    acquire: (token, owner, ttlMs) =>
+      invoke<RestoreLockLease>("acquire_restore_lock_lease", { token, owner, ttlMs }),
+    current: () => invoke<RestoreLockLease | null>("current_restore_lock_lease"),
+    renew: (token, owner, ttlMs) =>
+      invoke<RestoreLockLease>("renew_restore_lock_lease", { token, owner, ttlMs }),
+    release: (token, owner) =>
+      invoke<boolean>("release_restore_lock_lease", { token, owner }),
+  };
+}
 
 function createToken() {
   return `restore-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -51,9 +84,18 @@ function toError(error: unknown, fallback: string) {
 export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOptions) {
   const pendingAcknowledgements = new Map<string, PendingAcknowledgements>();
   const cleanups: Array<() => void> = [];
+  const nativeLease = options.nativeLease;
+  const owner = options.getCurrentWindowLabel();
+  const leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
+  const leaseRenewIntervalMs =
+    options.leaseRenewIntervalMs ?? DEFAULT_LEASE_RENEW_INTERVAL_MS;
+  const leasePollIntervalMs = options.leasePollIntervalMs ?? DEFAULT_LEASE_POLL_INTERVAL_MS;
   let startPromise: Promise<void> | null = null;
   let localToken: string | null = null;
   let remoteToken: string | null = null;
+  let leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
+  let remoteLeasePollTimer: ReturnType<typeof setInterval> | null = null;
+  let remoteLeaseExpiryTimer: ReturnType<typeof setTimeout> | null = null;
 
   const reportProtocolError = (error: unknown) => {
     options.onProtocolError?.(error);
@@ -79,21 +121,142 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   };
 
   const clearPending = (token: string) => {
-    const pending = pendingAcknowledgements.get(token);
-    if (!pending) {
-      return;
-    }
-    clearTimeout(pending.timeoutId);
     pendingAcknowledgements.delete(token);
   };
 
+  const clearLeaseRenewal = () => {
+    if (leaseRenewTimer) {
+      clearInterval(leaseRenewTimer);
+      leaseRenewTimer = null;
+    }
+  };
+
+  const clearRemoteLeaseWatch = () => {
+    if (remoteLeasePollTimer) {
+      clearInterval(remoteLeasePollTimer);
+      remoteLeasePollTimer = null;
+    }
+    if (remoteLeaseExpiryTimer) {
+      clearTimeout(remoteLeaseExpiryTimer);
+      remoteLeaseExpiryTimer = null;
+    }
+  };
+
+  const unlockRemote = (token: string) => {
+    if (remoteToken !== token) {
+      return;
+    }
+    remoteToken = null;
+    clearRemoteLeaseWatch();
+    options.unlockLocal(token);
+  };
+
+  const startLeaseRenewal = (token: string) => {
+    if (!nativeLease || leaseRenewTimer) {
+      return;
+    }
+    leaseRenewTimer = setInterval(() => {
+      void nativeLease.renew(token, owner, leaseTtlMs).catch((error) => {
+        reportProtocolError(error);
+      });
+    }, leaseRenewIntervalMs);
+  };
+
+  const checkRemoteLease = async (token: string) => {
+    if (!nativeLease || remoteToken !== token) {
+      return;
+    }
+
+    try {
+      const current = await nativeLease.current();
+      if (!current || current.token !== token) {
+        unlockRemote(token);
+      } else {
+        scheduleRemoteLeaseExpiry(token, current.expiresAtMs);
+      }
+    } catch (error) {
+      reportProtocolError(error);
+    }
+  };
+
+  const scheduleRemoteLeaseExpiry = (token: string, expiresAtMs = Date.now() + leaseTtlMs) => {
+    if (remoteLeaseExpiryTimer) {
+      clearTimeout(remoteLeaseExpiryTimer);
+    }
+    const remainingMs = Math.max(leasePollIntervalMs, expiresAtMs - Date.now());
+    remoteLeaseExpiryTimer = setTimeout(() => {
+      if (remoteToken === token) {
+        reportProtocolError(new Error("복원 잠금 lease가 만료되었습니다."));
+        unlockRemote(token);
+      }
+    }, remainingMs + leasePollIntervalMs);
+  };
+
+  const startRemoteLeaseWatch = (token: string, expiresAtMs?: number) => {
+    if (!nativeLease) {
+      return;
+    }
+    clearRemoteLeaseWatch();
+    remoteLeasePollTimer = setInterval(() => {
+      void checkRemoteLease(token);
+    }, leasePollIntervalMs);
+    scheduleRemoteLeaseExpiry(token, expiresAtMs);
+  };
+
+  const acquireRemoteLock = async (token: string, lease?: RestoreLockLease) => {
+    remoteToken = token;
+    startRemoteLeaseWatch(token, lease?.expiresAtMs);
+    try {
+      await options.lockLocal(token);
+      if (remoteToken !== token) {
+        return;
+      }
+      void options
+        .notifyLockAcknowledged({
+          token,
+          windowLabel: owner,
+          ok: true,
+        })
+        .catch(reportProtocolError);
+    } catch (error) {
+      if (remoteToken === token) {
+        remoteToken = null;
+        clearRemoteLeaseWatch();
+        options.unlockLocal(token);
+      }
+      try {
+        await options.notifyLockAcknowledged({
+          token,
+          windowLabel: owner,
+          ok: false,
+          error: toError(error, "복원 잠금을 적용하지 못했습니다.").message,
+        });
+      } catch (ackError) {
+        reportProtocolError(ackError);
+      }
+    }
+  };
+
   const handleLockRequested = async (payload: RestoreLockRequest) => {
-    const windowLabel = options.getCurrentWindowLabel();
+    let currentLease: RestoreLockLease | undefined;
+    if (nativeLease) {
+      let current: RestoreLockLease | null;
+      try {
+        current = await nativeLease.current();
+      } catch (error) {
+        reportProtocolError(error);
+        return;
+      }
+      if (!current || current.token !== payload.token) {
+        return;
+      }
+      currentLease = current;
+    }
 
     if (localToken === payload.token || remoteToken === payload.token) {
       await options.notifyLockAcknowledged({
         token: payload.token,
-        windowLabel,
+        windowLabel: owner,
         ok: true,
       });
       return;
@@ -102,35 +265,14 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     if (localToken || remoteToken) {
       await options.notifyLockAcknowledged({
         token: payload.token,
-        windowLabel,
+        windowLabel: owner,
         ok: false,
         error: "다른 복원 작업이 이미 진행 중입니다.",
       });
       return;
     }
 
-    remoteToken = payload.token;
-    try {
-      await options.lockLocal(payload.token);
-      await options.notifyLockAcknowledged({
-        token: payload.token,
-        windowLabel,
-        ok: true,
-      });
-    } catch (error) {
-      remoteToken = null;
-      options.unlockLocal(payload.token);
-      try {
-        await options.notifyLockAcknowledged({
-          token: payload.token,
-          windowLabel,
-          ok: false,
-          error: toError(error, "복원 잠금을 적용하지 못했습니다.").message,
-        });
-      } catch (ackError) {
-        reportProtocolError(ackError);
-      }
-    }
+    await acquireRemoteLock(payload.token, currentLease);
   };
 
   const handleLockAcknowledged = (payload: RestoreLockAcknowledgement) => {
@@ -146,11 +288,18 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   };
 
   const handleLockReleased = (payload: RestoreLockRequest) => {
-    if (remoteToken !== payload.token) {
+    unlockRemote(payload.token);
+  };
+
+  const initializeRemoteLease = async () => {
+    if (!nativeLease || localToken || remoteToken) {
       return;
     }
-    remoteToken = null;
-    options.unlockLocal(payload.token);
+    const current = await nativeLease.current();
+    if (!current) {
+      return;
+    }
+    await acquireRemoteLock(current.token, current);
   };
 
   const start = async () => {
@@ -161,8 +310,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         }),
         options.listenLockAcknowledged(handleLockAcknowledged),
         options.listenLockReleased(handleLockReleased),
-      ]).then((registeredCleanups) => {
+      ]).then(async (registeredCleanups) => {
         cleanups.push(...registeredCleanups);
+        await initializeRemoteLease();
       });
     }
     await startPromise;
@@ -176,6 +326,43 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
   };
 
+  const releaseNativeLease = async (token: string) => {
+    if (!nativeLease) {
+      return;
+    }
+    try {
+      await nativeLease.release(token, owner);
+    } catch (error) {
+      reportProtocolError(error);
+    }
+  };
+
+  const waitForNotificationAndAcknowledgements = async (
+    token: string,
+    acknowledgementPromise: Promise<void>
+  ) => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error("복원 잠금 승인을 기다리는 시간이 초과되었습니다."));
+      }, options.timeoutMs ?? DEFAULT_ACK_TIMEOUT_MS);
+    });
+
+    try {
+      await Promise.race([
+        Promise.all([
+          Promise.resolve().then(() => options.notifyLockRequested(token)),
+          acknowledgementPromise,
+        ]),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
+  };
+
   const acquire = async () => {
     await start();
     if (localToken || remoteToken) {
@@ -184,15 +371,24 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
 
     const token = createToken();
     localToken = token;
-    let localDrain: Promise<void>;
-    let pending: PendingAcknowledgements | null = null;
+    let pending = false;
+    let nativeLeaseAcquired = false;
 
     try {
       // lockLocal synchronously flips the caller's persistence barrier before its queue drain.
-      localDrain = options.lockLocal(token);
+      const localDrain = options.lockLocal(token);
+      if (nativeLease) {
+        const acquired = await nativeLease.acquire(token, owner, leaseTtlMs);
+        if (acquired.token !== token || acquired.owner !== owner) {
+          throw new Error("복원 잠금 lease 소유자 확인에 실패했습니다.");
+        }
+        nativeLeaseAcquired = true;
+        startLeaseRenewal(token);
+      }
+
       const liveWindowLabels = await options.listLiveWindowLabels();
       const expectedWindowLabels = new Set(liveWindowLabels);
-      expectedWindowLabels.add(options.getCurrentWindowLabel());
+      expectedWindowLabels.add(owner);
 
       let resolvePending!: () => void;
       let rejectPending!: (error: unknown) => void;
@@ -200,29 +396,30 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         resolvePending = resolve;
         rejectPending = reject;
       });
-      pending = {
+      pendingAcknowledgements.set(token, {
         expectedWindowLabels,
         acknowledgedWindowLabels: new Set(),
         resolve: resolvePending,
         reject: rejectPending,
-        timeoutId: setTimeout(() => {
-          rejectPending(new Error("복원 잠금 승인을 기다리는 시간이 초과되었습니다."));
-        }, options.timeoutMs ?? DEFAULT_ACK_TIMEOUT_MS),
-      };
-      pendingAcknowledgements.set(token, pending);
+      });
+      pending = true;
 
       void Promise.resolve(localDrain).then(
-        () => settlePending(token, options.getCurrentWindowLabel()),
-        (error) => settlePending(token, options.getCurrentWindowLabel(), error)
+        () => settlePending(token, owner),
+        (error) => settlePending(token, owner, error)
       );
 
-      await options.notifyLockRequested(token);
-      await acknowledgementPromise;
+      await waitForNotificationAndAcknowledgements(token, acknowledgementPromise);
       clearPending(token);
+      pending = false;
       return token;
     } catch (error) {
       if (pending) {
         clearPending(token);
+      }
+      clearLeaseRenewal();
+      if (nativeLeaseAcquired) {
+        await releaseNativeLease(token);
       }
       await broadcastRelease(token);
       localToken = null;
@@ -237,11 +434,11 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
 
     try {
-      await options.notifyLockReleased(token);
-    } catch (error) {
-      reportProtocolError(error);
-    } finally {
       clearPending(token);
+      clearLeaseRenewal();
+      await releaseNativeLease(token);
+      await broadcastRelease(token);
+    } finally {
       localToken = null;
       options.unlockLocal(token);
     }
@@ -257,8 +454,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
     if (remoteToken) {
       const token = remoteToken;
-      remoteToken = null;
-      options.unlockLocal(token);
+      unlockRemote(token);
     }
   };
 
