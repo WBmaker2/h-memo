@@ -2,14 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getFirestore, type Firestore } from "firebase/firestore";
 import type { Auth } from "firebase/auth";
 import {
+  clearRestoreSafetyPoint,
   MemoryMemoRepository,
   createBackupPayload,
   createMemo,
   formatMemosAsCombinedText,
+  loadRestoreSafetyPoint,
+  saveRestoreSafetyPoint,
   updateMemoWindowState,
   validateLocalBackupPayload,
   type Memo,
   type MemoRepository,
+  type RestoreSafetyPoint,
 } from "@h-memo/memo-core";
 import { MemoWorkspace, type FirebaseConfigFormValue } from "@h-memo/memo-ui";
 import { TauriMemoRepository } from "./adapters/tauriMemoRepository";
@@ -138,6 +142,41 @@ function getMemoLabel(memo: Memo): string {
   return memo.plainText.trim().replace(/\s+/g, " ") || "빈 메모";
 }
 
+function getRestoreSafetyStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function createRestoreSafetyPoint(
+  source: RestoreSafetyPoint["source"],
+  userId: string,
+  memos: Memo[]
+): RestoreSafetyPoint {
+  const createdAt = new Date().toISOString();
+  return {
+    version: 1,
+    source,
+    createdAt,
+    payload: createBackupPayload({
+      userId,
+      createdAt,
+      memos,
+    }),
+  };
+}
+
+function formatBackupTime(createdAt: string): string {
+  const date = new Date(createdAt);
+  return Number.isNaN(date.getTime()) ? createdAt : date.toLocaleString("ko-KR");
+}
+
+function getServerRestoreConfirmMessage(snapshot: BackedUpSnapshot): string {
+  return `${formatBackupTime(snapshot.createdAt)} 백업의 ${snapshot.memoCount}개 메모로 현재 로컬 메모를 대체합니다. 계속할까요?`;
+}
+
 export function App() {
   const isTauri = isTauriRuntime();
   const requestedMemoId = useMemo(() => {
@@ -147,7 +186,11 @@ export function App() {
     return new URLSearchParams(window.location.search).get("memoId");
   }, [isTauri]);
   const repository = useMemo(() => createRepository(isTauri), [isTauri]);
+  const restoreSafetyStorage = useMemo(() => getRestoreSafetyStorage(), []);
   const [memos, setMemos] = useState<Memo[]>([]);
+  const [restoreSafetyPoint, setRestoreSafetyPoint] = useState<RestoreSafetyPoint | null>(() =>
+    restoreSafetyStorage ? loadRestoreSafetyPoint(restoreSafetyStorage) : null
+  );
   const [activeMemoId, setActiveMemoId] = useState<string | null>(requestedMemoId);
   const [ownedMemoId, setOwnedMemoId] = useState<string | null>(null);
   const [startupEnabled, setStartupEnabled] = useState(false);
@@ -821,8 +864,8 @@ export function App() {
     await Promise.allSettled(currentMemos.map((memo) => repository.saveMemo(memo)));
   };
 
-  const replaceMemosFromBackup = async (nextMemos: Memo[]) => {
-    const currentMemos = await repository.listMemos();
+  const replaceMemosFromBackup = async (nextMemos: Memo[], previousMemos?: Memo[]) => {
+    const currentMemos = previousMemos ?? (await repository.listMemos());
     const keptIds = new Set(nextMemos.map((memo) => memo.id));
     const removedAt = new Date().toISOString();
 
@@ -844,6 +887,22 @@ export function App() {
     memosRef.current = sortedMemos;
     setMemos(sortedMemos);
     broadcastMemoStoreChanged();
+  };
+
+  const replaceMemosWithSafety = async (
+    source: RestoreSafetyPoint["source"],
+    userId: string,
+    nextMemos: Memo[]
+  ) => {
+    if (!restoreSafetyStorage) {
+      throw new Error("복원 안전 지점을 저장할 저장 공간을 사용할 수 없습니다.");
+    }
+
+    const currentMemos = await repository.listMemos();
+    const safetyPoint = createRestoreSafetyPoint(source, userId, currentMemos);
+    saveRestoreSafetyPoint(restoreSafetyStorage, safetyPoint);
+    await replaceMemosFromBackup(nextMemos, currentMemos);
+    setRestoreSafetyPoint(safetyPoint);
   };
 
   const handleCreateMemo = async () => {
@@ -1062,8 +1121,34 @@ export function App() {
       return;
     }
 
-    await replaceMemosFromBackup(parsed.payload.memos);
+    await waitForPendingPersists();
+    await replaceMemosWithSafety("json", user?.uid ?? "local", parsed.payload.memos);
     setBackupStatus(`JSON 복원 완료: ${parsed.payload.memos.length}개 메모`);
+  };
+
+  const handleUndoRestore = async () => {
+    const safetyPoint = restoreSafetyPoint;
+    if (!safetyPoint || isBusy) {
+      return;
+    }
+    if (!restoreSafetyStorage) {
+      setBackupStatus("복원 되돌리기 실패: 안전 지점 저장 공간을 사용할 수 없습니다.");
+      return;
+    }
+
+    setIsBusy(true);
+    setBackupStatus("마지막 복원을 되돌리는 중입니다.");
+    try {
+      await waitForPendingPersists();
+      await replaceMemosFromBackup(safetyPoint.payload.memos);
+      clearRestoreSafetyPoint(restoreSafetyStorage);
+      setRestoreSafetyPoint(null);
+      setBackupStatus("마지막 복원을 되돌렸습니다.");
+    } catch (error) {
+      setBackupStatus(`복원 되돌리기 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
   };
 
   const handleExportJsonBackup = async () => {
@@ -1318,7 +1403,11 @@ export function App() {
     setBackupStatus("선택한 백업을 복원합니다.");
     try {
       await waitForPendingPersists();
-      await replaceMemosFromBackup(snapshot.payload.memos);
+      if (!window.confirm(getServerRestoreConfirmMessage(snapshot))) {
+        setBackupStatus("복원을 취소했습니다.");
+        return;
+      }
+      await replaceMemosWithSafety("server", user?.uid ?? "local", snapshot.payload.memos);
       setBackupHistoryDialog({ isOpen: false, snapshots: [] });
       setBackupStatus(`복원 완료: ${snapshot.payload.memos.length}개 메모`);
     } catch (error) {
@@ -1653,6 +1742,8 @@ export function App() {
           isServerBusy: isBusy,
           isBackupDisabled,
           isRestoreDisabled,
+          canUndoRestore: restoreSafetyPoint !== null,
+          onUndoRestore: handleUndoRestore,
           isAuthDisabled,
         }}
       />

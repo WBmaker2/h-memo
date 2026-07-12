@@ -50,6 +50,31 @@ describe("SettingsPanel", () => {
     expect(onToggleStartup).toHaveBeenCalledWith(true);
   });
 
+  it("shows and calls the one-step restore undo action when available", async () => {
+    const user = userEvent.setup();
+    const onUndoRestore = vi.fn();
+
+    render(
+      <SettingsPanel
+        userName="홍길동"
+        backupStatus="복원 완료"
+        startupEnabled={false}
+        canUndoRestore
+        onUndoRestore={onUndoRestore}
+        onBackup={vi.fn()}
+        onRestore={vi.fn()}
+        onExportText={vi.fn()}
+        onToggleStartup={vi.fn()}
+        onSignIn={vi.fn()}
+        onSignOut={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "마지막 복원 되돌리기" }));
+
+    expect(onUndoRestore).toHaveBeenCalledTimes(1);
+  });
+
   it("renders fallback and calls sign-in for null userName", async () => {
     const user = userEvent.setup();
     const onSignIn = vi.fn();

@@ -17,6 +17,7 @@ import {
   subscribeAuthUser,
   waitForSignedInUser,
 } from "@h-memo/memo-sync";
+import { createMemo } from "@h-memo/memo-core";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
 import { WebApp } from "./WebApp";
 
@@ -70,6 +71,7 @@ const SERVER_BACKED_UP_MEMO: BackedUpMemo = {
 };
 
 const LOCAL_MEMO_KEY = "h-memo:web-memo-repository-v1";
+const RESTORE_SAFETY_KEY = "h-memo:restore-safety-v1";
 
 vi.mock("firebase/firestore", () => ({
   getFirestore: vi.fn(() => ({})),
@@ -348,6 +350,247 @@ describe("WebApp", () => {
     });
     expect(screen.getByDisplayValue("현재 웹 메모")).toBeInTheDocument();
     expect(screen.queryByDisplayValue("취소된 웹 복원")).not.toBeInTheDocument();
+  });
+
+  it("persists every browser memo before JSON restore and supports one-step undo", async () => {
+    const user = userEvent.setup();
+    const currentMemo = createMemo({
+      id: "memo-web-current-with-undo",
+      now: "2026-07-12T09:00:00.000Z",
+      plainText: "복원 전 웹 메모",
+    });
+    const deletedMemo = {
+      ...createMemo({
+        id: "memo-web-deleted-with-undo",
+        now: "2026-07-12T09:01:00.000Z",
+        plainText: "삭제된 웹 메모",
+      }),
+      deletedAt: "2026-07-12T09:02:00.000Z",
+      windowState: {
+        ...currentMemo.windowState,
+        visible: false,
+      },
+    };
+    const restoredMemo = createMemo({
+      id: "memo-web-restored-with-undo",
+      now: "2026-07-12T09:03:00.000Z",
+      plainText: "복원된 웹 메모",
+    });
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([currentMemo, deletedMemo])]],
+    });
+
+    let safetyAtMemoWrite: string | null = null;
+    const storage = window.localStorage;
+    const originalSetItem = storage.setItem.bind(storage);
+    storage.setItem = (key: string, value: string) => {
+      if (key === LOCAL_MEMO_KEY && safetyAtMemoWrite === null) {
+        safetyAtMemoWrite = storage.getItem(RESTORE_SAFETY_KEY);
+      }
+      originalSetItem(key, value);
+    };
+
+    render(<WebApp />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("복원 전 웹 메모")).toBeInTheDocument();
+    });
+
+    const restored = {
+      version: 1,
+      userId: "local",
+      createdAt: "2026-07-12T09:04:00.000Z",
+      memos: [restoredMemo],
+    };
+    await user.upload(
+      screen.getByLabelText("JSON 백업 파일 선택"),
+      new File([JSON.stringify(restored)], "h-memo-backup.json", { type: "application/json" })
+    );
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("복원된 웹 메모")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("JSON 복원 완료: 1개 메모");
+    });
+
+    const safetyPointBeforeUndo = JSON.parse(
+      storage.getItem(RESTORE_SAFETY_KEY) ?? "null"
+    );
+    expect(safetyPointBeforeUndo.source).toBe("json");
+    expect(safetyPointBeforeUndo.payload.memos.map((memo: { id: string }) => memo.id).sort()).toEqual(
+      [currentMemo.id, deletedMemo.id].sort()
+    );
+    expect(safetyAtMemoWrite).toBeTruthy();
+
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    let safetyAtUndoWrite: string | null = null;
+    storage.setItem = (key: string, value: string) => {
+      if (key === LOCAL_MEMO_KEY && safetyAtUndoWrite === null) {
+        safetyAtUndoWrite = storage.getItem(RESTORE_SAFETY_KEY);
+      }
+      originalSetItem(key, value);
+    };
+
+    await user.click(screen.getByRole("button", { name: "마지막 복원 되돌리기" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("마지막 복원을 되돌렸습니다.");
+      expect(screen.getByDisplayValue("복원 전 웹 메모")).toBeInTheDocument();
+    });
+    expect(screen.queryByDisplayValue("복원된 웹 메모")).not.toBeInTheDocument();
+    expect(safetyAtUndoWrite).toEqual(JSON.stringify(safetyPointBeforeUndo));
+    expect(storage.getItem(RESTORE_SAFETY_KEY)).toBeNull();
+  });
+
+  it("does not replace browser memos when restore safety storage fails", async () => {
+    const user = userEvent.setup();
+    const currentMemo = createMemo({
+      id: "memo-web-storage-failure-current",
+      now: "2026-07-12T10:00:00.000Z",
+      plainText: "저장 실패에도 유지할 웹 메모",
+    });
+    const restoredMemo = createMemo({
+      id: "memo-web-storage-failure-restored",
+      now: "2026-07-12T10:01:00.000Z",
+      plainText: "저장 실패로 복원되지 않을 메모",
+    });
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([currentMemo])]],
+      failOnSet: true,
+    });
+    render(<WebApp />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("저장 실패에도 유지할 웹 메모")).toBeInTheDocument();
+    });
+
+    await user.upload(
+      screen.getByLabelText("JSON 백업 파일 선택"),
+      new File(
+        [
+          JSON.stringify({
+            version: 1,
+            userId: "local",
+            createdAt: "2026-07-12T10:02:00.000Z",
+            memos: [restoredMemo],
+          }),
+        ],
+        "h-memo-backup.json",
+        { type: "application/json" }
+      )
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("JSON 복원 실패: 복원 안전 지점");
+      expect(screen.getByDisplayValue("저장 실패에도 유지할 웹 메모")).toBeInTheDocument();
+    });
+    expect(screen.queryByDisplayValue("저장 실패로 복원되지 않을 메모")).not.toBeInTheDocument();
+  });
+
+  it("initializes undo from a valid persisted safety point", async () => {
+    const memo = createMemo({
+      id: "memo-persisted-undo",
+      now: "2026-07-12T12:00:00.000Z",
+      plainText: "시작 시 되돌릴 메모",
+    });
+    installLocalStorageStub({
+      initialEntries: [
+        [
+          RESTORE_SAFETY_KEY,
+          JSON.stringify({
+            version: 1,
+            source: "json",
+            createdAt: "2026-07-12T12:01:00.000Z",
+            payload: {
+              version: 1,
+              userId: "local",
+              createdAt: "2026-07-12T12:01:00.000Z",
+              memos: [memo],
+            },
+          }),
+        ],
+      ],
+    });
+
+    render(<WebApp />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "마지막 복원 되돌리기" })).toBeInTheDocument();
+    });
+  });
+
+  it("treats malformed persisted undo storage as unavailable", async () => {
+    installLocalStorageStub({
+      initialEntries: [[RESTORE_SAFETY_KEY, JSON.stringify({ version: 1, source: "unknown" })]],
+    });
+
+    render(<WebApp />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "H Memo" })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: "마지막 복원 되돌리기" })).not.toBeInTheDocument();
+  });
+
+  it("retains the browser undo point when undo replacement fails", async () => {
+    const user = userEvent.setup();
+    const currentMemo = createMemo({
+      id: "memo-web-undo-failure-current",
+      now: "2026-07-12T11:00:00.000Z",
+      plainText: "undo 실패 전 메모",
+    });
+    const restoredMemo = createMemo({
+      id: "memo-web-undo-failure-restored",
+      now: "2026-07-12T11:01:00.000Z",
+      plainText: "undo 실패 복원 메모",
+    });
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([currentMemo])]],
+    });
+    const storage = window.localStorage;
+    const originalSetItem = storage.setItem.bind(storage);
+    let failMemoWrites = false;
+    storage.setItem = (key: string, value: string) => {
+      if (failMemoWrites && key === LOCAL_MEMO_KEY) {
+        throw new Error("undo storage failure");
+      }
+      originalSetItem(key, value);
+    };
+
+    render(<WebApp />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("undo 실패 전 메모")).toBeInTheDocument();
+    });
+
+    await user.upload(
+      screen.getByLabelText("JSON 백업 파일 선택"),
+      new File(
+        [
+          JSON.stringify({
+            version: 1,
+            userId: "local",
+            createdAt: "2026-07-12T11:02:00.000Z",
+            memos: [restoredMemo],
+          }),
+        ],
+        "h-memo-backup.json",
+        { type: "application/json" }
+      )
+    );
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("undo 실패 복원 메모")).toBeInTheDocument();
+    });
+
+    const safetyPoint = storage.getItem(RESTORE_SAFETY_KEY);
+    expect(safetyPoint).toBeTruthy();
+    failMemoWrites = true;
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    await user.click(screen.getByRole("button", { name: "마지막 복원 되돌리기" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("복원 되돌리기 실패:");
+      expect(screen.getByDisplayValue("undo 실패 복원 메모")).toBeInTheDocument();
+    });
+    expect(storage.getItem(RESTORE_SAFETY_KEY)).toBe(safetyPoint);
+    expect(screen.getByRole("button", { name: "마지막 복원 되돌리기" })).toBeInTheDocument();
   });
 
   it("persists memo data to localStorage for browser session preview", async () => {
@@ -777,6 +1020,17 @@ describe("WebApp", () => {
       expect(screen.queryByDisplayValue("삭제되어야 할 로컬 데이터")).not.toBeInTheDocument();
       expect(screen.getByDisplayValue("복원된 본문")).toBeInTheDocument();
     });
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining(new Date("2026-05-13T10:05:00.000Z").toLocaleString("ko-KR"))
+    );
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("1개 메모"));
+    const safetyPoint = JSON.parse(
+      window.localStorage.getItem(RESTORE_SAFETY_KEY) ?? "null"
+    );
+    expect(safetyPoint.source).toBe("server");
+    expect(safetyPoint.payload.memos).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "local-only-memo" })])
+    );
   });
 
   it("opens server memo manager and restores selected server memo", async () => {

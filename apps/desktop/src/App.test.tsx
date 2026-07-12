@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { createMemo } from "@h-memo/memo-core";
 
+const RESTORE_SAFETY_KEY = "h-memo:restore-safety-v1";
+
 const {
   MockTauriMemoRepository,
   mockExportTextFile,
@@ -1059,6 +1061,157 @@ describe("desktop App", () => {
     );
   });
 
+  it("persists every desktop memo before JSON restore and supports one-step undo", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const currentMemo = createMemo({
+      id: "memo-json-current-with-undo",
+      now: "2026-07-12T09:00:00.000Z",
+      plainText: "복원 전 데스크톱 메모",
+    });
+    const deletedMemo = {
+      ...createMemo({
+        id: "memo-json-deleted-with-undo",
+        now: "2026-07-12T09:01:00.000Z",
+        plainText: "삭제된 데스크톱 메모",
+      }),
+      deletedAt: "2026-07-12T09:02:00.000Z",
+      windowState: {
+        ...currentMemo.windowState,
+        visible: false,
+      },
+    };
+    const restoredMemo = createMemo({
+      id: "memo-json-restored-with-undo",
+      now: "2026-07-12T09:03:00.000Z",
+      plainText: "복원된 데스크톱 메모",
+    });
+    tauriRepositoryState.set(currentMemo.id, currentMemo);
+    tauriRepositoryState.set(deletedMemo.id, deletedMemo);
+    mockImportJsonFile.mockResolvedValue({
+      status: "loaded",
+      contents: JSON.stringify({
+        version: 1,
+        userId: "local",
+        createdAt: "2026-07-12T09:04:00.000Z",
+        memos: [restoredMemo],
+      }),
+    });
+
+    let safetyAtFirstWrite: string | null = null;
+    mockSaveMemo.mockImplementation(async (nextMemo: any) => {
+      safetyAtFirstWrite ??= window.localStorage.getItem(RESTORE_SAFETY_KEY);
+      return defaultSaveMemo(nextMemo);
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("복원 전 데스크톱 메모")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "JSON 복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("복원된 데스크톱 메모")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("JSON 복원 완료: 1개 메모");
+    });
+
+    const safetyPointBeforeUndo = JSON.parse(
+      window.localStorage.getItem(RESTORE_SAFETY_KEY) ?? "null"
+    );
+    expect(safetyPointBeforeUndo.source).toBe("json");
+    expect(safetyPointBeforeUndo.payload.memos.map((memo: { id: string }) => memo.id).sort()).toEqual(
+      [currentMemo.id, deletedMemo.id].sort()
+    );
+    expect(safetyAtFirstWrite).toBeTruthy();
+
+    await user.click(screen.getAllByLabelText("메모 메뉴")[0]!);
+    let safetyAtUndoWrite: string | null = null;
+    mockSaveMemo.mockImplementation(async (nextMemo: any) => {
+      if (nextMemo.id === currentMemo.id) {
+        safetyAtUndoWrite = window.localStorage.getItem(RESTORE_SAFETY_KEY);
+      }
+      return defaultSaveMemo(nextMemo);
+    });
+
+    await user.click(screen.getByRole("button", { name: "마지막 복원 되돌리기" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("마지막 복원을 되돌렸습니다.");
+      expect(screen.getByDisplayValue("복원 전 데스크톱 메모")).toBeInTheDocument();
+    });
+    expect(screen.queryByDisplayValue("복원된 데스크톱 메모")).not.toBeInTheDocument();
+    expect(safetyAtUndoWrite).toEqual(JSON.stringify(safetyPointBeforeUndo));
+    expect(window.localStorage.getItem(RESTORE_SAFETY_KEY)).toBeNull();
+  });
+
+  it("does not replace desktop memos when restore safety storage fails", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const currentMemo = createMemo({
+      id: "memo-desktop-storage-failure-current",
+      now: "2026-07-12T13:00:00.000Z",
+      plainText: "저장 실패에도 유지할 데스크톱 메모",
+    });
+    const restoredMemo = createMemo({
+      id: "memo-desktop-storage-failure-restored",
+      now: "2026-07-12T13:01:00.000Z",
+      plainText: "저장 실패로 복원되지 않을 데스크톱 메모",
+    });
+    tauriRepositoryState.set(currentMemo.id, currentMemo);
+    mockImportJsonFile.mockResolvedValue({
+      status: "loaded",
+      contents: JSON.stringify({
+        version: 1,
+        userId: "local",
+        createdAt: "2026-07-12T13:02:00.000Z",
+        memos: [restoredMemo],
+      }),
+    });
+
+    const nativeStorage = window.localStorage;
+    const failingStorage: Storage = {
+      get length() {
+        return 0;
+      },
+      clear() {},
+      getItem() {
+        return null;
+      },
+      key() {
+        return null;
+      },
+      removeItem() {},
+      setItem() {
+        throw new Error("quota exceeded");
+      },
+    };
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: failingStorage,
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("저장 실패에도 유지할 데스크톱 메모")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "JSON 복원" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("JSON 복원 실패: 복원 안전 지점");
+      expect(screen.getByDisplayValue("저장 실패에도 유지할 데스크톱 메모")).toBeInTheDocument();
+    });
+    expect(screen.queryByDisplayValue("저장 실패로 복원되지 않을 데스크톱 메모")).not.toBeInTheDocument();
+    expect(mockSaveMemo).not.toHaveBeenCalledWith(restoredMemo);
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: nativeStorage,
+    });
+  });
+
   it("loads startup state and handles failure", async () => {
     setTauriRuntime(true);
     mockGetStartupEnabled.mockRejectedValue(new Error("fail"));
@@ -2076,6 +2229,18 @@ describe("desktop App", () => {
       expect(mockRestoreLatestBackup).not.toHaveBeenCalled();
       expect(screen.getByRole("status")).toHaveTextContent("복원 완료: 1개 메모");
     });
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining(new Date("2026-01-01T00:00:00.000Z").toLocaleString("ko-KR"))
+    );
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("1개 메모"));
+    const safetyPoint = JSON.parse(
+      window.localStorage.getItem(RESTORE_SAFETY_KEY) ?? "null"
+    );
+    expect(safetyPoint.source).toBe("server");
+    expect(safetyPoint.payload.memos).toEqual(
+      expect.arrayContaining([expect.objectContaining({ plainText: "로컬 내용" })])
+    );
 
     expect(screen.queryByDisplayValue("로컬 내용")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("서버 복원 텍스트")).toBeInTheDocument();

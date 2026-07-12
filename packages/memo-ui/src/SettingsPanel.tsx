@@ -20,6 +20,8 @@ export type SettingsPanelProps = {
   isServerBusy?: boolean;
   isBackupDisabled?: boolean;
   isRestoreDisabled?: boolean;
+  canUndoRestore?: boolean;
+  onUndoRestore?: () => void;
   isAuthDisabled?: boolean;
   showStartupSection?: boolean;
   firebaseConfig?: FirebaseConfigFormValue;
@@ -55,6 +57,8 @@ export function SettingsPanel({
   isServerBusy = false,
   isBackupDisabled = false,
   isRestoreDisabled = false,
+  canUndoRestore = false,
+  onUndoRestore = () => {},
   isAuthDisabled = false,
   showStartupSection = true,
   firebaseConfig = EMPTY_FIREBASE_CONFIG,
@@ -235,6 +239,11 @@ export function SettingsPanel({
           >
             JSON 복원
           </button>
+          {canUndoRestore ? (
+            <button type="button" onClick={onUndoRestore} disabled={isServerBusy}>
+              마지막 복원 되돌리기
+            </button>
+          ) : null}
         </div>
       </section>
 

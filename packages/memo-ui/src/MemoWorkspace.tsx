@@ -107,6 +107,8 @@ export function MemoWorkspace({
         isServerBusy={settingsProps.isServerBusy}
         isBackupDisabled={settingsProps.isBackupDisabled}
         isRestoreDisabled={settingsProps.isRestoreDisabled}
+        canUndoRestore={settingsProps.canUndoRestore}
+        onUndoRestore={settingsProps.onUndoRestore}
         isAuthDisabled={settingsProps.isAuthDisabled}
         showStartupSection={settingsProps.showStartupSection}
         firebaseConfig={settingsProps.firebaseConfig}
