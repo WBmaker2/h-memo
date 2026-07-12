@@ -32,8 +32,13 @@ export type RestoreLockLease = {
 };
 
 export type RestoreLockLeaseAdapter = {
-  acquire: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
-  cancelAcquire?: (token: string) => Promise<void>;
+  acquire: (
+    token: string,
+    owner: string,
+    ttlMs: number,
+    requestDeadlineMs: number
+  ) => Promise<RestoreLockLease>;
+  cancelAcquire?: (token: string, requestDeadlineMs: number) => Promise<void>;
   current: () => Promise<RestoreLockLease | null>;
   renew: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
   activate: (token: string, owner: string) => Promise<RestoreLockLease>;
@@ -109,10 +114,18 @@ const NATIVE_CLEANUP_PENDING_MESSAGE =
 
 export function createTauriRestoreLockLeaseAdapter(): RestoreLockLeaseAdapter {
   return {
-    acquire: (token, owner, ttlMs) =>
-      invoke<RestoreLockLease>("acquire_restore_lock_lease", { token, owner, ttlMs }),
-    cancelAcquire: (token) =>
-      invoke<void>("cancel_abandoned_restore_lock_acquire", { token }),
+    acquire: (token, owner, ttlMs, requestDeadlineMs) =>
+      invoke<RestoreLockLease>("acquire_restore_lock_lease", {
+        token,
+        owner,
+        ttlMs,
+        requestDeadlineMs,
+      }),
+    cancelAcquire: (token, requestDeadlineMs) =>
+      invoke<void>("cancel_abandoned_restore_lock_acquire", {
+        token,
+        requestDeadlineMs,
+      }),
     current: () => invoke<RestoreLockLease | null>("current_restore_lock_lease"),
     renew: (token, owner, ttlMs) =>
       invoke<RestoreLockLease>("renew_restore_lock_lease", { token, owner, ttlMs }),
@@ -130,7 +143,21 @@ export function createTauriRestoreLockLeaseAdapter(): RestoreLockLeaseAdapter {
 }
 
 function createToken() {
-  return `restore-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") {
+    return `restore-${cryptoApi.randomUUID()}`;
+  }
+  if (typeof cryptoApi?.getRandomValues !== "function") {
+    throw new Error("안전한 복원 잠금 token을 생성할 수 없습니다.");
+  }
+
+  const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join(
+    ""
+  );
+  return `restore-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function toError(error: unknown, fallback: string) {
@@ -222,9 +249,14 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let lifecycleGeneration = 0;
   let nextRemoteRequestGeneration = 0;
   let latestRemoteRequestGeneration = 0;
+  let pendingNativeAcquire: {
+    token: string;
+    requestDeadlineMs: number;
+  } | null = null;
   let pendingLocalRecovery: {
     token: string;
     finalApplyGeneration: number;
+    nativeAcquireRequestDeadlineMs: number | null;
     nativeAcquireCancellationComplete: boolean;
     nativeFinished: boolean;
     applyComplete: boolean;
@@ -238,6 +270,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let nativeCleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let nativeCleanupInFlight: Promise<void> | null = null;
   let stopPromise: Promise<void> | null = null;
+
+  const readPendingLocalRecovery = () => pendingLocalRecovery;
 
   const reportProtocolError = (error: unknown) => {
     options.onProtocolError?.(error);
@@ -1306,6 +1340,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       clearTimeout(nativeCleanupRetryTimer);
       nativeCleanupRetryTimer = null;
     }
+    if (pendingNativeAcquire?.token === token) {
+      pendingNativeAcquire = null;
+    }
     pendingLocalRecovery = null;
     localToken = null;
     localOperationActivated = false;
@@ -1337,8 +1374,17 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         new Error("복원 잠금 acquire 취소 bridge를 사용할 수 없습니다.")
       );
     }
+    if (recovery.nativeAcquireRequestDeadlineMs === null) {
+      return wrapNativeCleanupError(
+        new Error("복원 잠금 acquire 요청 마감시각을 확인할 수 없습니다.")
+      );
+    }
     const error = await runBoundedCleanup(
-      () => nativeLease.cancelAcquire!(recovery.token),
+      () =>
+        nativeLease.cancelAcquire!(
+          recovery.token,
+          recovery.nativeAcquireRequestDeadlineMs!
+        ),
       "복원 잠금 acquire 취소 확인이 시간 초과되었습니다."
     );
     if (!error) {
@@ -1739,6 +1785,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
 
     const token = createToken();
+    const nativeAcquireRequestDeadlineMs = nativeLease
+      ? Date.now() + bridgeTimeoutMs
+      : null;
     const generation = ++nextOperationGeneration;
     localToken = token;
     localOperationGeneration = generation;
@@ -1749,6 +1798,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     activeLeaseFailureToken = token;
     activeLeaseFailureGeneration = generation;
     let nativeAcquireConfirmed = !nativeLease;
+    let nativeAcquireAbandoned = false;
     let pending = false;
 
     try {
@@ -1756,11 +1806,26 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       const localDrain = options.lockLocal(token);
       void Promise.resolve(localDrain).catch(() => {});
       if (nativeLease) {
-        const nativeAcquirePromise = nativeLease.acquire(token, owner, leaseTtlMs);
-        // Late settlement is owned by the native cancellation tombstone, never coordinator state.
+        const requestDeadlineMs = nativeAcquireRequestDeadlineMs!;
+        pendingNativeAcquire = { token, requestDeadlineMs };
+        const nativeAcquirePromise = nativeLease.acquire(
+          token,
+          owner,
+          leaseTtlMs,
+          requestDeadlineMs
+        );
+        const cancelLateAcquire = () => {
+          if (!nativeAcquireAbandoned || !nativeLease.cancelAcquire) {
+            return;
+          }
+          void nativeLease
+            .cancelAcquire(token, requestDeadlineMs)
+            .catch(reportProtocolError);
+        };
+        // Late settlement may request idempotent cleanup, but never mutates coordinator state.
         void nativeAcquirePromise.then(
-          () => {},
-          () => {}
+          cancelLateAcquire,
+          cancelLateAcquire
         );
         const acquired = await runWithTimeout(
           () => nativeAcquirePromise,
@@ -1770,6 +1835,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
           throw new Error("복원 잠금 lease 소유자 확인에 실패했습니다.");
         }
         nativeAcquireConfirmed = true;
+        if (pendingNativeAcquire?.token === token) {
+          pendingNativeAcquire = null;
+        }
         startLeaseRenewal(token, generation);
       }
 
@@ -1805,25 +1873,40 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       pending = false;
       return token;
     } catch (error) {
+      nativeAcquireAbandoned = !nativeAcquireConfirmed;
+      if (pendingNativeAcquire?.token === token) {
+        pendingNativeAcquire = null;
+      }
       if (pending) {
         clearPending(token);
       }
       clearLeaseRenewal();
+      const existingRecovery = readPendingLocalRecovery();
+      if (
+        stopping &&
+        (localToken !== token || existingRecovery?.token === token)
+      ) {
+        throw error;
+      }
       const failedAcquireGeneration = ++nextStoreApplyGeneration;
       localFinalApplyGeneration = failedAcquireGeneration;
-      const recovery = {
-        token,
-        finalApplyGeneration: failedAcquireGeneration,
-        nativeAcquireCancellationComplete: nativeAcquireConfirmed,
-        nativeFinished: !nativeLease?.finish,
-        applyComplete: true,
-        notificationComplete: false,
-        notificationBypassedAfterNativeAbsence: false,
-        notificationError: null,
-        nativeComplete: !nativeLease,
-        postRemovalVerificationComplete: !options.applyStore,
-        retryAttempt: 0,
-      };
+      const recovery =
+        existingRecovery?.token === token
+          ? existingRecovery
+          : {
+              token,
+              finalApplyGeneration: failedAcquireGeneration,
+              nativeAcquireRequestDeadlineMs,
+              nativeAcquireCancellationComplete: nativeAcquireConfirmed,
+              nativeFinished: !nativeLease?.finish,
+              applyComplete: true,
+              notificationComplete: false,
+              notificationBypassedAfterNativeAbsence: false,
+              notificationError: null,
+              nativeComplete: !nativeLease,
+              postRemovalVerificationComplete: !options.applyStore,
+              retryAttempt: 0,
+            };
       pendingLocalRecovery = recovery;
       const cleanupErrors = await attemptRecoveryCleanup(recovery);
       for (const cleanupError of cleanupErrors) {
@@ -1855,13 +1938,17 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     const finalApplyGeneration =
       localFinalApplyGeneration ?? ++nextStoreApplyGeneration;
     localFinalApplyGeneration = finalApplyGeneration;
+    const unconfirmedNativeAcquire =
+      pendingNativeAcquire?.token === token ? pendingNativeAcquire : null;
     const recovery =
       pendingLocalRecovery?.token === token
         ? pendingLocalRecovery
         : {
             token,
             finalApplyGeneration,
-            nativeAcquireCancellationComplete: true,
+            nativeAcquireRequestDeadlineMs:
+              unconfirmedNativeAcquire?.requestDeadlineMs ?? null,
+            nativeAcquireCancellationComplete: !unconfirmedNativeAcquire,
             nativeFinished: !nativeLease || !nativeLease.finish,
             applyComplete: !options.applyStore,
             notificationComplete: false,

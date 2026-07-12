@@ -35,7 +35,6 @@ const GOOGLE_OAUTH_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/aut
 const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_OAUTH_SCOPE: &str = "openid email profile";
 const GOOGLE_OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
-const RESTORE_ACQUIRE_CANCELLATION_TTL_MS: u64 = 60_000;
 const MAX_CANCELLED_RESTORE_ACQUIRES: usize = 256;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -58,7 +57,7 @@ struct DatabaseState(Mutex<Connection>);
 #[derive(Default)]
 struct RestoreLockLeaseData {
   lease: Option<RestoreLockLease>,
-  cancelled_acquires: HashMap<String, SystemTime>,
+  cancelled_acquires: HashMap<String, u64>,
 }
 
 #[derive(Default)]
@@ -213,6 +212,7 @@ fn acquire_restore_lock_lease(
   token: String,
   owner: String,
   ttl_ms: u64,
+  request_deadline_ms: u64,
 ) -> Result<RestoreLockLeaseRecord, String> {
   let mut restore_state = state
     .0
@@ -223,6 +223,7 @@ fn acquire_restore_lock_lease(
     &token,
     &owner,
     ttl_ms,
+    request_deadline_ms,
     SystemTime::now(),
   )
 }
@@ -231,6 +232,7 @@ fn acquire_restore_lock_lease(
 fn cancel_abandoned_restore_lock_acquire(
   state: State<'_, RestoreLockLeaseState>,
   token: String,
+  request_deadline_ms: u64,
 ) -> Result<(), String> {
   let mut restore_state = state
     .0
@@ -239,7 +241,7 @@ fn cancel_abandoned_restore_lock_acquire(
   cancel_abandoned_restore_lock_acquire_inner(
     &mut restore_state,
     &token,
-    RESTORE_ACQUIRE_CANCELLATION_TTL_MS,
+    request_deadline_ms,
     SystemTime::now(),
   )
   .map(|_| ())
@@ -253,13 +255,14 @@ fn current_restore_lock_lease(
     .0
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  let now = SystemTime::now();
   prune_cancelled_restore_acquires(
     &mut restore_state.cancelled_acquires,
-    SystemTime::now(),
+    system_time_millis(now),
   );
   Ok(current_restore_lock_lease_inner(
     &mut restore_state.lease,
-    SystemTime::now(),
+    now,
   ))
 }
 
@@ -344,10 +347,16 @@ fn acquire_restore_lock_lease_fenced_inner(
   token: &str,
   owner: &str,
   ttl_ms: u64,
+  request_deadline_ms: u64,
   now: SystemTime,
 ) -> Result<RestoreLockLeaseRecord, String> {
   validate_restore_lock_identity(token, owner)?;
-  prune_cancelled_restore_acquires(&mut state.cancelled_acquires, now);
+  let now_ms = system_time_millis(now);
+  prune_cancelled_restore_acquires(&mut state.cancelled_acquires, now_ms);
+  if request_deadline_ms <= now_ms {
+    state.cancelled_acquires.remove(token);
+    return Err("복원 잠금 acquire 요청 마감시각이 지났습니다.".to_string());
+  }
   if state.cancelled_acquires.contains_key(token) {
     return Err("취소된 복원 잠금 acquire token은 다시 사용할 수 없습니다.".to_string());
   }
@@ -357,13 +366,14 @@ fn acquire_restore_lock_lease_fenced_inner(
 fn cancel_abandoned_restore_lock_acquire_inner(
   state: &mut RestoreLockLeaseData,
   token: &str,
-  tombstone_ttl_ms: u64,
+  request_deadline_ms: u64,
   now: SystemTime,
 ) -> Result<bool, String> {
   if token.trim().is_empty() {
     return Err("복원 잠금 token은 비어 있을 수 없습니다.".to_string());
   }
-  prune_cancelled_restore_acquires(&mut state.cancelled_acquires, now);
+  let now_ms = system_time_millis(now);
+  prune_cancelled_restore_acquires(&mut state.cancelled_acquires, now_ms);
   let removed = state
     .lease
     .as_ref()
@@ -371,22 +381,32 @@ fn cancel_abandoned_restore_lock_acquire_inner(
   if removed {
     state.lease = None;
   }
+  if request_deadline_ms <= now_ms {
+    state.cancelled_acquires.remove(token);
+    return Ok(removed);
+  }
   if !state.cancelled_acquires.contains_key(token)
     && state.cancelled_acquires.len() >= MAX_CANCELLED_RESTORE_ACQUIRES
   {
     return Err("복원 잠금 acquire 취소 기록이 가득 차 정리 후 재시도가 필요합니다.".to_string());
   }
-  state
-    .cancelled_acquires
-    .insert(token.to_string(), expires_at(now, tombstone_ttl_ms));
+  if let Some(recorded_deadline_ms) = state.cancelled_acquires.get(token) {
+    if *recorded_deadline_ms != request_deadline_ms {
+      return Err("복원 잠금 acquire 취소 요청의 마감시각이 일치하지 않습니다.".to_string());
+    }
+  } else {
+    state
+      .cancelled_acquires
+      .insert(token.to_string(), request_deadline_ms);
+  }
   Ok(removed)
 }
 
 fn prune_cancelled_restore_acquires(
-  cancelled_acquires: &mut HashMap<String, SystemTime>,
-  now: SystemTime,
+  cancelled_acquires: &mut HashMap<String, u64>,
+  now_ms: u64,
 ) {
-  cancelled_acquires.retain(|_, expires_at| *expires_at > now);
+  cancelled_acquires.retain(|_, request_deadline_ms| *request_deadline_ms > now_ms);
 }
 
 fn acquire_restore_lock_lease_inner(
@@ -508,6 +528,13 @@ fn expires_at(now: SystemTime, ttl_ms: u64) -> SystemTime {
   now + Duration::from_millis(ttl_ms)
 }
 
+fn system_time_millis(time: SystemTime) -> u64 {
+  time
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis() as u64
+}
+
 fn prune_restore_lock_lease(lease: &mut Option<RestoreLockLease>, now: SystemTime) {
   if lease
     .as_ref()
@@ -521,11 +548,7 @@ fn to_restore_lock_lease_record(lease: &RestoreLockLease) -> RestoreLockLeaseRec
   RestoreLockLeaseRecord {
     token: lease.token.clone(),
     owner: lease.owner.clone(),
-    expires_at_ms: lease
-      .expires_at
-      .duration_since(UNIX_EPOCH)
-      .unwrap_or_default()
-      .as_millis() as u64,
+    expires_at_ms: system_time_millis(lease.expires_at),
     operation_active: lease.operation_active,
   }
 }
@@ -1400,7 +1423,7 @@ mod tests {
     let removed = cancel_abandoned_restore_lock_acquire_inner(
       &mut state,
       "cancel-before-acquire",
-      100,
+      2_300,
       lease_time(2_200),
     )
     .expect("cancellation tombstone should be recorded");
@@ -1411,12 +1434,50 @@ mod tests {
       "cancel-before-acquire",
       "main",
       500,
+      2_300,
       lease_time(2_250),
     );
     assert!(late_acquire
       .expect_err("cancelled token must reject a late acquire")
       .contains("취소"));
     assert!(state.lease.is_none());
+  }
+
+  #[test]
+  fn expired_request_deadline_rejects_acquire_after_tombstone_pruning() {
+    let mut state = RestoreLockLeaseData::default();
+    let request_deadline_ms = 2_300;
+
+    cancel_abandoned_restore_lock_acquire_inner(
+      &mut state,
+      "deadline-fenced-token",
+      request_deadline_ms,
+      lease_time(2_200),
+    )
+    .expect("cancellation should retain the acquire deadline");
+    prune_cancelled_restore_acquires(
+      &mut state.cancelled_acquires,
+      70_000,
+    );
+    assert!(state.cancelled_acquires.is_empty());
+
+    let late_acquire = acquire_restore_lock_lease_fenced_inner(
+      &mut state,
+      "deadline-fenced-token",
+      "main",
+      500,
+      request_deadline_ms,
+      lease_time(70_000),
+    );
+
+    assert!(late_acquire
+      .expect_err("the absolute request deadline must reject a very late acquire")
+      .contains("마감"));
+    assert!(current_restore_lock_lease_inner(
+      &mut state.lease,
+      lease_time(70_000)
+    )
+    .is_none());
   }
 
   #[test]
@@ -1427,6 +1488,7 @@ mod tests {
       "cancel-after-acquire",
       "main",
       500,
+      2_800,
       lease_time(2_300),
     )
     .expect("lease should acquire before cancellation");
@@ -1434,7 +1496,7 @@ mod tests {
     let removed = cancel_abandoned_restore_lock_acquire_inner(
       &mut state,
       "cancel-after-acquire",
-      100,
+      2_800,
       lease_time(2_310),
     )
     .expect("existing lease cancellation should succeed");
@@ -1445,6 +1507,7 @@ mod tests {
       "cancel-after-acquire",
       "main",
       500,
+      2_800,
       lease_time(2_350),
     )
     .is_err());
@@ -1452,7 +1515,7 @@ mod tests {
 
     prune_cancelled_restore_acquires(
       &mut state.cancelled_acquires,
-      lease_time(2_411),
+      2_801,
     );
     assert!(state.cancelled_acquires.is_empty());
     acquire_restore_lock_lease_fenced_inner(
@@ -1460,9 +1523,52 @@ mod tests {
       "new-unique-token",
       "main",
       500,
-      lease_time(2_411),
+      3_300,
+      lease_time(2_801),
     )
     .expect("pruned tombstones must not block unique future tokens");
+  }
+
+  #[test]
+  fn cancelled_restore_acquire_capacity_fails_closed_without_evicting_live_deadlines() {
+    let mut state = RestoreLockLeaseData::default();
+    let request_deadline_ms = 20_000;
+
+    for index in 0..MAX_CANCELLED_RESTORE_ACQUIRES {
+      cancel_abandoned_restore_lock_acquire_inner(
+        &mut state,
+        &format!("capacity-token-{index}"),
+        20_000,
+        lease_time(10_000),
+      )
+      .expect("each cancellation within capacity should be recorded");
+    }
+
+    assert!(state
+      .cancelled_acquires
+      .values()
+      .all(|deadline| *deadline == request_deadline_ms));
+    let capacity_error = cancel_abandoned_restore_lock_acquire_inner(
+      &mut state,
+      "capacity-token-overflow",
+      20_000,
+      lease_time(10_000),
+    )
+    .expect_err("the 257th live cancellation must fail closed");
+
+    assert!(capacity_error.contains("가득"));
+    assert_eq!(
+      state.cancelled_acquires.len(),
+      MAX_CANCELLED_RESTORE_ACQUIRES
+    );
+    for index in 0..MAX_CANCELLED_RESTORE_ACQUIRES {
+      assert!(state
+        .cancelled_acquires
+        .contains_key(&format!("capacity-token-{index}")));
+    }
+    assert!(!state
+      .cancelled_acquires
+      .contains_key("capacity-token-overflow"));
   }
 
   #[test]

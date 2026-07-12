@@ -692,6 +692,10 @@ beforeEach(() => {
     if (command === "acquire_restore_lock_lease") {
       const token = String(args?.token ?? "");
       const owner = String(args?.owner ?? "");
+      const requestDeadlineMs = Number(args?.requestDeadlineMs ?? 0);
+      if (requestDeadlineMs <= Date.now()) {
+        throw new Error("복원 잠금 acquire 요청 마감시각이 지났습니다.");
+      }
       if (nativeLeaseState.lease && nativeLeaseState.lease.token !== token) {
         throw new Error("다른 복원 작업이 이미 진행 중입니다.");
       }
@@ -702,6 +706,13 @@ beforeEach(() => {
         operationActive: false,
       };
       return nativeLeaseState.lease;
+    }
+    if (command === "cancel_abandoned_restore_lock_acquire") {
+      const token = String(args?.token ?? "");
+      if (nativeLeaseState.lease?.token === token) {
+        nativeLeaseState.lease = null;
+      }
+      return undefined;
     }
     if (command === "renew_restore_lock_lease") {
       const token = String(args?.token ?? "");
