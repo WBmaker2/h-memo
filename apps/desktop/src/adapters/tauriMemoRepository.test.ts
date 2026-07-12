@@ -56,4 +56,35 @@ describe("TauriMemoRepository", () => {
 
     expect(mockInvoke).toHaveBeenLastCalledWith("save_memo", { memo });
   });
+
+  it("checks restore ownership before a later scoped write reaches native storage", async () => {
+    const { TauriMemoRepository } = await import("./tauriMemoRepository");
+    const memo = createMemo({
+      id: "memo-lost-restore-token",
+      now: "2026-07-13T00:00:00.000Z",
+    });
+    const repository = new TauriMemoRepository();
+    const withGuard = repository.withRestoreToken.bind(repository) as unknown as <T>(
+      token: string,
+      operation: () => Promise<T>,
+      assertActive: () => void
+    ) => Promise<T>;
+    let ownershipActive = true;
+
+    await expect(
+      withGuard(
+        "lost-restore-token",
+        async () => {
+          ownershipActive = false;
+          return repository.saveMemo(memo);
+        },
+        () => {
+          if (!ownershipActive) {
+            throw new Error("복원 잠금 lease 소유권을 잃었습니다.");
+          }
+        }
+      )
+    ).rejects.toThrow("소유권을 잃었습니다");
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
 });

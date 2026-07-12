@@ -200,9 +200,12 @@ function installExclusiveWebLocks() {
   };
 }
 
+let restoreDefaultWebLocks: (() => void) | undefined;
+
 beforeEach(() => {
   vi.clearAllMocks();
   installLocalStorageStub();
+  restoreDefaultWebLocks = installExclusiveWebLocks();
   Object.defineProperty(URL, "createObjectURL", {
     configurable: true,
     value: vi.fn(() => "blob:h-memo-backup"),
@@ -241,6 +244,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  restoreDefaultWebLocks?.();
+  restoreDefaultWebLocks = undefined;
 });
 
 describe("WebApp", () => {
@@ -257,6 +262,21 @@ describe("WebApp", () => {
       expect(screen.queryByRole("heading", { name: "시작프로그램" })).not.toBeInTheDocument();
       expect(screen.queryByRole("switch", { name: "시작프로그램 등록" })).not.toBeInTheDocument();
     });
+  });
+
+  it("explains that Web Locks support is required before creating a memo", async () => {
+    const user = userEvent.setup();
+    Reflect.deleteProperty(navigator, "locks");
+    render(<WebApp />);
+
+    await createMemoFromAppMenu(user);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("Web Locks");
+      expect(screen.getByRole("status")).toHaveTextContent("최신 브라우저");
+    });
+    expect(window.localStorage.getItem(LOCAL_MEMO_KEY)).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "메모 내용" })).not.toBeInTheDocument();
   });
 
   it("exports TXT backup for edited memo", async () => {
@@ -1119,7 +1139,7 @@ describe("WebApp", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent(
-        /메모 저장 실패: 탭 간 변경 잠금을 준비하지 못했습니다: quota exceeded/
+        /메모 저장 실패: localStorage 저장 실패: quota exceeded/
       );
     });
   });

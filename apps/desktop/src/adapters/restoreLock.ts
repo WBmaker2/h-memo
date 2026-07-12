@@ -143,7 +143,10 @@ function getErrorMessage(error: unknown) {
 }
 
 function aggregateErrors(context: string, errors: unknown[]) {
-  const filtered = errors.filter((error) => error !== null && error !== undefined);
+  const filtered = errors.filter(
+    (error, index) =>
+      error !== null && error !== undefined && errors.indexOf(error) === index
+  );
   if (filtered.length === 1) {
     return filtered[0];
   }
@@ -163,12 +166,16 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   const cleanups: Array<() => void> = [];
   const nativeLease = options.nativeLease;
   const owner = options.getCurrentWindowLabel();
-  const leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
   const leaseRenewIntervalMs =
     options.leaseRenewIntervalMs ?? DEFAULT_LEASE_RENEW_INTERVAL_MS;
+  const bridgeTimeoutMs = options.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT_MS;
+  const leaseTtlMs = Math.max(
+    options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
+    leaseRenewIntervalMs * 4,
+    bridgeTimeoutMs * 2 + leaseRenewIntervalMs * 2
+  );
   const leasePollIntervalMs = options.leasePollIntervalMs ?? DEFAULT_LEASE_POLL_INTERVAL_MS;
   const cleanupTimeoutMs = options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
-  const bridgeTimeoutMs = options.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT_MS;
   const cleanupRetryIntervalMs =
     options.cleanupRetryIntervalMs ?? leasePollIntervalMs;
   const cleanupLeaseTtlMs = Math.max(
@@ -179,6 +186,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let localToken: string | null = null;
   let nextOperationGeneration = 0;
   let localOperationGeneration = 0;
+  let localOperationActivated = false;
   let localExpectedWindowLabels: Set<string> | null = null;
   let nextStoreApplyGeneration = 0;
   let localFinalApplyGeneration: number | null = null;
@@ -188,21 +196,35 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let remoteStoreApplyToken: string | null = null;
   let remoteStoreApplyGeneration = 0;
   let remoteStoreApplyPromise: Promise<void> | null = null;
+  let remoteFinalApplyGeneration: number | null = null;
+  let remoteFinalApplyPromise: Promise<void> | null = null;
   let leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
   let leaseRenewalToken: string | null = null;
   let leaseRenewalGeneration = 0;
+  let leaseRenewInFlight: {
+    token: string;
+    generation: number;
+    promise: Promise<void>;
+  } | null = null;
   let remoteLeasePollTimer: ReturnType<typeof setInterval> | null = null;
   let remoteLeaseExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   let activeLeaseFailureReject: ((error: unknown) => void) | null = null;
   let activeLeaseFailureToken: string | null = null;
   let activeLeaseFailureGeneration = 0;
+  let activeLeaseOwnershipFailure: Error | null = null;
   let activeOperation: Promise<unknown> | null = null;
   let runQueue: Promise<void> = Promise.resolve();
   let stopping = false;
   let lifecycleGeneration = 0;
   let nextRemoteRequestGeneration = 0;
   let latestRemoteRequestGeneration = 0;
-  let pendingNativeCleanupToken: string | null = null;
+  let pendingLocalRecovery: {
+    token: string;
+    finalApplyGeneration: number;
+    applyComplete: boolean;
+    nativeComplete: boolean;
+    retryAttempt: number;
+  } | null = null;
   let nativeCleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let nativeCleanupInFlight: Promise<void> | null = null;
   let stopPromise: Promise<void> | null = null;
@@ -350,6 +372,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     remoteStoreApplyToken = null;
     remoteStoreApplyGeneration = 0;
     remoteStoreApplyPromise = null;
+    remoteFinalApplyGeneration = null;
+    remoteFinalApplyPromise = null;
     clearRemoteLeaseWatch();
     const resolveAcquire = pendingRemoteAcquires.get(token);
     pendingRemoteAcquires.delete(token);
@@ -407,25 +431,112 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       finalizeRemoteUnlock(token);
       return Promise.resolve();
     }
-    const finalGeneration = Math.max(
-      requestedFinalGeneration ?? 0,
-      remoteLatestApplyGeneration + 1,
-      remoteAppliedGeneration + 1
+    if (remoteFinalApplyGeneration === null) {
+      remoteFinalApplyGeneration = Math.max(
+        requestedFinalGeneration ?? 0,
+        remoteLatestApplyGeneration + 1,
+        remoteAppliedGeneration + 1
+      );
+    } else if (
+      requestedFinalGeneration !== undefined &&
+      requestedFinalGeneration > remoteFinalApplyGeneration
+    ) {
+      remoteFinalApplyGeneration = requestedFinalGeneration;
+    }
+    remoteLatestApplyGeneration = Math.max(
+      remoteLatestApplyGeneration,
+      remoteFinalApplyGeneration
     );
-    remoteLatestApplyGeneration = finalGeneration;
-    return applyRemoteStoreForGeneration(token, finalGeneration)
-      .then(() => {
-        if (
-          remoteToken === token &&
-          remoteAppliedGeneration === finalGeneration &&
-          remoteLatestApplyGeneration === finalGeneration
-        ) {
+
+    if (remoteFinalApplyPromise) {
+      return remoteFinalApplyPromise;
+    }
+
+    const precedingApply = remoteStoreApplyPromise;
+    const finalApply = (async () => {
+      if (precedingApply) {
+        await precedingApply.catch(reportProtocolError);
+      }
+      while (remoteToken === token && remoteFinalApplyGeneration !== null) {
+        const generation: number = remoteFinalApplyGeneration;
+        remoteLatestApplyGeneration = Math.max(
+          remoteLatestApplyGeneration,
+          generation
+        );
+        try {
+          await applyRemoteStoreForGeneration(token, generation);
+        } catch (error) {
+          reportProtocolError(error);
+          if (
+            remoteToken === token &&
+            remoteFinalApplyGeneration !== generation
+          ) {
+            continue;
+          }
+          if (remoteToken === token) {
+            remoteFinalApplyGeneration = Math.max(
+              generation + 1,
+              remoteLatestApplyGeneration + 1
+            );
+            remoteLatestApplyGeneration = remoteFinalApplyGeneration;
+          }
+          return;
+        }
+        if (remoteToken !== token) {
+          return;
+        }
+        if (remoteFinalApplyGeneration !== generation) {
+          continue;
+        }
+        if (remoteAppliedGeneration === generation) {
           finalizeRemoteUnlock(token);
         }
-      })
-      .catch((error) => {
-        reportProtocolError(error);
-      });
+        return;
+      }
+    })();
+    remoteFinalApplyPromise = finalApply;
+    void finalApply.finally(() => {
+      if (remoteFinalApplyPromise === finalApply) {
+        remoteFinalApplyPromise = null;
+      }
+    });
+    return finalApply;
+  };
+
+  const markLeaseOwnershipLost = (
+    token: string,
+    generation: number,
+    cause: unknown
+  ) => {
+    if (
+      !isCurrentLocalOperation(token, generation) ||
+      leaseRenewalToken !== token ||
+      leaseRenewalGeneration !== generation
+    ) {
+      return;
+    }
+    const failure = new Error(
+      `복원 잠금 lease 소유권을 잃었습니다: ${getErrorMessage(cause)}`,
+      { cause }
+    );
+    activeLeaseOwnershipFailure = failure;
+    clearLeaseRenewal(token, generation);
+    reportProtocolError(failure);
+    if (
+      activeLeaseFailureToken === token &&
+      activeLeaseFailureGeneration === generation
+    ) {
+      activeLeaseFailureReject?.(failure);
+    }
+  };
+
+  const assertLeaseOwnership = (token: string, generation: number) => {
+    if (!isCurrentLocalOperation(token, generation)) {
+      throw new Error("복원 잠금 lease가 현재 작업과 일치하지 않습니다.");
+    }
+    if (activeLeaseOwnershipFailure) {
+      throw activeLeaseOwnershipFailure;
+    }
   };
 
   const startLeaseRenewal = (token: string, generation: number) => {
@@ -446,11 +557,19 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       ) {
         return;
       }
-      void runWithTimeout(
-        () => nativeLease.renew(tickToken, owner, leaseTtlMs),
-        "복원 잠금 lease 갱신이 시간 초과되었습니다."
-      )
-        .then((renewed) => {
+      if (
+        leaseRenewInFlight?.token === tickToken &&
+        leaseRenewInFlight.generation === tickGeneration
+      ) {
+        return;
+      }
+
+      const renewal = (async () => {
+        try {
+          const renewed = await runWithTimeout(
+            () => nativeLease.renew(tickToken, owner, leaseTtlMs),
+            "복원 잠금 lease 갱신이 시간 초과되었습니다."
+          );
           if (
             !isCurrentLocalOperation(tickToken, tickGeneration) ||
             leaseRenewalToken !== tickToken ||
@@ -458,11 +577,19 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
           ) {
             return;
           }
-          if (renewed.token !== tickToken || renewed.owner !== owner) {
-            throw new Error("복원 잠금 lease 갱신 소유자 확인에 실패했습니다.");
+          if (
+            renewed.token !== tickToken ||
+            renewed.owner !== owner ||
+            (localOperationActivated && !renewed.operationActive) ||
+            renewed.expiresAtMs <= Date.now()
+          ) {
+            markLeaseOwnershipLost(
+              tickToken,
+              tickGeneration,
+              new Error("복원 잠금 lease 갱신 소유자 확인에 실패했습니다.")
+            );
           }
-        })
-        .catch((error) => {
+        } catch (error) {
           if (
             !isCurrentLocalOperation(tickToken, tickGeneration) ||
             leaseRenewalToken !== tickToken ||
@@ -470,16 +597,57 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
           ) {
             return;
           }
-          clearLeaseRenewal(tickToken, tickGeneration);
-          const failure = toError(error, "복원 잠금 lease 갱신에 실패했습니다.");
-          reportProtocolError(failure);
-          if (
-            activeLeaseFailureToken === tickToken &&
-            activeLeaseFailureGeneration === tickGeneration
-          ) {
-            activeLeaseFailureReject?.(failure);
+
+          let current: RestoreLockLease | null;
+          try {
+            current = await readNativeLease();
+          } catch (lookupError) {
+            if (
+              isCurrentLocalOperation(tickToken, tickGeneration) &&
+              leaseRenewalToken === tickToken &&
+              leaseRenewalGeneration === tickGeneration
+            ) {
+              reportProtocolError(
+                aggregateErrors("복원 잠금 lease 갱신과 확인에 실패했습니다", [
+                  error,
+                  lookupError,
+                ])
+              );
+            }
+            return;
           }
-        });
+          if (
+            !isCurrentLocalOperation(tickToken, tickGeneration) ||
+            leaseRenewalToken !== tickToken ||
+            leaseRenewalGeneration !== tickGeneration
+          ) {
+            return;
+          }
+          if (
+            !current ||
+            current.token !== tickToken ||
+            current.owner !== owner ||
+            (localOperationActivated && !current.operationActive) ||
+            current.expiresAtMs <= Date.now()
+          ) {
+            markLeaseOwnershipLost(tickToken, tickGeneration, error);
+            return;
+          }
+          reportProtocolError(
+            toError(error, "복원 잠금 lease 갱신에 일시적으로 실패했습니다.")
+          );
+        }
+      })();
+      leaseRenewInFlight = {
+        token: tickToken,
+        generation: tickGeneration,
+        promise: renewal,
+      };
+      void renewal.finally(() => {
+        if (leaseRenewInFlight?.promise === renewal) {
+          leaseRenewInFlight = null;
+        }
+      });
     }, leaseRenewIntervalMs);
   };
 
@@ -559,6 +727,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     remoteToken = token;
     remoteLatestApplyGeneration = 0;
     remoteAppliedGeneration = 0;
+    remoteFinalApplyGeneration = null;
+    remoteFinalApplyPromise = null;
     startRemoteLeaseWatch(token, lease?.expiresAtMs, lease?.operationActive ?? false);
     const releaseSignal = new Promise<void>((resolve) => {
       pendingRemoteAcquires.set(token, resolve);
@@ -750,6 +920,12 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       return;
     }
     remoteLatestApplyGeneration = payload.generation;
+    if (remoteFinalApplyGeneration !== null) {
+      remoteFinalApplyGeneration = Math.max(
+        remoteFinalApplyGeneration,
+        payload.generation
+      );
+    }
 
     try {
       await applyRemoteStoreForGeneration(payload.token, payload.generation);
@@ -1130,12 +1306,13 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     if (localToken !== token) {
       return;
     }
-    if (nativeCleanupRetryTimer && pendingNativeCleanupToken === token) {
+    if (nativeCleanupRetryTimer && pendingLocalRecovery?.token === token) {
       clearTimeout(nativeCleanupRetryTimer);
       nativeCleanupRetryTimer = null;
     }
-    pendingNativeCleanupToken = null;
+    pendingLocalRecovery = null;
     localToken = null;
+    localOperationActivated = false;
     localExpectedWindowLabels = null;
     localFinalApplyGeneration = null;
     clearStoreApplyPending(token);
@@ -1143,6 +1320,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       activeLeaseFailureToken = null;
       activeLeaseFailureGeneration = 0;
     }
+    activeLeaseOwnershipFailure = null;
     activeLeaseFailureReject = null;
     options.unlockLocal(token);
   };
@@ -1156,40 +1334,111 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     return broadcastError;
   };
 
+  const attemptFinalLocalApply = async (
+    recovery: NonNullable<typeof pendingLocalRecovery>
+  ) => {
+    if (recovery.applyComplete || !options.applyStore) {
+      recovery.applyComplete = true;
+      return null;
+    }
+    const error = await runBoundedCleanup(
+      () =>
+        options.applyStore!({
+          token: recovery.token,
+          generation: recovery.finalApplyGeneration,
+        }),
+      "최종 복원 메모 상태 적용이 시간 초과되었습니다."
+    );
+    if (!error) {
+      recovery.applyComplete = true;
+    } else {
+      recovery.finalApplyGeneration = ++nextStoreApplyGeneration;
+      localFinalApplyGeneration = recovery.finalApplyGeneration;
+    }
+    return error;
+  };
+
+  const attemptRecoveryNativeCleanup = async (
+    recovery: NonNullable<typeof pendingLocalRecovery>
+  ) => {
+    if (recovery.nativeComplete) {
+      return null;
+    }
+    try {
+      await attemptNativeCleanup(recovery.token);
+      recovery.nativeComplete = true;
+      return null;
+    } catch (error) {
+      return new Error(
+        `${NATIVE_CLEANUP_PENDING_MESSAGE} ${getErrorMessage(error)}`,
+        { cause: error }
+      );
+    }
+  };
+
   const scheduleNativeCleanupRetry = (token: string) => {
-    pendingNativeCleanupToken = token;
+    const recovery = pendingLocalRecovery;
+    if (!recovery || recovery.token !== token || stopping) {
+      return;
+    }
     if (nativeCleanupRetryTimer || nativeCleanupInFlight) {
       return;
     }
+    const retryLifecycleGeneration = lifecycleGeneration;
+    const retryDelay = Math.min(
+      cleanupRetryIntervalMs * 2 ** Math.min(recovery.retryAttempt, 3),
+      cleanupRetryIntervalMs * 8
+    );
+    recovery.retryAttempt += 1;
     nativeCleanupRetryTimer = setTimeout(() => {
       nativeCleanupRetryTimer = null;
-      if (pendingNativeCleanupToken !== token || localToken !== token) {
+      if (
+        stopping ||
+        lifecycleGeneration !== retryLifecycleGeneration ||
+        pendingLocalRecovery !== recovery ||
+        localToken !== token
+      ) {
         return;
       }
       nativeCleanupInFlight = (async () => {
-        try {
-          await attemptNativeCleanup(token);
-          const finalApplyGeneration =
-            localFinalApplyGeneration ?? ++nextStoreApplyGeneration;
-          localFinalApplyGeneration = finalApplyGeneration;
+        const retryErrors = await Promise.all([
+          attemptFinalLocalApply(recovery),
+          attemptRecoveryNativeCleanup(recovery),
+        ]);
+        for (const error of retryErrors) {
+          if (error) {
+            reportProtocolError(error);
+          }
+        }
+        if (
+          recovery.applyComplete &&
+          recovery.nativeComplete &&
+          pendingLocalRecovery === recovery &&
+          localToken === token &&
+          !stopping
+        ) {
           const broadcastError = await completeRelease(
             token,
-            finalApplyGeneration
+            recovery.finalApplyGeneration
           );
           if (broadcastError) {
             reportProtocolError(broadcastError);
           }
-        } catch (error) {
-          reportProtocolError(error);
-        } finally {
-          nativeCleanupInFlight = null;
-          if (pendingNativeCleanupToken === token && localToken === token) {
-            scheduleNativeCleanupRetry(token);
-          }
         }
       })();
-      void nativeCleanupInFlight.catch(reportProtocolError);
-    }, cleanupRetryIntervalMs);
+      void nativeCleanupInFlight
+        .catch(reportProtocolError)
+        .finally(() => {
+          nativeCleanupInFlight = null;
+          if (
+            pendingLocalRecovery === recovery &&
+            localToken === token &&
+            !stopping
+          ) {
+            scheduleNativeCleanupRetry(token);
+          }
+        });
+    }, retryDelay);
   };
 
   const waitForNotificationAndAcknowledgements = async (
@@ -1289,7 +1538,10 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     const generation = ++nextOperationGeneration;
     localToken = token;
     localOperationGeneration = generation;
+    localOperationActivated = false;
     localFinalApplyGeneration = null;
+    activeLeaseOwnershipFailure = null;
+    pendingLocalRecovery = null;
     activeLeaseFailureToken = token;
     activeLeaseFailureGeneration = generation;
     let pending = false;
@@ -1364,6 +1616,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       }
       localToken = null;
       localExpectedWindowLabels = null;
+      localOperationActivated = false;
+      activeLeaseOwnershipFailure = null;
       if (activeLeaseFailureToken === token && activeLeaseFailureGeneration === generation) {
         activeLeaseFailureToken = null;
         activeLeaseFailureGeneration = 0;
@@ -1389,29 +1643,32 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     const finalApplyGeneration =
       localFinalApplyGeneration ?? ++nextStoreApplyGeneration;
     localFinalApplyGeneration = finalApplyGeneration;
+    const recovery =
+      pendingLocalRecovery?.token === token
+        ? pendingLocalRecovery
+        : {
+            token,
+            finalApplyGeneration,
+            applyComplete: !options.applyStore,
+            nativeComplete: !nativeLease,
+            retryAttempt: 0,
+          };
+    pendingLocalRecovery = recovery;
     const cleanupErrors: unknown[] = [];
-    if (options.applyStore) {
-      const finalApplyError = await runBoundedCleanup(
-        () => options.applyStore!({ token, generation: finalApplyGeneration }),
-        "최종 복원 메모 상태 적용이 시간 초과되었습니다."
-      );
-      if (finalApplyError) {
-        cleanupErrors.push(finalApplyError);
-      }
+    const finalApplyError = await attemptFinalLocalApply(recovery);
+    if (finalApplyError) {
+      cleanupErrors.push(finalApplyError);
     }
-    try {
-      await attemptNativeCleanup(token);
-    } catch (error) {
-      reportProtocolError(error);
+    const nativeCleanupError = await attemptRecoveryNativeCleanup(recovery);
+    if (nativeCleanupError) {
+      reportProtocolError(nativeCleanupError);
+      cleanupErrors.push(nativeCleanupError);
+    }
+    if (!recovery.applyComplete || !recovery.nativeComplete) {
       scheduleNativeCleanupRetry(token);
-      cleanupErrors.push(
-        new Error(
-          `${NATIVE_CLEANUP_PENDING_MESSAGE} ${getErrorMessage(error)}`,
-          { cause: error }
-        )
-      );
       throw aggregateErrors("복원 잠금 정리에 실패했습니다", cleanupErrors);
     }
+    pendingLocalRecovery = null;
     const broadcastError = await completeRelease(token, finalApplyGeneration);
     if (broadcastError) {
       cleanupErrors.push(broadcastError);
@@ -1439,7 +1696,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
   };
 
-  const beginRun = async <T,>(operation: (token: string) => Promise<T>) => {
+  const beginRun = async <T,>(
+    operation: (token: string, assertActive: () => void) => Promise<T>
+  ) => {
     await start();
     if (stopping) {
       throw new Error("복원 잠금 coordinator가 종료되었습니다.");
@@ -1466,8 +1725,16 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       let primaryError: unknown = null;
       try {
         token = await acquire();
+        const operationGeneration = localOperationGeneration;
         await activateNativeLease(token);
-        value = await operation(token);
+        if (isCurrentLocalOperation(token, operationGeneration)) {
+          localOperationActivated = true;
+        }
+        const assertActive = () =>
+          assertLeaseOwnership(token!, operationGeneration);
+        assertActive();
+        value = await operation(token, assertActive);
+        assertActive();
       } catch (error) {
         primaryError = error;
       }
@@ -1541,7 +1808,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     };
   };
 
-  const run = <T,>(operation: (token: string) => Promise<T>): Promise<T> => {
+  const run = <T,>(
+    operation: (token: string, assertActive: () => void) => Promise<T>
+  ): Promise<T> => {
     let resolveResult!: (value: T | PromiseLike<T>) => void;
     let rejectResult!: (reason?: unknown) => void;
     const result = new Promise<T>((resolve, reject) => {
@@ -1569,6 +1838,11 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
 
     stopping = true;
     lifecycleGeneration += 1;
+    if (nativeCleanupRetryTimer) {
+      clearTimeout(nativeCleanupRetryTimer);
+      nativeCleanupRetryTimer = null;
+    }
+    clearRemoteLeaseWatch();
     const remoteTokenAtStop = remoteToken;
     stopPromise = (async () => {
       if (remoteTokenAtStop) {

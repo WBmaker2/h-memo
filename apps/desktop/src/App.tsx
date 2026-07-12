@@ -302,6 +302,16 @@ export function App() {
     token: string;
     generation: number;
   } | null>(null);
+  const restoreStoreApplyInFlightRef = useRef<{
+    token: string;
+    generation: number;
+    promise: Promise<void>;
+  } | null>(null);
+  const restoreStoreAppliedRef = useRef<{
+    token: string;
+    generation: number;
+  } | null>(null);
+  const memoReloadGenerationRef = useRef(0);
   const restoreLockReadyRef = useRef(!isTauri);
   const restoreLockReadyPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const ownershipQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -391,7 +401,19 @@ export function App() {
   }, [firebaseClientEnv, hasFirebaseConfigSet]);
 
   const reloadMemos = useCallback(async () => {
+    const activeRestoreToken = restoreLockRef.current;
+    const activeRestoreApply = restoreStoreApplyGenerationRef.current;
+    if (
+      activeRestoreToken &&
+      activeRestoreApply?.token === activeRestoreToken
+    ) {
+      return;
+    }
+    const reloadGeneration = ++memoReloadGenerationRef.current;
     const all = await repository.listMemos();
+    if (memoReloadGenerationRef.current !== reloadGeneration) {
+      return;
+    }
     memosRef.current = all;
     setMemos(all);
     setHasLoadedMemos(true);
@@ -401,15 +423,46 @@ export function App() {
     if (currentApply?.token === token && generation < currentApply.generation) {
       return;
     }
-    restoreStoreApplyGenerationRef.current = { token, generation };
-    const all = await repository.listMemos();
-    const latestApply = restoreStoreApplyGenerationRef.current;
-    if (latestApply?.token !== token || latestApply.generation !== generation) {
+    const applied = restoreStoreAppliedRef.current;
+    if (applied?.token === token && applied.generation === generation) {
       return;
     }
-    memosRef.current = all;
-    setMemos(all);
-    setHasLoadedMemos(true);
+    const inFlight = restoreStoreApplyInFlightRef.current;
+    if (
+      inFlight?.token === token &&
+      inFlight.generation === generation
+    ) {
+      return inFlight.promise;
+    }
+    restoreStoreApplyGenerationRef.current = { token, generation };
+    const reloadGeneration = ++memoReloadGenerationRef.current;
+    const applyPromise = (async () => {
+      const all = await repository.listMemos();
+      const latestApply = restoreStoreApplyGenerationRef.current;
+      if (
+        latestApply?.token !== token ||
+        latestApply.generation !== generation ||
+        memoReloadGenerationRef.current !== reloadGeneration
+      ) {
+        return;
+      }
+      memosRef.current = all;
+      setMemos(all);
+      setHasLoadedMemos(true);
+      restoreStoreAppliedRef.current = { token, generation };
+    })();
+    restoreStoreApplyInFlightRef.current = {
+      token,
+      generation,
+      promise: applyPromise,
+    };
+    try {
+      await applyPromise;
+    } finally {
+      if (restoreStoreApplyInFlightRef.current?.promise === applyPromise) {
+        restoreStoreApplyInFlightRef.current = null;
+      }
+    }
   };
 
   useEffect(() => {
@@ -1164,10 +1217,13 @@ export function App() {
   };
 
   const runWithDesktopRestoreLock = async <T,>(
-    operation: (synchronize: () => Promise<void>) => Promise<T>
+    operation: (
+      synchronize: () => Promise<void>,
+      assertActive: () => void
+    ) => Promise<T>
   ) => {
     if (!isTauri) {
-      return operation(() => Promise.resolve());
+      return operation(() => Promise.resolve(), () => {});
     }
 
     const coordinator = restoreLockCoordinatorRef.current;
@@ -1175,12 +1231,22 @@ export function App() {
       throw new Error("복원 잠금을 초기화하지 못했습니다.");
     }
 
-    return coordinator.run((token) => {
+    return coordinator.run((token, assertActive) => {
       if (!(repository instanceof TauriMemoRepository)) {
         throw new Error("복원 저장소 범위를 초기화하지 못했습니다.");
       }
-      return repository.withRestoreToken(token, () =>
-        operation(() => coordinator.synchronize(token))
+      return repository.withRestoreToken(
+        token,
+        () =>
+          operation(
+            async () => {
+              assertActive();
+              await coordinator.synchronize(token);
+              assertActive();
+            },
+            assertActive
+          ),
+        assertActive
       );
     });
   };
@@ -1670,9 +1736,10 @@ export function App() {
     setIsBusy(true);
     setBackupStatus("백업을 시작합니다.");
     try {
-      const result = await runWithDesktopRestoreLock(async () => {
+      const result = await runWithDesktopRestoreLock(async (_synchronize, assertActive) => {
         await waitForPendingPersists();
         const persistedMemos = await repository.listMemos();
+        assertActive();
         return backupMemos(services.gateway, user.uid, persistedMemos);
       });
       setBackupStatus(`백업 완료: ${result.path}`);
@@ -1884,8 +1951,11 @@ export function App() {
     setIsBusy(true);
     try {
       const targetMemoLabel = memoLabel || "메모";
-      const deletedServerRecordCount = await runWithDesktopRestoreLock(() =>
-        deleteBackedUpMemo(services.gateway, user.uid, memoId)
+      const deletedServerRecordCount = await runWithDesktopRestoreLock(
+        (_synchronize, assertActive) => {
+          assertActive();
+          return deleteBackedUpMemo(services.gateway, user.uid, memoId);
+        }
       );
       if (deletedServerRecordCount > 0) {
         setServerMemoManager((previous) => ({
@@ -1945,17 +2015,22 @@ export function App() {
     setIsBusy(true);
     try {
       const pendingMemo = pendingDeleteMemo;
-      const shouldCloseWindow = await runWithDesktopRestoreLock(async () => {
+      const shouldCloseWindow = await runWithDesktopRestoreLock(async (
+        _synchronize,
+        assertActive
+      ) => {
         let deletedFromServer = false;
         if (user) {
           const services = ensureSyncServices();
           if (!services || !servicesAvailable) {
             throw new Error("서버 연결 상태를 확인해 주세요.");
           }
+          assertActive();
           await deleteBackedUpMemo(services.gateway, user.uid, pendingMemo.id);
           deletedFromServer = true;
         }
 
+        assertActive();
         return performDeleteMemoLocked(
           pendingMemo.id,
           deletedFromServer

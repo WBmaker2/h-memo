@@ -718,7 +718,7 @@ describe("restore lock coordinator", () => {
     expect(unlocked).toHaveBeenCalledWith(token);
   });
 
-  it("preserves restore, rollback, final apply, and release event failures", async () => {
+  it("preserves primary failures with final apply or release event failures", async () => {
     const nativeLease = {
       acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => ({
         token,
@@ -741,16 +741,14 @@ describe("restore lock coordinator", () => {
       })),
       release: vi.fn(async () => true),
     };
-    const coordinator = createRestoreLockCoordinator({
+    const finalApplyCoordinator = createRestoreLockCoordinator({
       getCurrentWindowLabel: () => "main",
       listLiveWindowLabels: async () => ["main"],
       notifyLockRequested: async () => {},
       listenLockRequested: async () => () => {},
       notifyLockAcknowledged: async () => {},
       listenLockAcknowledged: async () => () => {},
-      notifyLockReleased: async () => {
-        throw new Error("release event failed");
-      },
+      notifyLockReleased: async () => {},
       listenLockReleased: async () => () => {},
       applyStore: async () => {
         throw new Error("final apply failed");
@@ -761,7 +759,7 @@ describe("restore lock coordinator", () => {
     });
 
     await expect(
-      coordinator.run(async () => {
+      finalApplyCoordinator.run(async () => {
         throw new AggregateError(
           [new Error("restore write failed"), new Error("rollback failed")],
           "restore and rollback failed: restore write failed / rollback failed"
@@ -780,6 +778,42 @@ describe("restore lock coordinator", () => {
       expect(error).toHaveProperty(
         "message",
         expect.stringContaining("final apply failed")
+      );
+      return true;
+    });
+    await finalApplyCoordinator.stop();
+
+    const releaseEventCoordinator = createRestoreLockCoordinator({
+      getCurrentWindowLabel: () => "main",
+      listLiveWindowLabels: async () => ["main"],
+      notifyLockRequested: async () => {},
+      listenLockRequested: async () => () => {},
+      notifyLockAcknowledged: async () => {},
+      listenLockAcknowledged: async () => () => {},
+      notifyLockReleased: async () => {
+        throw new Error("release event failed");
+      },
+      listenLockReleased: async () => () => {},
+      applyStore: async () => {},
+      nativeLease,
+      lockLocal: async () => {},
+      unlockLocal: vi.fn(),
+    });
+    await expect(
+      releaseEventCoordinator.run(async () => {
+        throw new AggregateError(
+          [new Error("restore write failed"), new Error("rollback failed")],
+          "restore and rollback failed: restore write failed / rollback failed"
+        );
+      })
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toHaveProperty(
+        "message",
+        expect.stringContaining("restore write failed")
+      );
+      expect(error).toHaveProperty(
+        "message",
+        expect.stringContaining("rollback failed")
       );
       expect(error).toHaveProperty(
         "message",
@@ -1269,7 +1303,7 @@ describe("restore lock coordinator", () => {
       if (!runResult.ok) {
         expect(runResult.error).toHaveProperty(
           "message",
-          "복원 작업은 완료되었지만 잠금 lease 갱신에 실패했습니다: renewal failed"
+          expect.stringContaining("복원 잠금 lease 소유권을 잃었습니다: renewal failed")
         );
       }
       expect(nativeLease.release).toHaveBeenCalledTimes(1);
@@ -1384,6 +1418,308 @@ describe("restore lock coordinator", () => {
     }
   });
 
+  it("keeps the local barrier closed until a failed final apply recovers", async () => {
+    vi.useFakeTimers();
+    try {
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = null;
+      let applyAvailable = false;
+      let locallyLocked = false;
+      const hungFinalApply = deferred<void>();
+      const applyStore = vi.fn(async (payload: { generation: number }) => {
+        if (payload.generation === 1) {
+          await hungFinalApply.promise;
+          return;
+        }
+        if (!applyAvailable) {
+          throw new Error("final reload bridge unavailable");
+        }
+      });
+      const unlockLocal = vi.fn(() => {
+        locallyLocked = false;
+      });
+      const nativeLease = {
+        acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          lease = {
+            token,
+            owner,
+            expiresAtMs: Date.now() + ttlMs,
+            operationActive: false,
+          };
+          return lease;
+        }),
+        current: vi.fn(async () => lease),
+        renew: vi.fn(async (token: string, owner: string, ttlMs: number) => ({
+          token,
+          owner,
+          expiresAtMs: Date.now() + ttlMs,
+          operationActive: true,
+        })),
+        activate: vi.fn(async () => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.operationActive = true;
+          return lease;
+        }),
+        finish: vi.fn(async (_token: string, _owner: string, cleanupTtlMs: number) => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.operationActive = false;
+          lease.expiresAtMs = Date.now() + cleanupTtlMs;
+          return lease;
+        }),
+        release: vi.fn(async () => {
+          lease = null;
+          return true;
+        }),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => ["main"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        applyStore,
+        nativeLease,
+        lockLocal: async () => {
+          locallyLocked = true;
+        },
+        unlockLocal,
+        bridgeTimeoutMs: 5,
+        cleanupTimeoutMs: 5,
+        cleanupRetryIntervalMs: 10,
+      });
+
+      const handledRun = coordinator.run(async () => "restored").then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error })
+      );
+      await vi.advanceTimersByTimeAsync(5);
+      const outcome = await handledRun;
+
+      expect(outcome.ok).toBe(false);
+      expect(applyStore).toHaveBeenCalledTimes(1);
+      expect(nativeLease.release).toHaveBeenCalledTimes(1);
+      expect(locallyLocked).toBe(true);
+      expect(unlockLocal).not.toHaveBeenCalled();
+
+      applyAvailable = true;
+      await vi.advanceTimersByTimeAsync(10);
+      await flushMicrotasks(50);
+
+      expect(applyStore).toHaveBeenCalledTimes(2);
+      expect(applyStore.mock.calls[0]?.[0].generation).not.toBe(
+        applyStore.mock.calls[1]?.[0].generation
+      );
+      expect(unlockLocal).toHaveBeenCalledTimes(1);
+      expect(locallyLocked).toBe(false);
+      hungFinalApply.resolve();
+      await flushMicrotasks();
+      expect(unlockLocal).toHaveBeenCalledTimes(1);
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a transient renewal and completes while the callback stays active", async () => {
+    vi.useFakeTimers();
+    try {
+      const operation = deferred<string>();
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = null;
+      let renewalCount = 0;
+      const nativeLease = {
+        acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          lease = {
+            token,
+            owner,
+            expiresAtMs: Date.now() + ttlMs,
+            operationActive: false,
+          };
+          return lease;
+        }),
+        current: vi.fn(async () => lease),
+        renew: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          renewalCount += 1;
+          if (renewalCount === 1) {
+            throw new Error("transient renewal timeout");
+          }
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.expiresAtMs = Date.now() + ttlMs;
+          return { ...lease, token, owner };
+        }),
+        activate: vi.fn(async () => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.operationActive = true;
+          return lease;
+        }),
+        release: vi.fn(async () => {
+          lease = null;
+          return true;
+        }),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => ["main"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        nativeLease,
+        lockLocal: async () => {},
+        unlockLocal: vi.fn(),
+        leaseTtlMs: 40,
+        leaseRenewIntervalMs: 10,
+        bridgeTimeoutMs: 25,
+      });
+
+      const run = coordinator.run(() => operation.promise);
+      await flushMicrotasks(50);
+      expect(nativeLease.acquire).toHaveBeenCalledWith(
+        expect.any(String),
+        "main",
+        70
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(nativeLease.renew).toHaveBeenCalledTimes(1);
+      expect(lease).toEqual(expect.objectContaining({ operationActive: true }));
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(nativeLease.renew).toHaveBeenCalledTimes(2);
+      expect(
+        (lease as { expiresAtMs: number } | null)?.expiresAtMs
+      ).toBeGreaterThan(Date.now());
+
+      operation.resolve("restored");
+      await expect(run).resolves.toBe("restored");
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fences a later callback mutation after native ownership is confirmed lost", async () => {
+    vi.useFakeTimers();
+    try {
+      const continueCallback = deferred<void>();
+      const laterMutation = vi.fn();
+      let locallyLocked = false;
+      let applyAvailable = false;
+      let renewalCount = 0;
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = null;
+      const nativeLease = {
+        acquire: vi.fn(async (token: string, owner: string, ttlMs: number) => {
+          lease = {
+            token,
+            owner,
+            expiresAtMs: Date.now() + ttlMs,
+            operationActive: false,
+          };
+          return lease;
+        }),
+        current: vi.fn(async () => lease),
+        renew: vi.fn(async () => {
+          renewalCount += 1;
+          if (renewalCount === 1) {
+            throw new Error("transient renewal timeout");
+          }
+          lease = null;
+          throw new Error("restore token no longer exists");
+        }),
+        activate: vi.fn(async () => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.operationActive = true;
+          return lease;
+        }),
+        release: vi.fn(async () => false),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => ["main"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        applyStore: async () => {
+          if (!applyAvailable) {
+            throw new Error("authoritative reload unavailable");
+          }
+        },
+        nativeLease,
+        lockLocal: async () => {
+          locallyLocked = true;
+        },
+        unlockLocal: () => {
+          locallyLocked = false;
+        },
+        leaseRenewIntervalMs: 10,
+        bridgeTimeoutMs: 5,
+        cleanupRetryIntervalMs: 10,
+      });
+      const run = coordinator.run(async (_token, assertActive) => {
+        await continueCallback.promise;
+        assertActive();
+        laterMutation();
+        return "mutated";
+      });
+      const handled = run.then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error })
+      );
+      await vi.advanceTimersByTimeAsync(20);
+      expect(nativeLease.renew).toHaveBeenCalledTimes(2);
+      continueCallback.resolve();
+      const result = await handled;
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toHaveProperty(
+          "message",
+          expect.stringContaining("소유권을 잃었습니다")
+        );
+      }
+      expect(laterMutation).not.toHaveBeenCalled();
+      expect(locallyLocked).toBe(true);
+
+      applyAvailable = true;
+      await vi.advanceTimersByTimeAsync(10);
+      await flushMicrotasks(50);
+      expect(locallyLocked).toBe(false);
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the caller pending after renewal failure while stale native lease recovery unlocks remote", async () => {
     vi.useFakeTimers();
     try {
@@ -1464,6 +1800,7 @@ describe("restore lock coordinator", () => {
         leaseTtlMs: 20,
         leaseRenewIntervalMs: 10,
         leasePollIntervalMs: 5,
+        bridgeTimeoutMs: 5,
       });
       const remote = createRestoreLockCoordinator({
         getCurrentWindowLabel: () => "memo-1",
@@ -1795,12 +2132,18 @@ describe("restore lock coordinator", () => {
       await Promise.resolve();
       expect(secondSettled).toBe(false);
 
-      await vi.advanceTimersByTimeAsync(10);
-      expect(renewals).toHaveLength(3);
-
       renewals[1]!.pending.resolve({
         token: renewals[1]!.token,
         owner: renewals[1]!.owner,
+        expiresAtMs: Date.now() + 10_000,
+        operationActive: true,
+      });
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(renewals).toHaveLength(3);
+      renewals[2]!.pending.resolve({
+        token: renewals[2]!.token,
+        owner: renewals[2]!.owner,
         expiresAtMs: Date.now() + 10_000,
         operationActive: true,
       });
@@ -2292,5 +2635,67 @@ describe("restore lock coordinator", () => {
     await releasePromise;
     expect(unlockLocal).toHaveBeenCalledWith(token);
     await remote.stop();
+  });
+
+  it("coalesces final apply while a slower reload spans multiple lease polls", async () => {
+    vi.useFakeTimers();
+    try {
+      const token = "coalesced-final-poll";
+      let lease: {
+        token: string;
+        owner: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      } | null = {
+        token,
+        owner: "closed-owner",
+        expiresAtMs: Date.now() + 10_000,
+        operationActive: true,
+      };
+      const applyStore = vi.fn(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 300))
+      );
+      const unlockLocal = vi.fn();
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "memo-1",
+        listLiveWindowLabels: async () => ["memo-1"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        applyStore,
+        nativeLease: {
+          acquire: vi.fn(),
+          current: vi.fn(async () => lease),
+          renew: vi.fn(),
+          activate: vi.fn(),
+          release: vi.fn(),
+        },
+        lockLocal: async () => {},
+        unlockLocal,
+        leasePollIntervalMs: 250,
+        bridgeTimeoutMs: 1000,
+      });
+
+      await coordinator.start();
+      lease = null;
+      await vi.advanceTimersByTimeAsync(250);
+      expect(applyStore).toHaveBeenCalledTimes(1);
+      expect(unlockLocal).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(applyStore).toHaveBeenCalledTimes(1);
+      expect(unlockLocal).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(50);
+      await flushMicrotasks(50);
+      expect(applyStore).toHaveBeenCalledTimes(1);
+      expect(unlockLocal).toHaveBeenCalledWith(token);
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

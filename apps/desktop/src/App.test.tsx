@@ -256,7 +256,12 @@ const {
     saveMemo = mockSaveMemo;
     softDeleteMemo = mockSoftDeleteMemo;
     restoreMemo = mockRestoreMemo;
-    async withRestoreToken<T>(_token: string, operation: () => Promise<T>) {
+    async withRestoreToken<T>(
+      _token: string,
+      operation: () => Promise<T>,
+      assertActive: () => void = () => {}
+    ) {
+      assertActive();
       return operation();
     }
   }
@@ -1456,6 +1461,142 @@ describe("desktop App", () => {
     expect(screen.getByDisplayValue("최종 세대 메모")).not.toHaveAttribute(
       "readonly"
     );
+  });
+
+  it("fences an ordinary store reload that started before the final restore apply", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const token = "ordinary-reload-before-final";
+    const staleMemo = createMemo({
+      id: "desktop-ordinary-reload-fence",
+      now: "2026-07-13T00:10:00.000Z",
+      plainText: "일반 reload의 오래된 메모",
+    });
+    const finalMemo = {
+      ...staleMemo,
+      plainText: "복원 최종 메모",
+      updatedAt: "2026-07-13T00:11:00.000Z",
+    };
+    tauriRepositoryState.set(staleMemo.id, staleMemo);
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("일반 reload의 오래된 메모")).toBeInTheDocument();
+      expect(tauriEventState.memoStoreListener).not.toBeNull();
+      expect(tauriEventState.restoreLockRequestedListener).not.toBeNull();
+    });
+
+    const ordinaryReload = deferred<any[]>();
+    mockListMemos
+      .mockImplementationOnce(() => ordinaryReload.promise)
+      .mockImplementation(async () => [...tauriRepositoryState.values()]);
+    await act(async () => {
+      tauriEventState.memoStoreListener?.({ memoId: staleMemo.id });
+      await Promise.resolve();
+    });
+
+    nativeLeaseState.lease = {
+      token,
+      owner: "restore-owner",
+      expiresAtMs: Date.now() + 10_000,
+      operationActive: true,
+    };
+    await act(async () => {
+      await tauriEventState.restoreLockRequestedListener?.({ token });
+    });
+    tauriRepositoryState.set(finalMemo.id, finalMemo);
+    nativeLeaseState.lease = null;
+    await act(async () => {
+      await tauriEventState.restoreLockReleasedListener?.({
+        token,
+        finalApplyGeneration: 1,
+      });
+    });
+    expect(screen.getByDisplayValue("복원 최종 메모")).not.toHaveAttribute("readonly");
+
+    await act(async () => {
+      ordinaryReload.resolve([staleMemo]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByDisplayValue("복원 최종 메모")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("일반 reload의 오래된 메모")).not.toBeInTheDocument();
+  });
+
+  it("keeps stale desktop state readonly until final apply recovery loads the latest store", async () => {
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const staleMemo = createMemo({
+      id: "desktop-final-apply-stale",
+      now: "2026-07-13T00:20:00.000Z",
+      plainText: "최종 적용 전 오래된 메모",
+    });
+    const restoredMemo = createMemo({
+      id: "desktop-final-apply-restored",
+      now: "2026-07-13T00:21:00.000Z",
+      plainText: "복구 후 최신 메모",
+    });
+    tauriRepositoryState.set(staleMemo.id, staleMemo);
+    mockImportJsonFile.mockResolvedValue({
+      status: "loaded",
+      contents: JSON.stringify({
+        version: 1,
+        userId: "local",
+        createdAt: "2026-07-13T00:22:00.000Z",
+        memos: [restoredMemo],
+      }),
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("최종 적용 전 오래된 메모")).toBeInTheDocument();
+      expect(tauriEventState.restoreLockRequestedListener).not.toBeNull();
+    });
+
+    let restoreListCall = 0;
+    let recoveryAvailable = false;
+    mockListMemos.mockImplementation(async () => {
+      restoreListCall += 1;
+      if (restoreListCall <= 2) {
+        return [staleMemo];
+      }
+      if (!recoveryAvailable) {
+        throw new Error("final desktop reload unavailable");
+      }
+      return [...tauriRepositoryState.values()];
+    });
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "JSON 복원" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+        for (let index = 0; index < 30; index += 1) {
+          await Promise.resolve();
+        }
+      });
+
+      const staleEditor = screen.getByDisplayValue("최종 적용 전 오래된 메모");
+      expect(staleEditor).toHaveAttribute("readonly");
+      const saveCountWhileRecovering = mockSaveMemo.mock.calls.length;
+      fireEvent.change(staleEditor, { target: { value: "저장되면 안 되는 변경" } });
+      expect(mockSaveMemo).toHaveBeenCalledTimes(saveCountWhileRecovering);
+      expect(screen.getByDisplayValue("최종 적용 전 오래된 메모")).toBeInTheDocument();
+
+      recoveryAvailable = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+        for (let index = 0; index < 30; index += 1) {
+          await Promise.resolve();
+        }
+      });
+
+      expect(screen.queryByDisplayValue("최종 적용 전 오래된 메모")).not.toBeInTheDocument();
+      expect(screen.getByDisplayValue("복구 후 최신 메모")).not.toHaveAttribute("readonly");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("accepts a lower apply generation for a newer restore token", async () => {

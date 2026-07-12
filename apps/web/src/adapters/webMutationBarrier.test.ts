@@ -8,22 +8,32 @@ import { WebMutationBarrier } from "./webMutationBarrier";
 
 const RESTORE_LEASE_STORAGE_KEY = "h-memo:web-restore-lease-v1";
 const RESTORE_EPOCH_STORAGE_KEY = "h-memo:web-restore-epoch-v1";
-const FALLBACK_LOCK_PREFIX = "h-memo:web-fallback-lock-v1:";
 
-function deferred<T = void>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
+function installExclusiveWebLocks() {
+  const queues = new Map<string, Promise<void>>();
+  Object.defineProperty(navigator, "locks", {
+    configurable: true,
+    value: {
+      request: <T,>(
+        name: string,
+        _options: LockOptions,
+        callback: (lock: Lock | null) => Promise<T> | T
+      ) => {
+        const previous = queues.get(name) ?? Promise.resolve();
+        const result = previous
+          .catch(() => {})
+          .then(() => callback({ name, mode: "exclusive" } as Lock));
+        queues.set(
+          name,
+          result.then(
+            () => undefined,
+            () => undefined
+          )
+        );
+        return result;
+      },
+    },
   });
-  return { promise, resolve, reject };
-}
-
-function fallbackKeys() {
-  return Array.from({ length: window.localStorage.length }, (_, index) =>
-    window.localStorage.key(index)
-  ).filter((key): key is string => key?.startsWith(FALLBACK_LOCK_PREFIX) === true);
 }
 
 describe("WebMutationBarrier", () => {
@@ -44,142 +54,57 @@ describe("WebMutationBarrier", () => {
     }
   });
 
-  it("uses a durable fallback lock to serialize simultaneous independent instances", async () => {
-    vi.useFakeTimers({ now: new Date("2026-07-12T20:00:00.000Z") });
-    const first = new WebMutationBarrier({
-      ownerId: "tab-a",
-      fallbackLockTtlMs: 100,
-      fallbackPollMs: 10,
-    });
-    const second = new WebMutationBarrier({
-      ownerId: "tab-b",
-      fallbackLockTtlMs: 100,
-      fallbackPollMs: 10,
-    });
-    const releaseFirst = deferred();
-    let activeCount = 0;
-    let maxActiveCount = 0;
+  it("fails two independent unsupported restore instances before either callback starts", async () => {
+    const first = new WebMutationBarrier({ ownerId: "unsupported-a" });
+    const second = new WebMutationBarrier({ ownerId: "unsupported-b" });
+    const firstCallback = vi.fn(async () => "first");
+    const secondCallback = vi.fn(async () => "second");
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
 
-    const firstRun = first.runMutation(0, async () => {
-      activeCount += 1;
-      maxActiveCount = Math.max(maxActiveCount, activeCount);
-      await releaseFirst.promise;
-      activeCount -= 1;
-      return "first";
-    });
-    await Promise.resolve();
-    const secondRun = second.runMutation(0, async () => {
-      activeCount += 1;
-      maxActiveCount = Math.max(maxActiveCount, activeCount);
-      activeCount -= 1;
-      return "second";
-    });
-    await Promise.resolve();
-
-    expect(activeCount).toBe(1);
-    expect(fallbackKeys().length).toBeGreaterThanOrEqual(2);
-
-    releaseFirst.resolve();
-    await vi.advanceTimersByTimeAsync(20);
-
-    await expect(firstRun).resolves.toBe("first");
-    await expect(secondRun).resolves.toBe("second");
-    expect(maxActiveCount).toBe(1);
-    expect(fallbackKeys()).toEqual([]);
+    try {
+      const outcomes = await Promise.allSettled([
+        first.runRestore(firstCallback),
+        second.runRestore(secondCallback),
+      ]);
+      expect(outcomes).toEqual([
+        expect.objectContaining({
+          status: "rejected",
+          reason: expect.objectContaining({ message: expect.stringContaining("Web Locks") }),
+        }),
+        expect.objectContaining({
+          status: "rejected",
+          reason: expect.objectContaining({ message: expect.stringContaining("Web Locks") }),
+        }),
+      ]);
+      expect(firstCallback).not.toHaveBeenCalled();
+      expect(secondCallback).not.toHaveBeenCalled();
+      expect(setItemSpy).not.toHaveBeenCalled();
+    } finally {
+      setItemSpy.mockRestore();
+    }
   });
 
-  it("does not let two independent fallback barriers enter restore together", async () => {
-    const first = new WebMutationBarrier({ ownerId: "restore-tab-a" });
-    const second = new WebMutationBarrier({ ownerId: "restore-tab-b" });
-    const firstEntered = deferred();
-    const releaseFirst = deferred();
-    let activeRestores = 0;
-    let maxActiveRestores = 0;
-
-    const firstRun = first.runRestore(async () => {
-      activeRestores += 1;
-      maxActiveRestores = Math.max(maxActiveRestores, activeRestores);
-      firstEntered.resolve();
-      await releaseFirst.promise;
-      activeRestores -= 1;
-      return "first";
-    });
-    await firstEntered.promise;
-
-    const secondRun = second.runRestore(async () => {
-      activeRestores += 1;
-      maxActiveRestores = Math.max(maxActiveRestores, activeRestores);
-      activeRestores -= 1;
-      return "second";
-    });
-    await expect(secondRun).rejects.toThrow("다른 탭에서 복원");
-    expect(activeRestores).toBe(1);
-
-    releaseFirst.resolve();
-    await expect(firstRun).resolves.toBe("first");
-    expect(maxActiveRestores).toBe(1);
-    expect(fallbackKeys()).toEqual([]);
-  });
-
-  it("recovers a deterministic fallback contender after its owner expires", async () => {
-    vi.useFakeTimers({ now: new Date("2026-07-12T20:01:00.000Z") });
-    const lockName = "h-memo:web-mutation-v1";
-    const abandonedKey = `${FALLBACK_LOCK_PREFIX}${encodeURIComponent(lockName)}:abandoned`;
-    window.localStorage.setItem(
-      abandonedKey,
-      JSON.stringify({
-        version: 1,
-        owner: "closed-tab",
-        requestId: "abandoned",
-        choosing: false,
-        ticket: 1,
-        expiresAtMs: Date.now() - 1,
-      })
-    );
-    const barrier = new WebMutationBarrier({
-      ownerId: "surviving-tab",
-      fallbackLockTtlMs: 100,
-      fallbackPollMs: 10,
-    });
-
-    await expect(barrier.runMutation(0, async () => "recovered")).resolves.toBe(
-      "recovered"
-    );
-    expect(window.localStorage.getItem(abandonedKey)).toBeNull();
-    expect(fallbackKeys()).toEqual([]);
-  });
-
-  it("fences a delayed repository write after fallback ownership is lost", async () => {
-    const barrier = new WebMutationBarrier({ ownerId: "suspended-tab" });
+  it("fails an unsupported mutation before callback or repository write", async () => {
+    const barrier = new WebMutationBarrier({ ownerId: "unsupported-write" });
     const repository = new LocalStorageMemoRepository({
       beforeWrite: () => barrier.assertMutationWriteAllowed(),
     });
-    const operationEntered = deferred();
-    const resumeOperation = deferred();
     const memo = createMemo({
-      id: "fenced-web-write",
+      id: "unsupported-web-write",
       now: "2026-07-12T20:02:00.000Z",
       plainText: "저장되면 안 되는 메모",
     });
+    const operation = vi.fn(async () => repository.saveMemo(memo));
 
-    const run = barrier.runMutation(0, async () => {
-      operationEntered.resolve();
-      await resumeOperation.promise;
-      return repository.saveMemo(memo);
-    });
-    await operationEntered.promise;
-    for (const key of fallbackKeys()) {
-      if (key.includes(encodeURIComponent("h-memo:web-mutation-v1"))) {
-        window.localStorage.removeItem(key);
-      }
-    }
-    resumeOperation.resolve();
-
-    await expect(run).rejects.toThrow("잠금");
+    await expect(barrier.runMutation(0, operation)).rejects.toThrow("Web Locks");
+    expect(operation).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(WEB_MEMO_STORAGE_KEY)).toBeNull();
+    await expect(repository.saveMemo(memo)).rejects.toThrow("Web Locks");
     expect(window.localStorage.getItem(WEB_MEMO_STORAGE_KEY)).toBeNull();
   });
 
   it("rejects a stale mutation intent captured before a durable restore revision", async () => {
+    installExclusiveWebLocks();
     const barrier = new WebMutationBarrier({ ownerId: "stale-tab" });
     barrier.markObservedEpoch(0);
     const intentEpoch = barrier.getObservedEpoch();
@@ -194,6 +119,7 @@ describe("WebMutationBarrier", () => {
   });
 
   it("preserves the restore failure when lease cleanup also fails", async () => {
+    installExclusiveWebLocks();
     const barrier = new WebMutationBarrier({ ownerId: "cleanup-tab" });
     const originalRemoveItem = Storage.prototype.removeItem;
     const removeSpy = vi
@@ -228,6 +154,7 @@ describe("WebMutationBarrier", () => {
   });
 
   it("recovers an abandoned remote restore lease after its bounded ttl", async () => {
+    installExclusiveWebLocks();
     vi.useFakeTimers({ now: new Date("2026-07-12T20:00:00.000Z") });
     window.localStorage.setItem(
       RESTORE_LEASE_STORAGE_KEY,
