@@ -115,6 +115,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let runQueue: Promise<void> = Promise.resolve();
   let stopping = false;
   let lifecycleGeneration = 0;
+  let nextRemoteRequestGeneration = 0;
+  let latestRemoteRequestGeneration = 0;
   let stopPromise: Promise<void> | null = null;
 
   const reportProtocolError = (error: unknown) => {
@@ -123,6 +125,13 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
 
   const isCurrentLifecycle = (generation: number) =>
     !stopping && lifecycleGeneration === generation;
+
+  const isCurrentRemoteRequest = (
+    requestGeneration: number,
+    generation: number
+  ) =>
+    isCurrentLifecycle(generation) &&
+    latestRemoteRequestGeneration === requestGeneration;
 
   const settlePending = (token: string, windowLabel: string, error?: unknown) => {
     const pending = pendingAcknowledgements.get(token);
@@ -304,10 +313,14 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   const acquireRemoteLock = async (
     token: string,
     lease: RestoreLockLease | undefined,
-    generation: number
+    generation: number,
+    requestGeneration: number
   ) => {
     const expectedLeaseOwner = lease?.owner;
-    if (!isCurrentLifecycle(generation)) {
+    const isCurrentRequest = () =>
+      isCurrentRemoteRequest(requestGeneration, generation);
+
+    if (!isCurrentRequest()) {
       return;
     }
     remoteToken = token;
@@ -320,23 +333,35 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         Promise.resolve().then(() => options.lockLocal(token)),
         releaseSignal,
       ]);
-      if (!isCurrentLifecycle(generation) || remoteToken !== token) {
+      if (!isCurrentRequest()) {
+        pendingRemoteAcquires.delete(token);
+        return;
+      }
+      if (remoteToken !== token) {
+        pendingRemoteAcquires.delete(token);
         return;
       }
       if (nativeLease) {
         const current = await nativeLease.current();
+        if (!isCurrentRequest()) {
+          pendingRemoteAcquires.delete(token);
+          return;
+        }
         if (
-          !isCurrentLifecycle(generation) ||
           remoteToken !== token ||
           !current ||
           current.token !== token ||
           (expectedLeaseOwner !== undefined && current.owner !== expectedLeaseOwner)
         ) {
+          if (remoteToken !== token) {
+            pendingRemoteAcquires.delete(token);
+            return;
+          }
           unlockRemote(token);
           return;
         }
       }
-      if (!isCurrentLifecycle(generation) || remoteToken !== token) {
+      if (!isCurrentRequest() || remoteToken !== token) {
         return;
       }
       pendingRemoteAcquires.delete(token);
@@ -348,6 +373,10 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         })
         .catch(reportProtocolError);
     } catch (error) {
+      if (!isCurrentRequest()) {
+        pendingRemoteAcquires.delete(token);
+        return;
+      }
       const ownsToken = remoteToken === token;
       pendingRemoteAcquires.delete(token);
       if (ownsToken) {
@@ -356,9 +385,6 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         options.unlockLocal(token);
       }
       if (!ownsToken) {
-        return;
-      }
-      if (!isCurrentLifecycle(generation)) {
         return;
       }
       try {
@@ -376,9 +402,13 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
 
   const handleLockRequested = async (
     payload: RestoreLockRequest,
-    generation: number
+    generation: number,
+    requestGeneration: number
   ) => {
-    if (!isCurrentLifecycle(generation)) {
+    const isCurrentRequest = () =>
+      isCurrentRemoteRequest(requestGeneration, generation);
+
+    if (!isCurrentRequest()) {
       return;
     }
     let currentLease: RestoreLockLease | undefined;
@@ -387,17 +417,20 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       try {
         current = await nativeLease.current();
       } catch (error) {
+        if (!isCurrentRequest()) {
+          return;
+        }
         reportProtocolError(error);
         return;
       }
-      if (!isCurrentLifecycle(generation) || !current || current.token !== payload.token) {
+      if (!isCurrentRequest() || !current || current.token !== payload.token) {
         return;
       }
       currentLease = current;
     }
 
     if (localToken === payload.token || remoteToken === payload.token) {
-      if (!isCurrentLifecycle(generation)) {
+      if (!isCurrentRequest()) {
         return;
       }
       await options.notifyLockAcknowledged({
@@ -408,15 +441,21 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       return;
     }
 
+    if (!isCurrentRequest()) {
+      return;
+    }
     if (remoteToken && remoteToken !== payload.token) {
       unlockRemote(remoteToken);
     }
 
-    if (!isCurrentLifecycle(generation)) {
+    if (!isCurrentRequest()) {
       return;
     }
 
     if (localToken || remoteToken) {
+      if (!isCurrentRequest()) {
+        return;
+      }
       await options.notifyLockAcknowledged({
         token: payload.token,
         windowLabel: owner,
@@ -426,7 +465,12 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       return;
     }
 
-    await acquireRemoteLock(payload.token, currentLease, generation);
+    await acquireRemoteLock(
+      payload.token,
+      currentLease,
+      generation,
+      requestGeneration
+    );
   };
 
   const handleLockAcknowledged = (payload: RestoreLockAcknowledgement) => {
@@ -452,11 +496,21 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     if (!isCurrentLifecycle(generation) || !nativeLease || localToken || remoteToken) {
       return;
     }
+    const requestGeneration = ++nextRemoteRequestGeneration;
+    latestRemoteRequestGeneration = requestGeneration;
     const current = await nativeLease.current();
-    if (!isCurrentLifecycle(generation) || !current) {
+    if (
+      !isCurrentRemoteRequest(requestGeneration, generation) ||
+      !current
+    ) {
       return;
     }
-    await acquireRemoteLock(current.token, current, generation);
+    await acquireRemoteLock(
+      current.token,
+      current,
+      generation,
+      requestGeneration
+    );
   };
 
   const start = async () => {
@@ -480,7 +534,13 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
           if (!isCurrentLifecycle(generation)) {
             return;
           }
-          void handleLockRequested(payload, generation).catch(reportProtocolError);
+          const requestGeneration = ++nextRemoteRequestGeneration;
+          latestRemoteRequestGeneration = requestGeneration;
+          void handleLockRequested(
+            payload,
+            generation,
+            requestGeneration
+          ).catch(reportProtocolError);
         });
         if (!isCurrentLifecycle(generation)) {
           requestedCleanup();
