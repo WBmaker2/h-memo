@@ -19,6 +19,7 @@ import {
 } from "@h-memo/memo-sync";
 import { createMemo } from "@h-memo/memo-core";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
+import { LocalStorageMemoRepository } from "./adapters/localStorageMemoRepository";
 import { WebApp } from "./WebApp";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
@@ -138,6 +139,16 @@ function installLocalStorageStub(options: LocalStorageStubOptions = {}) {
 async function createMemoFromAppMenu(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByLabelText("앱 메뉴"));
   await user.click(screen.getByRole("button", { name: "새 메모" }));
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 beforeEach(() => {
@@ -1009,6 +1020,189 @@ describe("WebApp", () => {
     await waitFor(() => {
       expect(screen.getByRole("status")).toHaveTextContent(SUCCESS_BACKUP_MESSAGE);
     });
+  });
+
+  it("holds the local mutation barrier while server backup is running", async () => {
+    const user = userEvent.setup();
+    const currentMemo = createMemo({
+      id: "web-backup-barrier-memo",
+      now: "2026-07-12T16:00:00.000Z",
+      plainText: "백업 중에도 유지할 메모",
+    });
+    const pendingBackup = deferred<Awaited<ReturnType<typeof backupMemos>>>();
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([currentMemo])]],
+    });
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+    vi.mocked(backupMemos).mockReturnValue(pendingBackup.promise);
+
+    render(<WebApp />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "서버 백업" }));
+    await waitFor(() => expect(backupMemos).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByRole("textbox", { name: "메모 내용" }), {
+      target: { value: "백업 중 겹친 변경" },
+    });
+    await Promise.resolve();
+
+    expect(screen.getByRole("textbox", { name: "메모 내용" })).toHaveValue(
+      "백업 중에도 유지할 메모"
+    );
+    expect(JSON.parse(window.localStorage.getItem(LOCAL_MEMO_KEY) ?? "[]")[0].plainText).toBe(
+      "백업 중에도 유지할 메모"
+    );
+
+    pendingBackup.resolve({
+      path: "users/user-1/backupSnapshots/barrier",
+      payload: {
+        version: 1,
+        userId: LOGGED_IN_USER.uid,
+        createdAt: "2026-07-12T16:01:00.000Z",
+        memos: [currentMemo],
+      },
+    });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(SUCCESS_BACKUP_MESSAGE));
+  });
+
+  it("holds the local mutation barrier while confirmed server delete is running", async () => {
+    const user = userEvent.setup();
+    const currentMemo = createMemo({
+      id: "web-delete-barrier-memo",
+      now: "2026-07-12T16:10:00.000Z",
+      plainText: "삭제 중에도 유지할 메모",
+    });
+    const pendingDelete = deferred<number>();
+    installLocalStorageStub({
+      initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([currentMemo])]],
+    });
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(listBackedUpMemos).mockResolvedValue([SERVER_BACKED_UP_MEMO]);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+    vi.mocked(deleteBackedUpMemo).mockReturnValue(pendingDelete.promise);
+
+    render(<WebApp />);
+    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+    await user.click(screen.getByRole("button", { name: "서버에서 가져온 웹 메모 서버 삭제" }));
+    await waitFor(() => expect(deleteBackedUpMemo).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByRole("textbox", { name: "메모 내용" }), {
+      target: { value: "삭제 중 겹친 변경" },
+    });
+    await Promise.resolve();
+
+    expect(screen.getByRole("textbox", { name: "메모 내용" })).toHaveValue(
+      "삭제 중에도 유지할 메모"
+    );
+    expect(JSON.parse(window.localStorage.getItem(LOCAL_MEMO_KEY) ?? "[]")[0].plainText).toBe(
+      "삭제 중에도 유지할 메모"
+    );
+
+    pendingDelete.resolve(1);
+    await waitFor(() =>
+      expect(within(screen.getByRole("dialog", { name: "서버 메모 관리" })).getByRole("status"))
+        .toHaveTextContent("서버 메모를 삭제했습니다.")
+    );
+  });
+
+  it("does not execute server delete after a declined confirmation", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(listBackedUpMemos).mockResolvedValue([SERVER_BACKED_UP_MEMO]);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+    vi.mocked(window.confirm).mockReturnValue(false);
+
+    render(<WebApp />);
+    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+    await user.click(screen.getByRole("button", { name: "서버에서 가져온 웹 메모 서버 삭제" }));
+
+    expect(deleteBackedUpMemo).not.toHaveBeenCalled();
+    expect(
+      within(screen.getByRole("dialog", { name: "서버 메모 관리" })).getByRole("status")
+    ).toHaveTextContent("서버 메모 삭제를 취소했습니다.");
+  });
+
+  it("does not start server backup while a server restore owns the mutation barrier", async () => {
+    const user = userEvent.setup();
+    const pendingRestoreRead = deferred<ReturnType<typeof createMemo>[]>();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(listBackedUpMemos).mockResolvedValue([SERVER_BACKED_UP_MEMO]);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+
+    render(<WebApp />);
+    await user.click(screen.getByLabelText("앱 메뉴"));
+    await user.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+    const restoreButton = await screen.findByRole("button", {
+      name: "서버에서 가져온 웹 메모 복원",
+    });
+    const listMemosSpy = vi
+      .spyOn(LocalStorageMemoRepository.prototype, "listMemos")
+      .mockImplementationOnce(async () => pendingRestoreRead.promise);
+
+    fireEvent.click(restoreButton);
+    fireEvent.click(screen.getByRole("button", { name: "서버 백업" }));
+
+    expect(backupMemos).not.toHaveBeenCalled();
+    pendingRestoreRead.resolve([]);
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("dialog", { name: "서버 메모 관리" })).getByRole("status")
+      ).toHaveTextContent("서버 메모 복원 완료")
+    );
+    listMemosSpy.mockRestore();
+  });
+
+  it("rechecks the restore barrier after server delete confirmation", async () => {
+    const pendingRestoreRead = deferred<ReturnType<typeof createMemo>[]>();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(listBackedUpMemos).mockResolvedValue([SERVER_BACKED_UP_MEMO]);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+
+    render(<WebApp />);
+    fireEvent.click(screen.getByLabelText("앱 메뉴"));
+    fireEvent.click(screen.getByRole("button", { name: "서버 메모 관리" }));
+    const restoreButton = await screen.findByRole("button", {
+      name: "서버에서 가져온 웹 메모 복원",
+    });
+    const deleteButton = screen.getByRole("button", {
+      name: "서버에서 가져온 웹 메모 서버 삭제",
+    });
+    const listMemosSpy = vi
+      .spyOn(LocalStorageMemoRepository.prototype, "listMemos")
+      .mockImplementationOnce(async () => pendingRestoreRead.promise);
+    vi.mocked(window.confirm).mockImplementation(() => {
+      fireEvent.click(restoreButton);
+      return true;
+    });
+
+    fireEvent.click(deleteButton);
+
+    expect(deleteBackedUpMemo).not.toHaveBeenCalled();
+    pendingRestoreRead.resolve([]);
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("dialog", { name: "서버 메모 관리" })).getByRole("status")
+      ).toHaveTextContent("서버 메모 복원 완료")
+    );
+    listMemosSpy.mockRestore();
   });
 
   it("opens backup history and restores selected server backup", async () => {

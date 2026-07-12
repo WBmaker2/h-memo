@@ -56,6 +56,8 @@ const BACKUP_FAILED_PREFIX = "백업 실패:";
 const RESTORE_FAILED_PREFIX = "복원 실패:";
 const JSON_RESTORE_CONFIRM_MESSAGE =
   "JSON 백업 파일 내용으로 현재 메모를 대체합니다. 백업에 없는 메모는 삭제됩니다. 계속할까요?";
+const SERVER_DELETE_CONFIRM_MESSAGE =
+  "서버 백업에서 이 메모를 삭제합니다. 삭제한 뒤에는 서버에서 복원할 수 없습니다. 계속할까요?";
 const NO_BACKUP_MESSAGE = "복원할 백업이 없습니다.";
 const SERVER_MEMO_INITIAL_STATUS = "서버 메모를 불러오지 않았습니다.";
 const RESTORE_SAFETY_CHANGED_EVENT = "h-memo:restore-safety-changed";
@@ -831,6 +833,24 @@ export function WebApp() {
     }
   };
 
+  const backupCurrentMemos = async (services: SyncServices, userId: string) => {
+    const persistedMemos = await repository.listMemos();
+    return backupMemos(services.gateway, userId, persistedMemos);
+  };
+
+  const deleteServerMemoLocked = async (
+    session: { user: WebPreviewUser; services: SyncServices },
+    memoId: string
+  ) => {
+    const deletedServerRecordCount = await deleteBackedUpMemo(
+      session.services.gateway,
+      session.user.uid,
+      memoId
+    );
+    void deletedServerRecordCount;
+    setServerMemoItems((previous) => previous.filter((item) => item.memo.id !== memoId));
+  };
+
   const handleBackup = async () => {
     const services = ensureSyncServices();
     if (!user || !services) {
@@ -850,9 +870,9 @@ export function WebApp() {
     setIsBusy(true);
     setBackupStatus("백업을 시작합니다.");
     try {
-      await waitForPendingPersists();
-      const persistedMemos = await repository.listMemos();
-      const result = await backupMemos(services.gateway, user.uid, persistedMemos);
+      const result = await runWithWebRestoreLock(() =>
+        backupCurrentMemos(services, user.uid)
+      );
       setBackupStatus(`백업 완료: ${result.path}`);
     } catch (error) {
       setBackupStatus(`${BACKUP_FAILED_PREFIX} ${getErrorMessage(error)}`);
@@ -1024,15 +1044,22 @@ export function WebApp() {
       return;
     }
 
+    if (!window.confirm(SERVER_DELETE_CONFIRM_MESSAGE)) {
+      setBackupStatus("서버 메모 삭제를 취소했습니다.");
+      setServerMemoStatus("서버 메모 삭제를 취소했습니다.");
+      return;
+    }
+
+    const confirmedSession = requireServerMemoSession();
+    if (!confirmedSession || restoreLockRef.current) {
+      return;
+    }
+
     setIsBusy(true);
     try {
-      const deletedServerRecordCount = await deleteBackedUpMemo(
-        session.services.gateway,
-        session.user.uid,
-        memoId
+      await runWithWebRestoreLock(() =>
+        deleteServerMemoLocked(confirmedSession, memoId)
       );
-      void deletedServerRecordCount;
-      setServerMemoItems((previous) => previous.filter((item) => item.memo.id !== memoId));
       setBackupStatus("서버 메모를 삭제했습니다.");
       setServerMemoStatus("서버 메모를 삭제했습니다.");
     } catch (error) {

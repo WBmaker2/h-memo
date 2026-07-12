@@ -192,8 +192,9 @@ fn authorize_restore_save(
   match (lease.as_ref(), restore_token) {
     (None, None) => Ok(()),
     (None, Some(_)) => Err("복원 잠금 lease가 없어 restore token을 사용할 수 없습니다.".to_string()),
+    (Some(current), None) if !current.operation_active => Ok(()),
     (Some(_), None) => Err("복원 잠금 중에는 restore token이 필요합니다.".to_string()),
-    (Some(current), Some(token)) if current.token == token => Ok(()),
+    (Some(current), Some(token)) if current.operation_active && current.token == token => Ok(()),
     (Some(_), Some(_)) => Err("복원 잠금 restore token이 일치하지 않습니다.".to_string()),
   }
 }
@@ -1301,18 +1302,44 @@ mod tests {
     )
     .expect("lease should be acquired");
 
-    for token in [None, Some("token-stale")] {
-      assert!(save_memo_inner(
-        &connection,
-        &mut lease,
-        &active,
-        token,
-        lease_time(3_020),
-      )
-      .is_err());
-    }
-    let unchanged = list_memos_from_connection(&connection).expect("memos should list");
-    assert_eq!(unchanged[0].plain_text, "initial");
+    save_memo_inner(
+      &connection,
+      &mut lease,
+      &active,
+      None,
+      lease_time(3_020),
+    )
+    .expect("ordinary queued saves should drain while the lease is inactive");
+    assert!(save_memo_inner(
+      &connection,
+      &mut lease,
+      &active,
+      Some("token-current"),
+      lease_time(3_021),
+    )
+    .is_err());
+    assert!(save_memo_inner(
+      &connection,
+      &mut lease,
+      &active,
+      Some("token-stale"),
+      lease_time(3_022),
+    )
+    .is_err());
+
+    let drained = list_memos_from_connection(&connection).expect("memos should list");
+    assert_eq!(drained[0].plain_text, "active");
+
+    activate_restore_lock_lease_inner(&mut lease, "token-current", "main", lease_time(3_025))
+      .expect("restore operation should activate after the drain");
+    assert!(save_memo_inner(
+      &connection,
+      &mut lease,
+      &active,
+      None,
+      lease_time(3_026),
+    )
+    .is_err());
 
     save_memo_inner(
       &connection,
@@ -1328,14 +1355,28 @@ mod tests {
     );
 
     let expired = test_memo("memo-save-boundary", "expired", "2026-07-12T09:02:00Z");
-    assert!(save_memo_inner(
+    save_memo_inner(
       &connection,
       &mut lease,
       &expired,
       Some("token-current"),
       lease_time(3_111),
     )
+    .expect("the exact live lease token should remain valid after ttl expiry");
+    assert!(save_memo_inner(
+      &connection,
+      &mut lease,
+      &expired,
+      None,
+      lease_time(3_112),
+    )
     .is_err());
+    assert!(release_restore_lock_lease_inner(
+      &mut lease,
+      "token-current",
+      "main",
+      lease_time(3_113),
+    ));
     save_memo_inner(
       &connection,
       &mut lease,
