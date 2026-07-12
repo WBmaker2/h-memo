@@ -953,7 +953,7 @@ describe("desktop App", () => {
     await act(async () => {
       tauriEventState.memoStoreListener?.({ deletedMemoId: first.id });
     });
-    await waitFor(() => expect(screen.queryByDisplayValue("복원 전 메모")).not.toBeInTheDocument());
+    expect(screen.getByDisplayValue("복원 전 메모")).toHaveAttribute("readonly");
     expect(mockReleaseCurrentMemoWindow).not.toHaveBeenCalledWith(first.id, "token-default");
     expect(mockClaimCurrentMemoWindow).not.toHaveBeenCalledWith(second.id);
 
@@ -1408,6 +1408,75 @@ describe("desktop App", () => {
       expect(screen.getByDisplayValue("복원된 JSON 메모")).toBeInTheDocument();
       expect(screen.getByRole("status")).toHaveTextContent("JSON 복원 완료: 1개 메모");
     });
+  });
+
+  it("reloads post-removal state and drains a store event received while restore is locked", async () => {
+    const user = userEvent.setup();
+    setTauriRuntime(true);
+    mockGetStartupEnabled.mockResolvedValue(false);
+    const initialMemo = createMemo({
+      id: "memo-post-removal-reload",
+      now: "2026-07-13T12:10:00.000Z",
+      plainText: "복원 전 메모",
+    });
+    const restoredMemo = {
+      ...initialMemo,
+      plainText: "복원 직후 메모",
+      updatedAt: "2026-07-13T12:11:00.000Z",
+    };
+    const remotelySavedMemo = {
+      ...restoredMemo,
+      plainText: "native 제거 뒤 원격 저장",
+      updatedAt: "2026-07-13T12:12:00.000Z",
+    };
+    tauriRepositoryState.set(initialMemo.id, initialMemo);
+    mockImportJsonFile.mockResolvedValue({
+      status: "loaded",
+      contents: JSON.stringify({
+        version: 1,
+        userId: "local",
+        createdAt: "2026-07-13T12:11:30.000Z",
+        memos: [restoredMemo],
+      }),
+    });
+    const releaseEntered = deferred<void>();
+    const finishRelease = deferred<boolean>();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, any>) => {
+      if (command === "release_restore_lock_lease") {
+        nativeLeaseState.lease = null;
+        releaseEntered.resolve();
+        return finishRelease.promise;
+      }
+      return defaultInvoke?.(command, args);
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("복원 전 메모")).toBeInTheDocument();
+      expect(tauriEventState.memoStoreListener).toEqual(expect.any(Function));
+    });
+
+    await user.click(screen.getByRole("button", { name: "JSON 복원" }));
+    await releaseEntered.promise;
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("복원 직후 메모")).toHaveAttribute("readonly");
+    });
+
+    tauriRepositoryState.set(remotelySavedMemo.id, remotelySavedMemo);
+    act(() => {
+      tauriEventState.memoStoreListener?.({ memoId: remotelySavedMemo.id });
+    });
+    finishRelease.resolve(true);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("native 제거 뒤 원격 저장")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("JSON 복원 완료: 1개 메모");
+    });
+    expect(screen.getByDisplayValue("native 제거 뒤 원격 저장")).not.toHaveAttribute(
+      "readonly"
+    );
+    expect(tauriRepositoryState.get(remotelySavedMemo.id)).toEqual(remotelySavedMemo);
   });
 
   it("rolls back a desktop restore when a remote window rejects store application", async () => {

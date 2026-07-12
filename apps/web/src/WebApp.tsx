@@ -1281,9 +1281,16 @@ export function WebApp() {
     setStartupEnabled(enabled);
   };
 
-  const isBackupDisabled = !isServerReady || user === null || isBusy || isRestoreLocked;
-  const isRestoreDisabled = !isServerReady || user === null || isBusy || isRestoreLocked;
+  const isBackupDisabled =
+    !supportsSafeMutations || !isServerReady || user === null || isBusy || isRestoreLocked;
+  const isRestoreDisabled =
+    !supportsSafeMutations || !isServerReady || user === null || isBusy || isRestoreLocked;
   const isAuthDisabled = !isServerReady || isBusy || isRestoreLocked;
+  const visibleBackupStatus = supportsSafeMutations
+    ? backupStatus
+    : backupStatus === WEB_LOCKS_REQUIRED_MESSAGE
+      ? backupStatus
+      : `${WEB_LOCKS_REQUIRED_MESSAGE} ${backupStatus}`;
 
   return (
     <>
@@ -1301,7 +1308,7 @@ export function WebApp() {
         actions={
           <button
             type="button"
-            disabled={isBusy || isRestoreLocked}
+            disabled={!supportsSafeMutations || isBusy || isRestoreLocked}
             onClick={handleOpenServerMemoManager}
           >
             서버 메모 관리
@@ -1309,7 +1316,7 @@ export function WebApp() {
         }
         settingsProps={{
           userName: user ? user.displayName || user.email || "구글 계정" : null,
-          backupStatus,
+          backupStatus: visibleBackupStatus,
           startupEnabled,
           firebaseConfig: allowFirebaseConfigOverride ? firebaseConfigFormValue : undefined,
           onBackup: handleBackup,
@@ -1324,6 +1331,7 @@ export function WebApp() {
           onClearFirebaseConfig: allowFirebaseConfigOverride ? handleClearFirebaseConfig : undefined,
           isServerAvailable: isServerReady,
           isServerBusy: isBusy || isRestoreLocked,
+          isLocalRestoreDisabled: !supportsSafeMutations,
           isBackupDisabled,
           isRestoreDisabled,
           canUndoRestore: restoreSafetyPoint !== null,
@@ -1339,6 +1347,7 @@ export function WebApp() {
         className="visually-hidden"
         type="file"
         accept="application/json,.json"
+        disabled={!supportsSafeMutations}
         onChange={handleJsonImportFileChange}
       />
       <ServerMemoManagerDialog

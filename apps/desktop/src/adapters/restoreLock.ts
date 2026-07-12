@@ -225,6 +225,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     nativeFinished: boolean;
     applyComplete: boolean;
     notificationComplete: boolean;
+    notificationBypassedAfterNativeAbsence: boolean;
+    notificationError: unknown | null;
     nativeComplete: boolean;
     postRemovalVerificationComplete: boolean;
     retryAttempt: number;
@@ -1399,7 +1401,10 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   const attemptReleaseNotification = async (
     recovery: NonNullable<typeof pendingLocalRecovery>
   ) => {
-    if (recovery.notificationComplete) {
+    if (
+      recovery.notificationComplete ||
+      recovery.notificationBypassedAfterNativeAbsence
+    ) {
       return null;
     }
     const error = await broadcastRelease(
@@ -1408,8 +1413,40 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     );
     if (!error) {
       recovery.notificationComplete = true;
+      recovery.notificationError = null;
+    } else {
+      recovery.notificationError = error;
     }
     return error;
+  };
+
+  const attemptConfirmNativeAbsenceAfterNotificationFailure = async (
+    recovery: NonNullable<typeof pendingLocalRecovery>
+  ) => {
+    if (
+      !recovery.notificationError ||
+      recovery.notificationComplete ||
+      recovery.notificationBypassedAfterNativeAbsence ||
+      !nativeLease
+    ) {
+      return null;
+    }
+    try {
+      if (recovery.nativeComplete || (await isNativeLeaseGone(recovery.token))) {
+        recovery.nativeFinished = true;
+        recovery.nativeComplete = true;
+        recovery.notificationBypassedAfterNativeAbsence = true;
+        recovery.postRemovalVerificationComplete = !options.applyStore;
+      }
+      return null;
+    } catch (error) {
+      return wrapNativeCleanupError(
+        new Error(
+          `복원 잠금 해제 공유 실패 후 native lease 확인에 실패했습니다. ${getErrorMessage(error)}`,
+          { cause: error }
+        )
+      );
+    }
   };
 
   const attemptRemoveNativeLease = async (
@@ -1429,6 +1466,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       );
       if (released) {
         recovery.nativeComplete = true;
+        recovery.postRemovalVerificationComplete = !options.applyStore;
         return null;
       }
       if (await isNativeLeaseGone(recovery.token)) {
@@ -1470,7 +1508,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     recovery.finalApplyGeneration = generation;
     const error = await runBoundedCleanup(
       () => options.applyStore!({ token: recovery.token, generation }),
-      "예상 밖 lease 소멸 후 최종 메모 상태 적용이 시간 초과되었습니다."
+      "native lease 제거 후 최종 메모 상태 적용이 시간 초과되었습니다."
     );
     if (!error) {
       recovery.postRemovalVerificationComplete = true;
@@ -1483,7 +1521,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   ) =>
     recovery.nativeFinished &&
     recovery.applyComplete &&
-    recovery.notificationComplete &&
+    (recovery.notificationComplete ||
+      recovery.notificationBypassedAfterNativeAbsence) &&
     recovery.nativeComplete &&
     recovery.postRemovalVerificationComplete;
 
@@ -1504,12 +1543,21 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     const notificationError = await attemptReleaseNotification(recovery);
     if (notificationError) {
       errors.push(notificationError);
-      return errors;
+      const lookupError =
+        await attemptConfirmNativeAbsenceAfterNotificationFailure(recovery);
+      if (lookupError) {
+        errors.push(lookupError);
+      }
+      if (!recovery.notificationBypassedAfterNativeAbsence) {
+        return errors;
+      }
     }
-    const nativeError = await attemptRemoveNativeLease(recovery);
-    if (nativeError) {
-      errors.push(nativeError);
-      return errors;
+    if (!recovery.notificationBypassedAfterNativeAbsence) {
+      const nativeError = await attemptRemoveNativeLease(recovery);
+      if (nativeError) {
+        errors.push(nativeError);
+        return errors;
+      }
     }
     const verificationError = await attemptPostRemovalVerification(recovery);
     if (verificationError) {
@@ -1784,8 +1832,10 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
             nativeFinished: !nativeLease || !nativeLease.finish,
             applyComplete: !options.applyStore,
             notificationComplete: false,
+            notificationBypassedAfterNativeAbsence: false,
+            notificationError: null,
             nativeComplete: !nativeLease,
-            postRemovalVerificationComplete: true,
+            postRemovalVerificationComplete: !nativeLease || !options.applyStore,
             retryAttempt: 0,
           };
     pendingLocalRecovery = recovery;
@@ -1798,6 +1848,9 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       throw aggregateErrors("복원 잠금 정리에 실패했습니다", cleanupErrors);
     }
     finalizeLocalRelease(token);
+    if (cleanupErrors.length > 0) {
+      throw aggregateErrors("복원 잠금 정리에 실패했습니다", cleanupErrors);
+    }
   };
 
   const activateNativeLease = async (token: string) => {

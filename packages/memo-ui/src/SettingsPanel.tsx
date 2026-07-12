@@ -18,6 +18,7 @@ export type SettingsPanelProps = {
   isStartupAvailable?: boolean;
   isServerAvailable?: boolean;
   isServerBusy?: boolean;
+  isLocalRestoreDisabled?: boolean;
   isBackupDisabled?: boolean;
   isRestoreDisabled?: boolean;
   canUndoRestore?: boolean;
@@ -55,6 +56,7 @@ export function SettingsPanel({
   isStartupAvailable = true,
   isServerAvailable = true,
   isServerBusy = false,
+  isLocalRestoreDisabled = false,
   isBackupDisabled = false,
   isRestoreDisabled = false,
   canUndoRestore = false,
@@ -235,12 +237,16 @@ export function SettingsPanel({
           <button
             type="button"
             onClick={onImportJsonBackup}
-            disabled={isServerBusy}
+            disabled={isServerBusy || isLocalRestoreDisabled}
           >
             JSON 복원
           </button>
           {canUndoRestore ? (
-            <button type="button" onClick={onUndoRestore} disabled={isServerBusy}>
+            <button
+              type="button"
+              onClick={onUndoRestore}
+              disabled={isServerBusy || isLocalRestoreDisabled}
+            >
               마지막 복원 되돌리기
             </button>
           ) : null}

@@ -304,6 +304,28 @@ describe("WebApp", () => {
     ).toBe(memo.plainText);
   });
 
+  it("disables restore and server mutation controls when Web Locks are unavailable", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
+    vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
+      callback(LOGGED_IN_USER);
+      return vi.fn();
+    });
+    Reflect.deleteProperty(navigator, "locks");
+
+    render(<WebApp />);
+    await user.click(screen.getByLabelText("앱 메뉴"));
+
+    expect(screen.getByRole("button", { name: "서버 메모 관리" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "서버 복원" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "JSON 복원" })).toBeDisabled();
+    expect(screen.getByLabelText("JSON 백업 파일 선택")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "JSON 백업" })).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Web Locks");
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
   it("exports TXT backup for edited memo", async () => {
     const user = userEvent.setup();
     const appendSpy = vi.spyOn(document.body, "append");
@@ -900,7 +922,7 @@ describe("WebApp", () => {
     });
   });
 
-  it("serializes restore across two tabs and reloads the remote tab before unlock", async () => {
+  it("finishes an older mutation before publishing restore and reloads the remote tab", async () => {
     const restoreLocks = installExclusiveWebLocks();
     const initialMemo = createMemo({
       id: "web-cross-tab-shared",
@@ -967,19 +989,18 @@ describe("WebApp", () => {
         { target: { files: [file] } }
       );
 
-      await waitFor(
-        () => {
-          expect(
-            firstView.getByRole("textbox", { name: "메모 내용" })
-          ).toHaveAttribute("readonly");
-        },
-        { timeout: 500 }
-      );
+      expect(
+        firstView.getByRole("textbox", { name: "메모 내용" })
+      ).not.toHaveAttribute("readonly");
+      expect(window.localStorage.getItem(RESTORE_LEASE_KEY)).toBeNull();
+      expect(window.localStorage.getItem(RESTORE_EPOCH_KEY)).toBeNull();
       expect(secondView.getByRole("status")).not.toHaveTextContent(
         "JSON 복원 완료"
       );
 
-      firstSave.resolve();
+      await act(async () => {
+        firstSave.resolve();
+      });
       await waitFor(() => {
         expect(secondView.getByRole("status")).toHaveTextContent(
           "JSON 복원 완료: 1개 메모"

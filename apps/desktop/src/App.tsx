@@ -312,6 +312,7 @@ export function App() {
     generation: number;
   } | null>(null);
   const memoReloadGenerationRef = useRef(0);
+  const pendingMemoStoreReloadRef = useRef(false);
   const restoreLockReadyRef = useRef(!isTauri);
   const restoreLockReadyPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const ownershipQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -447,13 +448,18 @@ export function App() {
     }
     restoreStoreApplyGenerationRef.current = { token, generation };
     const applyPromise = (async () => {
-      const appliedReload = await runAuthoritativeMemoReload(() => {
-        const latestApply = restoreStoreApplyGenerationRef.current;
-        return latestApply?.token === token && latestApply.generation === generation;
-      });
-      if (appliedReload) {
-        restoreStoreAppliedRef.current = { token, generation };
+      let appliedReload: Awaited<ReturnType<typeof runAuthoritativeMemoReload>>;
+      do {
+        pendingMemoStoreReloadRef.current = false;
+        appliedReload = await runAuthoritativeMemoReload(() => {
+          const latestApply = restoreStoreApplyGenerationRef.current;
+          return latestApply?.token === token && latestApply.generation === generation;
+        });
+      } while (appliedReload && pendingMemoStoreReloadRef.current);
+      if (!appliedReload) {
+        return;
       }
+      restoreStoreAppliedRef.current = { token, generation };
     })();
     restoreStoreApplyInFlightRef.current = {
       token,
@@ -702,6 +708,10 @@ export function App() {
     let cleanup: (() => void) | null = null;
 
     void listenMemoStoreChanged((payload) => {
+      if (restoreLockRef.current) {
+        pendingMemoStoreReloadRef.current = true;
+        return;
+      }
       const activeMemoId = activeMemoIdRef.current;
       void reloadMemos().then(() => {
         if (!isMounted || !payload.deletedMemoId || payload.deletedMemoId !== activeMemoId) {

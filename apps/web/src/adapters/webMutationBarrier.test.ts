@@ -201,6 +201,63 @@ describe("WebMutationBarrier", () => {
     expect(staleWrite).not.toHaveBeenCalled();
   });
 
+  it("publishes a restore epoch only after older mutation holders leave the Web Lock", async () => {
+    installExclusiveWebLocks();
+    const restoreBarrier = new WebMutationBarrier({ ownerId: "restore-tab" });
+    const remoteBarrier = new WebMutationBarrier({ ownerId: "remote-tab" });
+    const oldMutationEntered = deferred<void>();
+    const finishOldMutation = deferred<void>();
+    const restoreEntered = deferred<void>();
+    const finishRestore = deferred<void>();
+
+    await remoteBarrier.runReconciliation(async () => "initial state");
+    const staleIntentEpoch = remoteBarrier.getObservedEpoch();
+    const oldMutation = remoteBarrier.runMutation(staleIntentEpoch, async () => {
+      oldMutationEntered.resolve();
+      await finishOldMutation.promise;
+      return "old mutation complete";
+    });
+    await oldMutationEntered.promise;
+
+    const restore = restoreBarrier.runRestore(async () => {
+      restoreEntered.resolve();
+      await finishRestore.promise;
+      return "restored";
+    });
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.resolve();
+    }
+
+    expect(window.localStorage.getItem(RESTORE_EPOCH_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(RESTORE_LEASE_STORAGE_KEY)).toBeNull();
+    expect(remoteBarrier.getObservedEpoch()).toBe(staleIntentEpoch);
+
+    const staleWrite = vi.fn(async () => "stale write");
+    const staleMutation = remoteBarrier.runMutation(staleIntentEpoch, staleWrite);
+    void staleMutation.catch(() => {});
+
+    finishOldMutation.resolve();
+    await expect(oldMutation).resolves.toBe("old mutation complete");
+    await restoreEntered.promise;
+
+    expect(window.localStorage.getItem(RESTORE_EPOCH_STORAGE_KEY)).toBe("1");
+    expect(
+      JSON.parse(window.localStorage.getItem(RESTORE_LEASE_STORAGE_KEY) ?? "null")
+        .owner
+    ).toBe("restore-tab");
+    expect(remoteBarrier.getObservedEpoch()).toBe(staleIntentEpoch);
+    expect(staleWrite).not.toHaveBeenCalled();
+
+    finishRestore.resolve();
+    await expect(restore).resolves.toBe("restored");
+    await expect(staleMutation).rejects.toThrow("오래된 메모 변경");
+    expect(staleWrite).not.toHaveBeenCalled();
+    await expect(
+      remoteBarrier.runReconciliation(async () => "final state")
+    ).resolves.toBe("final state");
+    expect(remoteBarrier.getObservedEpoch()).toBe(1);
+  });
+
   it("does not replace an expired restore owner before acquiring the mutation Web Lock", async () => {
     installExclusiveWebLocks();
     vi.useFakeTimers({ now: new Date("2026-07-13T09:05:00.000Z") });

@@ -109,6 +109,7 @@ export function MemoWorkspace({
         isStartupAvailable={settingsProps.isStartupAvailable}
         isServerAvailable={settingsProps.isServerAvailable}
         isServerBusy={settingsProps.isServerBusy}
+        isLocalRestoreDisabled={settingsProps.isLocalRestoreDisabled}
         isBackupDisabled={settingsProps.isBackupDisabled}
         isRestoreDisabled={settingsProps.isRestoreDisabled}
         canUndoRestore={settingsProps.canUndoRestore}

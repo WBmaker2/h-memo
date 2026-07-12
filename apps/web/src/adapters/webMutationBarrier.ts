@@ -290,7 +290,6 @@ export class WebMutationBarrier {
 
   async runRestore<T>(operation: () => Promise<T>): Promise<T> {
     const token = createToken("web-restore");
-    let leaseAcquired = false;
 
     const preparationFailure = (error: unknown, cleanupErrors: unknown[] = []) => {
       if (error instanceof Error && error.message.includes("다른 탭에서 복원")) {
@@ -312,14 +311,11 @@ export class WebMutationBarrier {
       );
     };
 
-    const prepareLease = (replaceExpired: boolean) =>
+    const prepareLease = () =>
       this.runExclusive(RESTORE_LEASE_LOCK_NAME, async () => {
         const stored = this.readStoredLease();
         if (stored && stored.expiresAtMs > Date.now()) {
           throw new Error("다른 탭에서 복원 작업이 진행 중입니다.");
-        }
-        if (stored && !replaceExpired) {
-          return false;
         }
         this.writeEpoch(this.getEpoch() + 1);
         this.writeLease({
@@ -328,8 +324,6 @@ export class WebMutationBarrier {
           owner: this.owner,
           expiresAtMs: Date.now() + this.leaseTtlMs,
         });
-        leaseAcquired = true;
-        return true;
       });
 
     const startHeartbeat = () => {
@@ -378,7 +372,6 @@ export class WebMutationBarrier {
           await this.runExclusive(RESTORE_LEASE_LOCK_NAME, async () => {
             this.clearLease(token);
           });
-          leaseAcquired = false;
         } catch (error) {
           errors.push(error);
         }
@@ -390,54 +383,14 @@ export class WebMutationBarrier {
       return result;
     };
 
-    let preparedEarly: boolean;
-    try {
-      preparedEarly = await prepareLease(false);
-    } catch (error) {
-      throw preparationFailure(error);
-    }
-
-    if (!preparedEarly) {
-      return this.runExclusive(MUTATION_LOCK_NAME, async () => {
-        try {
-          await prepareLease(true);
-        } catch (error) {
-          throw preparationFailure(error);
-        }
-        return executeOwnedRestore(startHeartbeat());
-      });
-    }
-
-    const stopHeartbeat = startHeartbeat();
-    let enteredMutationLock = false;
-    try {
-      return await this.runExclusive(MUTATION_LOCK_NAME, async () => {
-        enteredMutationLock = true;
-        return executeOwnedRestore(stopHeartbeat);
-      });
-    } catch (error) {
-      if (enteredMutationLock) {
-        throw error;
+    return this.runExclusive(MUTATION_LOCK_NAME, async () => {
+      try {
+        await prepareLease();
+      } catch (error) {
+        throw preparationFailure(error);
       }
-      const cleanupErrors: unknown[] = [];
-      const heartbeatError = stopHeartbeat();
-      if (heartbeatError) {
-        cleanupErrors.push(heartbeatError);
-      }
-      if (leaseAcquired) {
-        try {
-          await this.runExclusive(RESTORE_LEASE_LOCK_NAME, async () => {
-            this.clearLease(token);
-          });
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-      }
-      throw combineErrors(
-        [error, ...cleanupErrors],
-        "웹 복원 잠금 진입 및 정리에 실패했습니다"
-      );
-    }
+      return executeOwnedRestore(startHeartbeat());
+    });
   }
 
   subscribe(listener: (lease: RestoreLease | null, epoch: number) => void) {
