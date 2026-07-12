@@ -38,6 +38,7 @@ const GOOGLE_OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_CANCELLED_RESTORE_ACQUIRES: usize = 256;
 const MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS: u64 = 30_000;
 const MAX_RESTORE_ACQUIRE_CLOCK_SKEW_MS: u64 = 250;
+const MAX_RESTORE_RENEWAL_CLEANUP_GRACE_MS: u64 = 30_000;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -97,6 +98,16 @@ struct RestoreAcquireRequest {
   window_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RestoreLockLeaseRequest<'a> {
+  token: &'a str,
+  owner: &'a str,
+  renewal_session_id: &'a str,
+  ttl_ms: u64,
+  request_deadline_ms: u64,
+  request_window_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RestoreAcquireCancellation {
   request: RestoreAcquireRequest,
@@ -107,6 +118,8 @@ struct RestoreAcquireCancellation {
 struct RestoreLockLease {
   token: String,
   owner: String,
+  renewal_session_id: String,
+  renewal_enabled: bool,
   expires_at_ms: u64,
   expires_at_monotonic_ms: u64,
   acquire_request: Option<RestoreAcquireRequest>,
@@ -118,6 +131,7 @@ struct RestoreLockLease {
 struct RestoreLockLeaseRecord {
   token: String,
   owner: String,
+  renewal_session_id: String,
   expires_at_ms: u64,
   operation_active: bool,
 }
@@ -265,6 +279,7 @@ fn acquire_restore_lock_lease(
   state: State<'_, RestoreLockLeaseState>,
   token: String,
   owner: String,
+  renewal_session_id: String,
   ttl_ms: u64,
   request_deadline_ms: u64,
   request_window_ms: u64,
@@ -275,11 +290,14 @@ fn acquire_restore_lock_lease(
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
   acquire_restore_lock_lease_fenced_inner_at(
     &mut restore_state,
-    &token,
-    &owner,
-    ttl_ms,
-    request_deadline_ms,
-    request_window_ms,
+    RestoreLockLeaseRequest {
+      token: &token,
+      owner: &owner,
+      renewal_session_id: &renewal_session_id,
+      ttl_ms,
+      request_deadline_ms,
+      request_window_ms,
+    },
     state.clock_snapshot(),
   )
 }
@@ -329,17 +347,47 @@ fn renew_restore_lock_lease(
   state: State<'_, RestoreLockLeaseState>,
   token: String,
   owner: String,
+  renewal_session_id: String,
   ttl_ms: u64,
+  request_deadline_ms: u64,
+  request_window_ms: u64,
 ) -> Result<RestoreLockLeaseRecord, String> {
   let mut restore_state = state
     .data
     .lock()
     .map_err(|_| "restore lock lease is unavailable".to_string())?;
-  renew_restore_lock_lease_inner_at(
+  renew_restore_lock_lease_fenced_inner_at(
+    &mut restore_state.lease,
+    RestoreLockLeaseRequest {
+      token: &token,
+      owner: &owner,
+      renewal_session_id: &renewal_session_id,
+      ttl_ms,
+      request_deadline_ms,
+      request_window_ms,
+    },
+    state.clock_snapshot(),
+  )
+}
+
+#[tauri::command]
+fn invalidate_restore_lock_renewal_session(
+  state: State<'_, RestoreLockLeaseState>,
+  token: String,
+  owner: String,
+  renewal_session_id: String,
+  cleanup_grace_ms: u64,
+) -> Result<bool, String> {
+  let mut restore_state = state
+    .data
+    .lock()
+    .map_err(|_| "restore lock lease is unavailable".to_string())?;
+  invalidate_restore_lock_renewal_session_inner_at(
     &mut restore_state.lease,
     &token,
     &owner,
-    ttl_ms,
+    &renewal_session_id,
+    cleanup_grace_ms,
     state.clock_snapshot(),
   )
 }
@@ -402,17 +450,14 @@ fn release_restore_lock_lease(
 
 fn acquire_restore_lock_lease_fenced_inner_at(
   state: &mut RestoreLockLeaseData,
-  token: &str,
-  owner: &str,
-  ttl_ms: u64,
-  request_deadline_ms: u64,
-  request_window_ms: u64,
+  lease_request: RestoreLockLeaseRequest<'_>,
   clock: RestoreClockSnapshot,
 ) -> Result<RestoreLockLeaseRecord, String> {
-  validate_restore_lock_identity(token, owner)?;
-  let (request, cancellation_deadline) = validate_restore_acquire_request(
-    request_deadline_ms,
-    request_window_ms,
+  validate_restore_lock_identity(lease_request.token, lease_request.owner)?;
+  validate_restore_renewal_session_id(lease_request.renewal_session_id)?;
+  let (acquire_request, cancellation_deadline) = validate_restore_acquire_request(
+    lease_request.request_deadline_ms,
+    lease_request.request_window_ms,
     clock,
   )?;
   prune_cancelled_restore_acquires(
@@ -420,18 +465,19 @@ fn acquire_restore_lock_lease_fenced_inner_at(
     clock.monotonic_ms,
   );
   let Some(_) = cancellation_deadline else {
-    state.cancelled_acquires.remove(token);
+    state.cancelled_acquires.remove(lease_request.token);
     return Err("복원 잠금 acquire 요청 마감시각이 지났습니다.".to_string());
   };
-  if state.cancelled_acquires.contains_key(token) {
+  if state.cancelled_acquires.contains_key(lease_request.token) {
     return Err("취소된 복원 잠금 acquire token은 다시 사용할 수 없습니다.".to_string());
   }
-  acquire_restore_lock_lease_inner_at(
+  acquire_restore_lock_lease_with_renewal_session_inner_at(
     &mut state.lease,
-    token,
-    owner,
-    ttl_ms,
-    Some(request),
+    lease_request.token,
+    lease_request.owner,
+    lease_request.renewal_session_id,
+    lease_request.ttl_ms,
+    Some(acquire_request),
     clock,
   )
 }
@@ -447,11 +493,14 @@ fn acquire_restore_lock_lease_fenced_inner(
 ) -> Result<RestoreLockLeaseRecord, String> {
   acquire_restore_lock_lease_fenced_inner_at(
     state,
-    token,
-    owner,
-    ttl_ms,
-    request_deadline_ms,
-    MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS,
+    RestoreLockLeaseRequest {
+      token,
+      owner,
+      renewal_session_id: &test_renewal_session_id(token),
+      ttl_ms,
+      request_deadline_ms,
+      request_window_ms: MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS,
+    },
     test_restore_clock(now),
   )
 }
@@ -542,21 +591,26 @@ fn prune_cancelled_restore_acquires(
   });
 }
 
-fn acquire_restore_lock_lease_inner_at(
+fn acquire_restore_lock_lease_with_renewal_session_inner_at(
   lease: &mut Option<RestoreLockLease>,
   token: &str,
   owner: &str,
+  renewal_session_id: &str,
   ttl_ms: u64,
   acquire_request: Option<RestoreAcquireRequest>,
   clock: RestoreClockSnapshot,
 ) -> Result<RestoreLockLeaseRecord, String> {
   validate_restore_lock_identity(token, owner)?;
+  validate_restore_renewal_session_id(renewal_session_id)?;
   prune_restore_lock_lease(lease, clock.monotonic_ms);
 
   if let Some(current) = lease {
     if current.token == token && current.owner == owner {
       if current.acquire_request != acquire_request {
         return Err("복원 잠금 acquire 요청의 마감시각이 일치하지 않습니다.".to_string());
+      }
+      if current.renewal_session_id != renewal_session_id || !current.renewal_enabled {
+        return Err("복원 잠금 renewal session이 일치하지 않거나 종료되었습니다.".to_string());
       }
       update_restore_lock_expiry(current, ttl_ms, clock);
       return Ok(to_restore_lock_lease_record(current));
@@ -567,6 +621,8 @@ fn acquire_restore_lock_lease_inner_at(
   let next = RestoreLockLease {
     token: token.to_string(),
     owner: owner.to_string(),
+    renewal_session_id: renewal_session_id.to_string(),
+    renewal_enabled: true,
     expires_at_ms: clock.wall_ms.saturating_add(ttl_ms),
     expires_at_monotonic_ms: clock.monotonic_ms.saturating_add(ttl_ms),
     acquire_request,
@@ -575,6 +631,26 @@ fn acquire_restore_lock_lease_inner_at(
   let record = to_restore_lock_lease_record(&next);
   *lease = Some(next);
   Ok(record)
+}
+
+#[cfg(test)]
+fn acquire_restore_lock_lease_inner_at(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  ttl_ms: u64,
+  acquire_request: Option<RestoreAcquireRequest>,
+  clock: RestoreClockSnapshot,
+) -> Result<RestoreLockLeaseRecord, String> {
+  acquire_restore_lock_lease_with_renewal_session_inner_at(
+    lease,
+    token,
+    owner,
+    &test_renewal_session_id(token),
+    ttl_ms,
+    acquire_request,
+    clock,
+  )
 }
 
 #[cfg(test)]
@@ -611,6 +687,39 @@ fn current_restore_lock_lease_inner(
   current_restore_lock_lease_inner_at(lease, test_restore_clock(now))
 }
 
+fn renew_restore_lock_lease_fenced_inner_at(
+  lease: &mut Option<RestoreLockLease>,
+  lease_request: RestoreLockLeaseRequest<'_>,
+  clock: RestoreClockSnapshot,
+) -> Result<RestoreLockLeaseRecord, String> {
+  validate_restore_lock_identity(lease_request.token, lease_request.owner)?;
+  validate_restore_renewal_session_id(lease_request.renewal_session_id)?;
+  let (_, request_deadline) = validate_restore_acquire_request(
+    lease_request.request_deadline_ms,
+    lease_request.request_window_ms,
+    clock,
+  )?;
+  if request_deadline.is_none() {
+    return Err("복원 잠금 renew 요청 마감시각이 지났습니다.".to_string());
+  }
+  prune_restore_lock_lease(lease, clock.monotonic_ms);
+
+  let current = lease
+    .as_mut()
+    .filter(|current| {
+      current.token == lease_request.token && current.owner == lease_request.owner
+    })
+    .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
+  if !current.renewal_enabled
+    || current.renewal_session_id != lease_request.renewal_session_id
+  {
+    return Err("복원 잠금 renewal session이 일치하지 않거나 종료되었습니다.".to_string());
+  }
+  update_restore_lock_expiry(current, lease_request.ttl_ms, clock);
+  Ok(to_restore_lock_lease_record(current))
+}
+
+#[cfg(test)]
 fn renew_restore_lock_lease_inner_at(
   lease: &mut Option<RestoreLockLease>,
   token: &str,
@@ -618,15 +727,24 @@ fn renew_restore_lock_lease_inner_at(
   ttl_ms: u64,
   clock: RestoreClockSnapshot,
 ) -> Result<RestoreLockLeaseRecord, String> {
-  validate_restore_lock_identity(token, owner)?;
-  prune_restore_lock_lease(lease, clock.monotonic_ms);
-
-  let current = lease
-    .as_mut()
-    .filter(|current| current.token == token && current.owner == owner)
-    .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
-  update_restore_lock_expiry(current, ttl_ms, clock);
-  Ok(to_restore_lock_lease_record(current))
+  let renewal_session_id = lease
+    .as_ref()
+    .map(|current| current.renewal_session_id.clone())
+    .unwrap_or_else(|| test_renewal_session_id(token));
+  renew_restore_lock_lease_fenced_inner_at(
+    lease,
+    RestoreLockLeaseRequest {
+      token,
+      owner,
+      renewal_session_id: &renewal_session_id,
+      ttl_ms,
+      request_deadline_ms: clock
+        .wall_ms
+        .saturating_add(MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS),
+      request_window_ms: MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS,
+    },
+    clock,
+  )
 }
 
 #[cfg(test)]
@@ -646,6 +764,36 @@ fn renew_restore_lock_lease_inner(
   )
 }
 
+fn invalidate_restore_lock_renewal_session_inner_at(
+  lease: &mut Option<RestoreLockLease>,
+  token: &str,
+  owner: &str,
+  renewal_session_id: &str,
+  cleanup_grace_ms: u64,
+  clock: RestoreClockSnapshot,
+) -> Result<bool, String> {
+  validate_restore_lock_identity(token, owner)?;
+  validate_restore_renewal_session_id(renewal_session_id)?;
+  if cleanup_grace_ms == 0 || cleanup_grace_ms > MAX_RESTORE_RENEWAL_CLEANUP_GRACE_MS {
+    return Err("복원 잠금 renewal 정리 유예 시간이 유효하지 않습니다.".to_string());
+  }
+  prune_restore_lock_lease(lease, clock.monotonic_ms);
+
+  let Some(current) = lease
+    .as_mut()
+    .filter(|current| current.token == token && current.owner == owner)
+  else {
+    return Ok(false);
+  };
+  if current.renewal_session_id != renewal_session_id {
+    return Err("복원 잠금 renewal session이 일치하지 않습니다.".to_string());
+  }
+
+  current.renewal_enabled = false;
+  clamp_restore_lock_expiry(current, cleanup_grace_ms, clock);
+  Ok(true)
+}
+
 fn activate_restore_lock_lease_inner_at(
   lease: &mut Option<RestoreLockLease>,
   token: &str,
@@ -659,6 +807,9 @@ fn activate_restore_lock_lease_inner_at(
     .as_mut()
     .filter(|current| current.token == token && current.owner == owner)
     .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
+  if !current.renewal_enabled {
+    return Err("종료된 복원 잠금 renewal session은 활성화할 수 없습니다.".to_string());
+  }
   current.operation_active = true;
   Ok(to_restore_lock_lease_record(current))
 }
@@ -687,8 +838,14 @@ fn finish_restore_lock_lease_inner_at(
     .as_mut()
     .filter(|current| current.token == token && current.owner == owner)
     .ok_or_else(|| "복원 잠금 lease가 없거나 소유자가 다릅니다.".to_string())?;
+  let renewal_was_enabled = current.renewal_enabled;
+  current.renewal_enabled = false;
   current.operation_active = false;
-  update_restore_lock_expiry(current, cleanup_ttl_ms, clock);
+  if renewal_was_enabled {
+    update_restore_lock_expiry(current, cleanup_ttl_ms, clock);
+  } else {
+    clamp_restore_lock_expiry(current, cleanup_ttl_ms, clock);
+  }
   Ok(to_restore_lock_lease_record(current))
 }
 
@@ -743,6 +900,13 @@ fn validate_restore_lock_identity(token: &str, owner: &str) -> Result<(), String
   Ok(())
 }
 
+fn validate_restore_renewal_session_id(renewal_session_id: &str) -> Result<(), String> {
+  if renewal_session_id.trim().is_empty() {
+    return Err("복원 잠금 renewal session은 비어 있을 수 없습니다.".to_string());
+  }
+  Ok(())
+}
+
 fn validate_restore_acquire_request(
   request_deadline_ms: u64,
   request_window_ms: u64,
@@ -781,6 +945,19 @@ fn update_restore_lock_expiry(
   lease.expires_at_monotonic_ms = clock.monotonic_ms.saturating_add(ttl_ms);
 }
 
+fn clamp_restore_lock_expiry(
+  lease: &mut RestoreLockLease,
+  cleanup_grace_ms: u64,
+  clock: RestoreClockSnapshot,
+) {
+  lease.expires_at_ms = lease
+    .expires_at_ms
+    .min(clock.wall_ms.saturating_add(cleanup_grace_ms));
+  lease.expires_at_monotonic_ms = lease
+    .expires_at_monotonic_ms
+    .min(clock.monotonic_ms.saturating_add(cleanup_grace_ms));
+}
+
 fn system_time_millis(time: SystemTime) -> u64 {
   time
     .duration_since(UNIX_EPOCH)
@@ -804,6 +981,7 @@ fn to_restore_lock_lease_record(lease: &RestoreLockLease) -> RestoreLockLeaseRec
   RestoreLockLeaseRecord {
     token: lease.token.clone(),
     owner: lease.owner.clone(),
+    renewal_session_id: lease.renewal_session_id.clone(),
     expires_at_ms: lease.expires_at_ms,
     operation_active: lease.operation_active,
   }
@@ -816,6 +994,11 @@ fn test_restore_clock(now: SystemTime) -> RestoreClockSnapshot {
     wall_ms: milliseconds,
     monotonic_ms: milliseconds,
   }
+}
+
+#[cfg(test)]
+fn test_renewal_session_id(token: &str) -> String {
+  format!("renewal-{token}")
 }
 
 #[tauri::command]
@@ -1554,6 +1737,7 @@ pub fn run() {
       cancel_abandoned_restore_lock_acquire,
       current_restore_lock_lease,
       renew_restore_lock_lease,
+      invalidate_restore_lock_renewal_session,
       activate_restore_lock_lease,
       finish_restore_lock_lease,
       release_restore_lock_lease,
@@ -1693,6 +1877,302 @@ mod tests {
   }
 
   #[test]
+  fn invalidation_before_late_renew_rejects_and_clamps_the_session() {
+    let mut lease = None;
+    acquire_restore_lock_lease_with_renewal_session_inner_at(
+      &mut lease,
+      "invalidate-first-token",
+      "main",
+      "renewal-session-1",
+      1_000,
+      None,
+      RestoreClockSnapshot {
+        wall_ms: 1_000,
+        monotonic_ms: 1_000,
+      },
+    )
+    .expect("lease should acquire with a renewal session");
+
+    assert!(invalidate_restore_lock_renewal_session_inner_at(
+      &mut lease,
+      "invalidate-first-token",
+      "main",
+      "renewal-session-1",
+      50,
+      RestoreClockSnapshot {
+        wall_ms: 1_010,
+        monotonic_ms: 1_010,
+      },
+    )
+    .expect("matching invalidation should settle"));
+    let invalidated = lease.clone();
+    assert_eq!(invalidated.as_ref().unwrap().expires_at_monotonic_ms, 1_060);
+    assert!(!invalidated.as_ref().unwrap().renewal_enabled);
+
+    let late_renew = renew_restore_lock_lease_fenced_inner_at(
+      &mut lease,
+      RestoreLockLeaseRequest {
+        token: "invalidate-first-token",
+        owner: "main",
+        renewal_session_id: "renewal-session-1",
+        ttl_ms: 1_000,
+        request_deadline_ms: 1_050,
+        request_window_ms: 50,
+      },
+      RestoreClockSnapshot {
+        wall_ms: 1_020,
+        monotonic_ms: 1_020,
+      },
+    );
+
+    assert!(late_renew.is_err());
+    assert_eq!(lease, invalidated);
+  }
+
+  #[test]
+  fn renew_before_invalidation_is_clamped_to_cleanup_grace() {
+    let mut lease = None;
+    acquire_restore_lock_lease_with_renewal_session_inner_at(
+      &mut lease,
+      "renew-first-token",
+      "main",
+      "renewal-session-2",
+      100,
+      None,
+      RestoreClockSnapshot {
+        wall_ms: 2_000,
+        monotonic_ms: 2_000,
+      },
+    )
+    .expect("lease should acquire with a renewal session");
+    renew_restore_lock_lease_fenced_inner_at(
+      &mut lease,
+      RestoreLockLeaseRequest {
+        token: "renew-first-token",
+        owner: "main",
+        renewal_session_id: "renewal-session-2",
+        ttl_ms: 1_000,
+        request_deadline_ms: 2_075,
+        request_window_ms: 50,
+      },
+      RestoreClockSnapshot {
+        wall_ms: 2_050,
+        monotonic_ms: 2_050,
+      },
+    )
+    .expect("live session should renew before invalidation");
+
+    assert!(invalidate_restore_lock_renewal_session_inner_at(
+      &mut lease,
+      "renew-first-token",
+      "main",
+      "renewal-session-2",
+      40,
+      RestoreClockSnapshot {
+        wall_ms: 2_060,
+        monotonic_ms: 2_060,
+      },
+    )
+    .expect("invalidation should clamp the renewed lease"));
+
+    let current = lease.as_ref().unwrap();
+    assert_eq!(current.expires_at_ms, 2_100);
+    assert_eq!(current.expires_at_monotonic_ms, 2_100);
+    assert!(!current.renewal_enabled);
+  }
+
+  #[test]
+  fn expired_renew_deadline_does_not_change_the_lease() {
+    let mut lease = None;
+    acquire_restore_lock_lease_with_renewal_session_inner_at(
+      &mut lease,
+      "expired-renew-token",
+      "main",
+      "renewal-session-3",
+      500,
+      None,
+      RestoreClockSnapshot {
+        wall_ms: 3_000,
+        monotonic_ms: 3_000,
+      },
+    )
+    .expect("lease should acquire with a renewal session");
+    let before = lease.clone();
+
+    let expired = renew_restore_lock_lease_fenced_inner_at(
+      &mut lease,
+      RestoreLockLeaseRequest {
+        token: "expired-renew-token",
+        owner: "main",
+        renewal_session_id: "renewal-session-3",
+        ttl_ms: 1_000,
+        request_deadline_ms: 3_050,
+        request_window_ms: 50,
+      },
+      RestoreClockSnapshot {
+        wall_ms: 3_060,
+        monotonic_ms: 3_060,
+      },
+    );
+
+    assert!(expired.is_err());
+    assert_eq!(lease, before);
+  }
+
+  #[test]
+  fn live_renewal_session_extends_until_finish_and_release_invalidate_it() {
+    let mut lease = None;
+    let acquired = acquire_restore_lock_lease_with_renewal_session_inner_at(
+      &mut lease,
+      "live-session-token",
+      "main",
+      "renewal-session-4",
+      100,
+      None,
+      RestoreClockSnapshot {
+        wall_ms: 4_000,
+        monotonic_ms: 4_000,
+      },
+    )
+    .expect("lease should acquire with a renewal session");
+    assert_eq!(acquired.renewal_session_id, "renewal-session-4");
+
+    let renewed = renew_restore_lock_lease_fenced_inner_at(
+      &mut lease,
+      RestoreLockLeaseRequest {
+        token: "live-session-token",
+        owner: "main",
+        renewal_session_id: "renewal-session-4",
+        ttl_ms: 500,
+        request_deadline_ms: 4_075,
+        request_window_ms: 50,
+      },
+      RestoreClockSnapshot {
+        wall_ms: 4_050,
+        monotonic_ms: 4_050,
+      },
+    )
+    .expect("matching live session should renew");
+    assert_eq!(renewed.expires_at_ms, 4_550);
+
+    finish_restore_lock_lease_inner_at(
+      &mut lease,
+      "live-session-token",
+      "main",
+      50,
+      RestoreClockSnapshot {
+        wall_ms: 4_060,
+        monotonic_ms: 4_060,
+      },
+    )
+    .expect("finish should invalidate renewal and retain bounded cleanup");
+    assert!(!lease.as_ref().unwrap().renewal_enabled);
+    assert!(renew_restore_lock_lease_fenced_inner_at(
+      &mut lease,
+      RestoreLockLeaseRequest {
+        token: "live-session-token",
+        owner: "main",
+        renewal_session_id: "renewal-session-4",
+        ttl_ms: 500,
+        request_deadline_ms: 4_090,
+        request_window_ms: 50,
+      },
+      RestoreClockSnapshot {
+        wall_ms: 4_070,
+        monotonic_ms: 4_070,
+      },
+    )
+    .is_err());
+    assert!(release_restore_lock_lease_inner_at(
+      &mut lease,
+      "live-session-token",
+      "main",
+      RestoreClockSnapshot {
+        wall_ms: 4_080,
+        monotonic_ms: 4_080,
+      },
+    ));
+    assert!(lease.is_none());
+  }
+
+  #[test]
+  fn finish_after_invalidation_cannot_extend_past_the_cleanup_grace() {
+    let mut lease = None;
+    acquire_restore_lock_lease_with_renewal_session_inner_at(
+      &mut lease,
+      "finish-after-invalidate-token",
+      "main",
+      "renewal-session-5",
+      100,
+      None,
+      RestoreClockSnapshot {
+        wall_ms: 5_000,
+        monotonic_ms: 5_000,
+      },
+    )
+    .expect("lease should acquire with a renewal session");
+    renew_restore_lock_lease_fenced_inner_at(
+      &mut lease,
+      RestoreLockLeaseRequest {
+        token: "finish-after-invalidate-token",
+        owner: "main",
+        renewal_session_id: "renewal-session-5",
+        ttl_ms: 1_000,
+        request_deadline_ms: 5_075,
+        request_window_ms: 50,
+      },
+      RestoreClockSnapshot {
+        wall_ms: 5_050,
+        monotonic_ms: 5_050,
+      },
+    )
+    .expect("live session should renew before stop invalidation");
+    invalidate_restore_lock_renewal_session_inner_at(
+      &mut lease,
+      "finish-after-invalidate-token",
+      "main",
+      "renewal-session-5",
+      40,
+      RestoreClockSnapshot {
+        wall_ms: 5_060,
+        monotonic_ms: 5_060,
+      },
+    )
+    .expect("stop invalidation should clamp the lease");
+
+    let finished = finish_restore_lock_lease_inner_at(
+      &mut lease,
+      "finish-after-invalidate-token",
+      "main",
+      5_000,
+      RestoreClockSnapshot {
+        wall_ms: 5_070,
+        monotonic_ms: 5_070,
+      },
+    )
+    .expect("late operation settlement should still finish the lease");
+
+    assert_eq!(finished.expires_at_ms, 5_100);
+    assert!(!finished.operation_active);
+    assert!(renew_restore_lock_lease_fenced_inner_at(
+      &mut lease,
+      RestoreLockLeaseRequest {
+        token: "finish-after-invalidate-token",
+        owner: "main",
+        renewal_session_id: "renewal-session-5",
+        ttl_ms: 1_000,
+        request_deadline_ms: 5_080,
+        request_window_ms: 50,
+      },
+      RestoreClockSnapshot {
+        wall_ms: 5_080,
+        monotonic_ms: 5_080,
+      },
+    )
+    .is_err());
+  }
+
+  #[test]
   fn wall_clock_rollback_cannot_extend_a_lease_past_monotonic_ttl() {
     let connection = Connection::open_in_memory().expect("in-memory database should open");
     initialize_database(&connection).expect("database should initialize");
@@ -1796,11 +2276,14 @@ mod tests {
 
     let result = acquire_restore_lock_lease_fenced_inner_at(
       &mut state,
-      "future-skew-token",
-      "main",
-      100,
-      3_601_100,
-      100,
+      RestoreLockLeaseRequest {
+        token: "future-skew-token",
+        owner: "main",
+        renewal_session_id: "renewal-future-skew-token",
+        ttl_ms: 100,
+        request_deadline_ms: 3_601_100,
+        request_window_ms: 100,
+      },
       RestoreClockSnapshot {
         wall_ms: 1_000,
         monotonic_ms: 500,
@@ -1823,11 +2306,14 @@ mod tests {
 
     let acquired = acquire_restore_lock_lease_fenced_inner_at(
       &mut state,
-      "small-skew-token",
-      "main",
-      100,
-      1_150,
-      100,
+      RestoreLockLeaseRequest {
+        token: "small-skew-token",
+        owner: "main",
+        renewal_session_id: "renewal-small-skew-token",
+        ttl_ms: 100,
+        request_deadline_ms: 1_150,
+        request_window_ms: 100,
+      },
       clock,
     )
     .expect("50ms wall skew should remain within the strict allowance");
@@ -1836,21 +2322,27 @@ mod tests {
     assert_eq!(state.lease.as_ref().unwrap().expires_at_monotonic_ms, 600);
     assert!(acquire_restore_lock_lease_fenced_inner_at(
       &mut RestoreLockLeaseData::default(),
-      "zero-window-token",
-      "main",
-      100,
-      1_100,
-      0,
+      RestoreLockLeaseRequest {
+        token: "zero-window-token",
+        owner: "main",
+        renewal_session_id: "renewal-zero-window-token",
+        ttl_ms: 100,
+        request_deadline_ms: 1_100,
+        request_window_ms: 0,
+      },
       clock,
     )
     .is_err());
     assert!(acquire_restore_lock_lease_fenced_inner_at(
       &mut RestoreLockLeaseData::default(),
-      "oversized-window-token",
-      "main",
-      100,
-      31_001,
-      MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS + 1,
+      RestoreLockLeaseRequest {
+        token: "oversized-window-token",
+        owner: "main",
+        renewal_session_id: "renewal-oversized-window-token",
+        ttl_ms: 100,
+        request_deadline_ms: 31_001,
+        request_window_ms: MAX_RESTORE_ACQUIRE_REQUEST_WINDOW_MS + 1,
+      },
       clock,
     )
     .is_err());
@@ -1974,11 +2466,14 @@ mod tests {
     let mut state = RestoreLockLeaseData::default();
     acquire_restore_lock_lease_fenced_inner_at(
       &mut state,
-      "deadline-mismatch-token",
-      "main",
-      500,
-      2_800,
-      500,
+      RestoreLockLeaseRequest {
+        token: "deadline-mismatch-token",
+        owner: "main",
+        renewal_session_id: "renewal-deadline-mismatch-token",
+        ttl_ms: 500,
+        request_deadline_ms: 2_800,
+        request_window_ms: 500,
+      },
       RestoreClockSnapshot {
         wall_ms: 2_300,
         monotonic_ms: 1_000,

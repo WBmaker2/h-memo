@@ -197,6 +197,8 @@ const {
     lease: {
       token: string;
       owner: string;
+      renewalSessionId?: string;
+      renewalEnabled?: boolean;
       expiresAtMs: number;
       operationActive: boolean;
     } | null;
@@ -692,8 +694,12 @@ beforeEach(() => {
     if (command === "acquire_restore_lock_lease") {
       const token = String(args?.token ?? "");
       const owner = String(args?.owner ?? "");
+      const renewalSessionId = String(args?.renewalSessionId ?? "");
       const requestDeadlineMs = Number(args?.requestDeadlineMs ?? 0);
       const requestWindowMs = Number(args?.requestWindowMs ?? 0);
+      if (!renewalSessionId) {
+        throw new Error("복원 잠금 renewal session은 비어 있을 수 없습니다.");
+      }
       if (requestWindowMs <= 0 || requestWindowMs > 30_000) {
         throw new Error("복원 잠금 acquire 요청 허용 시간이 유효하지 않습니다.");
       }
@@ -709,6 +715,8 @@ beforeEach(() => {
       nativeLeaseState.lease = {
         token,
         owner,
+        renewalSessionId,
+        renewalEnabled: true,
         expiresAtMs: Date.now() + Number(args?.ttlMs ?? 10_000),
         operationActive: false,
       };
@@ -724,15 +732,52 @@ beforeEach(() => {
     if (command === "renew_restore_lock_lease") {
       const token = String(args?.token ?? "");
       const owner = String(args?.owner ?? "");
+      const renewalSessionId = String(args?.renewalSessionId ?? "");
+      const requestDeadlineMs = Number(args?.requestDeadlineMs ?? 0);
+      const requestWindowMs = Number(args?.requestWindowMs ?? 0);
       if (
         !nativeLeaseState.lease ||
         nativeLeaseState.lease.token !== token ||
-        nativeLeaseState.lease.owner !== owner
+        nativeLeaseState.lease.owner !== owner ||
+        nativeLeaseState.lease.renewalEnabled === false ||
+        (nativeLeaseState.lease.renewalSessionId !== undefined &&
+          nativeLeaseState.lease.renewalSessionId !== renewalSessionId)
       ) {
         throw new Error("복원 잠금 lease가 없습니다.");
       }
+      if (
+        requestWindowMs <= 0 ||
+        requestWindowMs > 30_000 ||
+        requestDeadlineMs <= Date.now() ||
+        requestDeadlineMs - Date.now() > requestWindowMs + 250
+      ) {
+        throw new Error("복원 잠금 renew 요청 마감시각이 유효하지 않습니다.");
+      }
       nativeLeaseState.lease.expiresAtMs = Date.now() + Number(args?.ttlMs ?? 10_000);
       return nativeLeaseState.lease;
+    }
+    if (command === "invalidate_restore_lock_renewal_session") {
+      const token = String(args?.token ?? "");
+      const owner = String(args?.owner ?? "");
+      const renewalSessionId = String(args?.renewalSessionId ?? "");
+      const cleanupGraceMs = Number(args?.cleanupGraceMs ?? 0);
+      const lease = nativeLeaseState.lease;
+      if (
+        cleanupGraceMs <= 0 ||
+        cleanupGraceMs > 30_000 ||
+        !lease ||
+        lease.token !== token ||
+        lease.owner !== owner ||
+        lease.renewalSessionId !== renewalSessionId
+      ) {
+        return false;
+      }
+      lease.renewalEnabled = false;
+      lease.expiresAtMs = Math.min(
+        lease.expiresAtMs,
+        Date.now() + cleanupGraceMs
+      );
+      return true;
     }
     if (command === "activate_restore_lock_lease") {
       const token = String(args?.token ?? "");
@@ -757,9 +802,13 @@ beforeEach(() => {
       ) {
         throw new Error("복원 잠금 lease가 없습니다.");
       }
+      const finishExpiry = Date.now() + Number(args?.cleanupTtlMs ?? 1000);
+      const renewalWasEnabled = nativeLeaseState.lease.renewalEnabled !== false;
+      nativeLeaseState.lease.renewalEnabled = false;
       nativeLeaseState.lease.operationActive = false;
-      nativeLeaseState.lease.expiresAtMs =
-        Date.now() + Number(args?.cleanupTtlMs ?? 1000);
+      nativeLeaseState.lease.expiresAtMs = renewalWasEnabled
+        ? finishExpiry
+        : Math.min(nativeLeaseState.lease.expiresAtMs, finishExpiry);
       return nativeLeaseState.lease;
     }
     if (command === "release_restore_lock_lease") {

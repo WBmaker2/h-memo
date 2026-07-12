@@ -27,6 +27,7 @@ export type RestoreStoreApplyAcknowledgement = RestoreLockAcknowledgement & {
 export type RestoreLockLease = {
   token: string;
   owner: string;
+  renewalSessionId?: string;
   expiresAtMs: number;
   operationActive: boolean;
 };
@@ -37,7 +38,8 @@ export type RestoreLockLeaseAdapter = {
     owner: string,
     ttlMs: number,
     requestDeadlineMs: number,
-    requestWindowMs: number
+    requestWindowMs: number,
+    renewalSessionId: string
   ) => Promise<RestoreLockLease>;
   cancelAcquire?: (
     token: string,
@@ -45,7 +47,20 @@ export type RestoreLockLeaseAdapter = {
     requestWindowMs: number
   ) => Promise<void>;
   current: () => Promise<RestoreLockLease | null>;
-  renew: (token: string, owner: string, ttlMs: number) => Promise<RestoreLockLease>;
+  renew: (
+    token: string,
+    owner: string,
+    ttlMs: number,
+    renewalSessionId: string,
+    requestDeadlineMs: number,
+    requestWindowMs: number
+  ) => Promise<RestoreLockLease>;
+  invalidateRenewalSession?: (
+    token: string,
+    owner: string,
+    renewalSessionId: string,
+    cleanupGraceMs: number
+  ) => Promise<boolean>;
   activate: (token: string, owner: string) => Promise<RestoreLockLease>;
   finish?: (
     token: string,
@@ -119,14 +134,27 @@ const NATIVE_CLEANUP_PENDING_MESSAGE =
 
 export function createTauriRestoreLockLeaseAdapter(): RestoreLockLeaseAdapter {
   return {
-    acquire: (token, owner, ttlMs, requestDeadlineMs, requestWindowMs) =>
-      invoke<RestoreLockLease>("acquire_restore_lock_lease", {
+    acquire: async (
+      token,
+      owner,
+      ttlMs,
+      requestDeadlineMs,
+      requestWindowMs,
+      renewalSessionId
+    ) => {
+      const acquired = await invoke<RestoreLockLease>("acquire_restore_lock_lease", {
         token,
         owner,
+        renewalSessionId,
         ttlMs,
         requestDeadlineMs,
         requestWindowMs,
-      }),
+      });
+      if (acquired.renewalSessionId !== renewalSessionId) {
+        throw new Error("복원 잠금 renewal session 확인에 실패했습니다.");
+      }
+      return acquired;
+    },
     cancelAcquire: (token, requestDeadlineMs, requestWindowMs) =>
       invoke<void>("cancel_abandoned_restore_lock_acquire", {
         token,
@@ -134,8 +162,29 @@ export function createTauriRestoreLockLeaseAdapter(): RestoreLockLeaseAdapter {
         requestWindowMs,
       }),
     current: () => invoke<RestoreLockLease | null>("current_restore_lock_lease"),
-    renew: (token, owner, ttlMs) =>
-      invoke<RestoreLockLease>("renew_restore_lock_lease", { token, owner, ttlMs }),
+    renew: (
+      token,
+      owner,
+      ttlMs,
+      renewalSessionId,
+      requestDeadlineMs,
+      requestWindowMs
+    ) =>
+      invoke<RestoreLockLease>("renew_restore_lock_lease", {
+        token,
+        owner,
+        renewalSessionId,
+        ttlMs,
+        requestDeadlineMs,
+        requestWindowMs,
+      }),
+    invalidateRenewalSession: (token, owner, renewalSessionId, cleanupGraceMs) =>
+      invoke<boolean>("invalidate_restore_lock_renewal_session", {
+        token,
+        owner,
+        renewalSessionId,
+        cleanupGraceMs,
+      }),
     activate: (token, owner) =>
       invoke<RestoreLockLease>("activate_restore_lock_lease", { token, owner }),
     finish: (token, owner, cleanupTtlMs) =>
@@ -220,8 +269,13 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     cleanupRetryIntervalMs * 16,
     (options.timeoutMs ?? DEFAULT_ACK_TIMEOUT_MS) + bridgeTimeoutMs * 2
   );
+  const renewalCleanupGraceMs = Math.max(
+    1,
+    Math.min(cleanupLeaseTtlMs, leaseTtlMs, 30_000)
+  );
   let startPromise: Promise<void> | null = null;
   let localToken: string | null = null;
+  let localRenewalSessionId: string | null = null;
   let nextOperationGeneration = 0;
   let localOperationGeneration = 0;
   let localOperationActivated = false;
@@ -238,9 +292,11 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let remoteFinalApplyPromise: Promise<void> | null = null;
   let leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
   let leaseRenewalToken: string | null = null;
+  let leaseRenewalSessionId: string | null = null;
   let leaseRenewalGeneration = 0;
   let leaseRenewInFlight: {
     token: string;
+    renewalSessionId: string;
     generation: number;
     promise: Promise<void>;
   } | null = null;
@@ -258,6 +314,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
   let latestRemoteRequestGeneration = 0;
   let pendingNativeAcquire: {
     token: string;
+    renewalSessionId: string;
     requestDeadlineMs: number;
     requestWindowMs: number;
   } | null = null;
@@ -401,6 +458,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       leaseRenewTimer = null;
     }
     leaseRenewalToken = null;
+    leaseRenewalSessionId = null;
     leaseRenewalGeneration = 0;
   };
 
@@ -600,6 +658,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
 
   const startLeaseRenewal = (
     token: string,
+    renewalSessionId: string,
     generation: number,
     renewalLifecycleGeneration: number
   ) => {
@@ -608,7 +667,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       leaseRenewTimer ||
       stopping ||
       lifecycleGeneration !== renewalLifecycleGeneration ||
-      !isCurrentLocalOperation(token, generation)
+      !isCurrentLocalOperation(token, generation) ||
+      localRenewalSessionId !== renewalSessionId
     ) {
       return;
     }
@@ -616,9 +676,12 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       !stopping &&
       lifecycleGeneration === renewalLifecycleGeneration &&
       isCurrentLocalOperation(tickToken, tickGeneration) &&
+      localRenewalSessionId === renewalSessionId &&
       leaseRenewalToken === tickToken &&
+      leaseRenewalSessionId === renewalSessionId &&
       leaseRenewalGeneration === tickGeneration;
     leaseRenewalToken = token;
+    leaseRenewalSessionId = renewalSessionId;
     leaseRenewalGeneration = generation;
     leaseRenewTimer = setInterval(() => {
       const tickToken = localToken;
@@ -634,6 +697,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       }
       if (
         leaseRenewInFlight?.token === tickToken &&
+        leaseRenewInFlight.renewalSessionId === renewalSessionId &&
         leaseRenewInFlight.generation === tickGeneration
       ) {
         return;
@@ -641,8 +705,17 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
 
       const renewal = (async () => {
         try {
+          const requestDeadlineMs = Date.now() + bridgeTimeoutMs;
           const renewed = await runWithTimeout(
-            () => nativeLease.renew(tickToken, owner, leaseTtlMs),
+            () =>
+              nativeLease.renew(
+                tickToken,
+                owner,
+                leaseTtlMs,
+                renewalSessionId,
+                requestDeadlineMs,
+                bridgeTimeoutMs
+              ),
             "복원 잠금 lease 갱신이 시간 초과되었습니다."
           );
           if (!isCurrentRenewal(tickToken, tickGeneration)) {
@@ -651,6 +724,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
           if (
             renewed.token !== tickToken ||
             renewed.owner !== owner ||
+            (renewed.renewalSessionId !== undefined &&
+              renewed.renewalSessionId !== renewalSessionId) ||
             (localOperationActivated && !renewed.operationActive)
           ) {
             markLeaseOwnershipLost(
@@ -685,6 +760,8 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
             !current ||
             current.token !== tickToken ||
             current.owner !== owner ||
+            (current.renewalSessionId !== undefined &&
+              current.renewalSessionId !== renewalSessionId) ||
             (localOperationActivated && !current.operationActive)
           ) {
             markLeaseOwnershipLost(tickToken, tickGeneration, error);
@@ -697,6 +774,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       })();
       leaseRenewInFlight = {
         token: tickToken,
+        renewalSessionId,
         generation: tickGeneration,
         promise: renewal,
       };
@@ -1268,6 +1346,32 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
   };
 
+  const invalidateRenewalSession = (
+    token: string,
+    renewalSessionId: string
+  ): Promise<Error | null> => {
+    if (!nativeLease) {
+      return Promise.resolve(null);
+    }
+    if (!nativeLease.invalidateRenewalSession) {
+      const error = new Error(
+        "복원 잠금 renewal session 무효화 bridge를 사용할 수 없습니다."
+      );
+      reportProtocolError(error);
+      return Promise.resolve(error);
+    }
+    return runBoundedCleanup(
+      () =>
+        nativeLease.invalidateRenewalSession!(
+          token,
+          owner,
+          renewalSessionId,
+          renewalCleanupGraceMs
+        ),
+      "복원 잠금 renewal session 무효화가 시간 초과되었습니다."
+    );
+  };
+
   const waitForStartSettlement = async () => {
     const startup = startPromise;
     if (!startup) {
@@ -1352,6 +1456,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
     pendingLocalRecovery = null;
     localToken = null;
+    localRenewalSessionId = null;
     localOperationActivated = false;
     localExpectedWindowLabels = null;
     localFinalApplyGeneration = null;
@@ -1798,6 +1903,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     }
 
     const token = createToken();
+    const renewalSessionId = nativeLease ? createToken() : null;
     const nativeAcquireRequestDeadlineMs = nativeLease
       ? Date.now() + bridgeTimeoutMs
       : null;
@@ -1805,6 +1911,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     const acquireLifecycleGeneration = lifecycleGeneration;
     const generation = ++nextOperationGeneration;
     localToken = token;
+    localRenewalSessionId = renewalSessionId;
     localOperationGeneration = generation;
     localOperationActivated = false;
     localFinalApplyGeneration = null;
@@ -1834,13 +1941,19 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
       if (nativeLease) {
         const requestDeadlineMs = nativeAcquireRequestDeadlineMs!;
         const requestWindowMs = nativeAcquireRequestWindowMs!;
-        pendingNativeAcquire = { token, requestDeadlineMs, requestWindowMs };
+        pendingNativeAcquire = {
+          token,
+          renewalSessionId: renewalSessionId!,
+          requestDeadlineMs,
+          requestWindowMs,
+        };
         const nativeAcquirePromise = nativeLease.acquire(
           token,
           owner,
           leaseTtlMs,
           requestDeadlineMs,
-          requestWindowMs
+          requestWindowMs,
+          renewalSessionId!
         );
         const cancelLateAcquire = () => {
           if (!nativeAcquireAbandoned || !nativeLease.cancelAcquire) {
@@ -1865,14 +1978,24 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
           "복원 잠금 lease 획득이 시간 초과되었습니다."
         );
         assertAcquireStillCurrent();
-        if (acquired.token !== token || acquired.owner !== owner) {
+        if (
+          acquired.token !== token ||
+          acquired.owner !== owner ||
+          (acquired.renewalSessionId !== undefined &&
+            acquired.renewalSessionId !== renewalSessionId)
+        ) {
           throw new Error("복원 잠금 lease 소유자 확인에 실패했습니다.");
         }
         nativeAcquireConfirmed = true;
         if (pendingNativeAcquire?.token === token) {
           pendingNativeAcquire = null;
         }
-        startLeaseRenewal(token, generation, acquireLifecycleGeneration);
+        startLeaseRenewal(
+          token,
+          renewalSessionId!,
+          generation,
+          acquireLifecycleGeneration
+        );
       }
 
       const liveWindowLabels = await runWithTimeout(
@@ -2191,7 +2314,13 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
         activeLeaseFailureReject?.(stopFailure);
       }
     }
+    const renewalTokenAtStop = localToken;
+    const renewalSessionAtStop = localRenewalSessionId;
     clearLeaseRenewal();
+    const renewalInvalidation =
+      renewalTokenAtStop && renewalSessionAtStop
+        ? invalidateRenewalSession(renewalTokenAtStop, renewalSessionAtStop)
+        : Promise.resolve(null);
     if (nativeCleanupRetryTimer) {
       clearTimeout(nativeCleanupRetryTimer);
       nativeCleanupRetryTimer = null;
@@ -2199,6 +2328,7 @@ export function createRestoreLockCoordinator(options: RestoreLockCoordinatorOpti
     clearRemoteLeaseWatch();
     const remoteTokenAtStop = remoteToken;
     stopPromise = (async () => {
+      await renewalInvalidation;
       if (remoteTokenAtStop) {
         await unlockRemote(remoteTokenAtStop);
       }

@@ -481,6 +481,306 @@ describe("restore lock coordinator", () => {
     }
   });
 
+  it("invalidates a confirmed renewal session before a deferred native renew is delivered", async () => {
+    vi.useFakeTimers({ now: new Date("2026-07-13T09:30:00.000Z") });
+    try {
+      type Lease = {
+        token: string;
+        owner: string;
+        renewalSessionId: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      };
+      let lease: Lease | null = null;
+      let renewalEnabled = false;
+      const renewDeliveries: Array<() => void> = [];
+      const neverSettles = deferred<void>();
+      const notifyLockRequested = vi.fn(async () => {});
+      const nativeLease = {
+        acquire: vi.fn(
+          async (
+            token: string,
+            owner: string,
+            ttlMs: number,
+            _requestDeadlineMs: number,
+            _requestWindowMs: number,
+            renewalSessionId: string
+          ) => {
+            renewalEnabled = true;
+            lease = {
+              token,
+              owner,
+              renewalSessionId,
+              expiresAtMs: Date.now() + ttlMs,
+              operationActive: false,
+            };
+            return lease;
+          }
+        ),
+        current: vi.fn(async () => {
+          if (lease && lease.expiresAtMs <= Date.now()) {
+            lease = null;
+          }
+          return lease;
+        }),
+        renew: vi.fn(
+          (
+            token: string,
+            owner: string,
+            ttlMs: number,
+            renewalSessionId: string,
+            requestDeadlineMs: number
+          ) =>
+            new Promise<Lease>((resolve, reject) => {
+              renewDeliveries.push(() => {
+                if (
+                  !lease ||
+                  !renewalEnabled ||
+                  lease.token !== token ||
+                  lease.owner !== owner ||
+                  lease.renewalSessionId !== renewalSessionId ||
+                  requestDeadlineMs <= Date.now()
+                ) {
+                  reject(new Error("renewal session is invalid"));
+                  return;
+                }
+                lease.expiresAtMs = Date.now() + ttlMs;
+                resolve({ ...lease });
+              });
+            })
+        ),
+        invalidateRenewalSession: vi.fn(
+          async (
+            token: string,
+            owner: string,
+            renewalSessionId: string,
+            cleanupGraceMs: number
+          ) => {
+            if (
+              lease?.token !== token ||
+              lease.owner !== owner ||
+              lease.renewalSessionId !== renewalSessionId
+            ) {
+              return false;
+            }
+            renewalEnabled = false;
+            lease.expiresAtMs = Math.min(
+              lease.expiresAtMs,
+              Date.now() + cleanupGraceMs
+            );
+            return true;
+          }
+        ),
+        activate: vi.fn(async () => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.operationActive = true;
+          return lease;
+        }),
+        finish: vi.fn(),
+        release: vi.fn(async () => true),
+      };
+      nativeLease.finish.mockImplementation(
+        async (_token: string, _owner: string, cleanupTtlMs: number) => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          const finishExpiry = Date.now() + cleanupTtlMs;
+          const wasRenewalEnabled = renewalEnabled;
+          renewalEnabled = false;
+          lease.operationActive = false;
+          lease.expiresAtMs = wasRenewalEnabled
+            ? finishExpiry
+            : Math.min(lease.expiresAtMs, finishExpiry);
+          return lease;
+        }
+      );
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => ["main"],
+        notifyLockRequested,
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        nativeLease,
+        lockLocal: async () => {},
+        unlockLocal: vi.fn(),
+        timeoutMs: 5,
+        leaseTtlMs: 40,
+        leaseRenewIntervalMs: 10,
+        bridgeTimeoutMs: 5,
+        cleanupTimeoutMs: 20,
+        cleanupRetryIntervalMs: 1,
+      });
+
+      const run = coordinator.run(() => neverSettles.promise);
+      await flushMicrotasks(50);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(renewDeliveries).toHaveLength(1);
+      const notifyCountBeforeStop = notifyLockRequested.mock.calls.length;
+
+      const stop = coordinator.stop();
+      expect(nativeLease.invalidateRenewalSession).toHaveBeenCalledTimes(1);
+      const expiryAfterInvalidation = lease!.expiresAtMs;
+      renewDeliveries[0]!();
+      await flushMicrotasks(50);
+      await vi.advanceTimersByTimeAsync(21);
+      await stop;
+
+      expect(lease!.expiresAtMs).toBe(expiryAfterInvalidation);
+      expect(nativeLease.finish).not.toHaveBeenCalled();
+      expect(notifyLockRequested).toHaveBeenCalledTimes(notifyCountBeforeStop);
+      neverSettles.resolve();
+      await flushMicrotasks(50);
+      await run.catch(() => {});
+      expect(nativeLease.finish).toHaveBeenCalled();
+      expect(lease!.expiresAtMs).toBe(expiryAfterInvalidation);
+      await vi.advanceTimersByTimeAsync(expiryAfterInvalidation - Date.now() + 1);
+      await expect(nativeLease.current()).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("invalidates every timed-out renewal invoke so none can accumulate a late extension", async () => {
+    vi.useFakeTimers({ now: new Date("2026-07-13T09:30:00.000Z") });
+    try {
+      type Lease = {
+        token: string;
+        owner: string;
+        renewalSessionId: string;
+        expiresAtMs: number;
+        operationActive: boolean;
+      };
+      let lease: Lease | null = null;
+      let renewalEnabled = false;
+      const renewDeliveries: Array<() => void> = [];
+      const neverSettles = deferred<void>();
+      const nativeLease = {
+        acquire: vi.fn(
+          async (
+            token: string,
+            owner: string,
+            ttlMs: number,
+            _requestDeadlineMs: number,
+            _requestWindowMs: number,
+            renewalSessionId: string
+          ) => {
+            renewalEnabled = true;
+            lease = {
+              token,
+              owner,
+              renewalSessionId,
+              expiresAtMs: Date.now() + ttlMs,
+              operationActive: false,
+            };
+            return lease;
+          }
+        ),
+        current: vi.fn(async () => lease),
+        renew: vi.fn(
+          (
+            token: string,
+            owner: string,
+            ttlMs: number,
+            renewalSessionId: string,
+            requestDeadlineMs: number
+          ) =>
+            new Promise<Lease>((resolve, reject) => {
+              renewDeliveries.push(() => {
+                if (
+                  !lease ||
+                  !renewalEnabled ||
+                  lease.token !== token ||
+                  lease.owner !== owner ||
+                  lease.renewalSessionId !== renewalSessionId ||
+                  requestDeadlineMs <= Date.now()
+                ) {
+                  reject(new Error("renewal session is invalid"));
+                  return;
+                }
+                lease.expiresAtMs = Date.now() + ttlMs;
+                resolve({ ...lease });
+              });
+            })
+        ),
+        invalidateRenewalSession: vi.fn(
+          async (
+            token: string,
+            owner: string,
+            renewalSessionId: string,
+            cleanupGraceMs: number
+          ) => {
+            if (
+              lease?.token !== token ||
+              lease.owner !== owner ||
+              lease.renewalSessionId !== renewalSessionId
+            ) {
+              return false;
+            }
+            renewalEnabled = false;
+            lease.expiresAtMs = Math.min(
+              lease.expiresAtMs,
+              Date.now() + cleanupGraceMs
+            );
+            return true;
+          }
+        ),
+        activate: vi.fn(async () => {
+          if (!lease) {
+            throw new Error("lease missing");
+          }
+          lease.operationActive = true;
+          return lease;
+        }),
+        finish: vi.fn(),
+        release: vi.fn(),
+      };
+      const coordinator = createRestoreLockCoordinator({
+        getCurrentWindowLabel: () => "main",
+        listLiveWindowLabels: async () => ["main"],
+        notifyLockRequested: async () => {},
+        listenLockRequested: async () => () => {},
+        notifyLockAcknowledged: async () => {},
+        listenLockAcknowledged: async () => () => {},
+        notifyLockReleased: async () => {},
+        listenLockReleased: async () => () => {},
+        nativeLease,
+        lockLocal: async () => {},
+        unlockLocal: vi.fn(),
+        timeoutMs: 5,
+        leaseTtlMs: 40,
+        leaseRenewIntervalMs: 10,
+        bridgeTimeoutMs: 5,
+        cleanupTimeoutMs: 20,
+        cleanupRetryIntervalMs: 1,
+      });
+
+      void coordinator.run(() => neverSettles.promise).catch(() => {});
+      await flushMicrotasks(50);
+      await vi.advanceTimersByTimeAsync(26);
+      expect(renewDeliveries.length).toBeGreaterThanOrEqual(2);
+
+      const stop = coordinator.stop();
+      expect(nativeLease.invalidateRenewalSession).toHaveBeenCalledTimes(1);
+      const expiryAfterInvalidation = lease!.expiresAtMs;
+      for (const deliver of renewDeliveries) {
+        deliver();
+      }
+      await flushMicrotasks(50);
+      await vi.advanceTimersByTimeAsync(21);
+      await stop;
+
+      expect(lease!.expiresAtMs).toBe(expiryAfterInvalidation);
+      expect(nativeLease.renew).toHaveBeenCalledTimes(renewDeliveries.length);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("times out when a live window never acknowledges", async () => {
     vi.useFakeTimers();
     try {
@@ -2897,7 +3197,8 @@ describe("restore lock coordinator", () => {
         "main",
         70,
         expect.any(Number),
-        25
+        25,
+        expect.any(String)
       );
       await vi.advanceTimersByTimeAsync(10);
       expect(nativeLease.renew).toHaveBeenCalledTimes(1);
