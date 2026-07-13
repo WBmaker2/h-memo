@@ -14,7 +14,7 @@
 - Keep local JSON `BackupPayload.version` equal to `1`; Firestore's new storage schema is independently identified as `schemaVersion: 2`.
 - Never place all memo bodies in one Firestore document; every current memo and every snapshot memo must have its own document.
 - Use Firestore `serverTimestamp()` as the authoritative ordering/display time for new server backups; client `createdAt` is metadata and a legacy fallback only.
-- A server memo deletion writes a tombstone and removes only the canonical current memo; immutable historical snapshot documents are not rewritten.
+- A server memo deletion writes a tombstone and clears that snapshot from the canonical memo's active/pending references; the canonical ownership record and immutable historical snapshot documents are retained.
 - A restore must create a durable local safety point before mutating local memos, and the user must be able to undo the latest successful restore.
 - Prevent more than one native window from owning the same memo ID, including the main window and child windows.
 - Serialize all SQLite access through one Tauri-managed connection configured with WAL and a 5-second busy timeout.
@@ -158,7 +158,7 @@
 
 - [ ] **Step 1: Write failing gateway contract, ordering, compatibility, and rules tests**
 
-  Extend the fake gateway to expose canonical current memos and stored snapshots with independent `savedAt`. Test that server history sorts by `savedAt` even when client `createdAt` is skewed, canonical memo listing does not scan every historical snapshot, deleting a server memo removes the canonical document and writes a tombstone without rewriting snapshots, re-backup clears the tombstone, and legacy inline version 1 snapshots still restore.
+  Extend the fake gateway to expose canonical current memos and stored snapshots with independent `savedAt`. Test that server history sorts by `savedAt` even when client `createdAt` is skewed, canonical memo listing does not scan every historical snapshot, deleting a server memo clears the matching canonical active/pending references and writes a tombstone without rewriting snapshots, re-backup clears the tombstone, and legacy inline version 1 snapshots still restore.
 
   Add policy assertions for owner-only canonical memo documents, owner-only schema-v2 metadata, immutable snapshot memo documents, and continued read support for version-1 snapshots.
 
@@ -176,11 +176,11 @@
 
 - [ ] **Step 4: Implement canonical server memo management and immutable deletion**
 
-  `listBackedUpMemos` must read `users/{uid}/memos` and filter tombstones. `deleteBackedUpMemo` must set the tombstone and delete the canonical memo document; it must not update any snapshot document. Historical restore remains possible only for memo IDs not tombstoned until a later successful backup clears that tombstone.
+  `listBackedUpMemos` must read `users/{uid}/memos` and filter tombstones. `deleteBackedUpMemo` must set the tombstone and clear references to the deleted snapshot from the canonical memo document; it must not delete the canonical ownership record or update any snapshot document. Historical restore remains possible only for memo IDs not tombstoned until a later successful backup clears that tombstone.
 
 - [ ] **Step 5: Update security rules and Firebase documentation**
 
-  Permit owner reads/writes for canonical memo documents with `userId`, `memoId`, `memo`, and timestamp shape checks. Permit owner creation of schema-v2 metadata and nested snapshot memo documents, but deny nested snapshot updates/deletes. Keep owner reads for legacy version-1 snapshots and retain existing tombstone ownership checks. Document the v2 paths and migration behavior.
+  Permit owner reads/writes for canonical memo documents with `userId`, `memoId`, bounded active/pending snapshot references, and timestamp shape checks while denying canonical physical deletion. Permit owner creation of schema-v2 metadata and nested snapshot memo documents, but deny nested snapshot updates/deletes. Keep owner reads for legacy version-1 snapshots and retain existing tombstone ownership checks. Document the v2 paths and migration behavior.
 
 - [ ] **Step 6: Verify GREEN and full sync gates**
 
