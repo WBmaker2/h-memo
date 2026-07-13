@@ -263,7 +263,10 @@ service cloud.firestore {
         && request.resource.data.pendingSnapshotId is string
         && request.resource.data.activatedAt == null
         && (
-          !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+          (
+            !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+            && hasValidV2PendingSnapshotAfter(uid, request.resource.data.pendingSnapshotId)
+          )
           || (
             request.resource.data.activeSchemaVersion == null
             && request.resource.data.pendingSchemaVersion == 3
@@ -281,6 +284,7 @@ service cloud.firestore {
           (
             !resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
             && !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+            && hasValidV2PendingSnapshotAfter(uid, request.resource.data.pendingSnapshotId)
           )
           || (
             request.resource.data.pendingSchemaVersion == 3
@@ -304,6 +308,14 @@ service cloud.firestore {
       return existsAfter(snapshotPath)
         && getAfter(snapshotPath).data.userId == uid
         && getAfter(snapshotPath).data.schemaVersion == 3
+        && getAfter(snapshotPath).data.state == "writing";
+    }
+
+    function hasValidV2PendingSnapshotAfter(uid, snapshotId) {
+      let snapshotPath = /databases/$(database)/documents/users/$(uid)/backupSnapshots/$(snapshotId);
+      return existsAfter(snapshotPath)
+        && getAfter(snapshotPath).data.userId == uid
+        && getAfter(snapshotPath).data.schemaVersion == 2
         && getAfter(snapshotPath).data.state == "writing";
     }
 

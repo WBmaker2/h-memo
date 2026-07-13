@@ -250,23 +250,40 @@ describeWithEmulator("Firestore security rules emulator", () => {
   it("preserves version-field-free v2 lease and activation compatibility", async () => {
     const owner = testEnv.authenticatedContext(ownerId).firestore();
     const snapshot = snapshotRef(owner, ownerId, "legacy-v2");
+    const nextSnapshot = snapshotRef(owner, ownerId, "legacy-v2-next");
 
-    await assertSucceeds(setDoc(snapshot, {
+    const initialLease = writeBatch(owner);
+    initialLease.set(snapshot, {
       schemaVersion: 2,
       userId: ownerId,
       createdAt: "2026-07-13T12:00:00.000Z",
       memoCount: 0,
       state: "writing",
-    }));
-    await assertSucceeds(setDoc(stateRef(owner, ownerId), {
+    });
+    initialLease.set(stateRef(owner, ownerId), {
       userId: ownerId,
       activeSnapshotId: null,
       pendingSnapshotId: "legacy-v2",
       activatedAt: null,
-    }));
-    await assertSucceeds(updateDoc(snapshot, { state: "complete", savedAt: serverTimestamp() }));
+    });
+    await assertSucceeds(initialLease.commit());
+
+    await assertFails(updateDoc(stateRef(owner, ownerId), { pendingSnapshotId: "bogus" }));
+    await assertFails(deleteDoc(snapshot));
+
+    const nextLease = writeBatch(owner);
+    nextLease.set(nextSnapshot, {
+      schemaVersion: 2,
+      userId: ownerId,
+      createdAt: "2026-07-13T12:01:00.000Z",
+      memoCount: 0,
+      state: "writing",
+    });
+    nextLease.update(stateRef(owner, ownerId), { pendingSnapshotId: "legacy-v2-next" });
+    await assertSucceeds(nextLease.commit());
+    await assertSucceeds(updateDoc(nextSnapshot, { state: "complete", savedAt: serverTimestamp() }));
     await assertSucceeds(updateDoc(stateRef(owner, ownerId), {
-      activeSnapshotId: "legacy-v2",
+      activeSnapshotId: "legacy-v2-next",
       pendingSnapshotId: null,
       activatedAt: serverTimestamp(),
     }));

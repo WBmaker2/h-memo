@@ -142,6 +142,7 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain('request.resource.data.pendingSchemaVersion == 3');
     expect(rules).toContain('request.resource.data.activeSchemaVersion == 3');
     expect(rules).toContain("function hasValidV3PendingSnapshotAfter(uid, snapshotId)");
+    expect(rules).toContain("function hasValidV2PendingSnapshotAfter(uid, snapshotId)");
     expect(rules).toContain("existsAfter(snapshotPath)");
     expect(rules).toContain("getAfter(snapshotPath).data.state == \"writing\"");
     expect(rules).toContain("request.resource.data.activeSchemaVersion == resource.data.activeSchemaVersion");
