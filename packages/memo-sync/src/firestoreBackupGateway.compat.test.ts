@@ -202,7 +202,7 @@ describe("FirestoreBackupGateway compatibility contract", () => {
 
     expect((await listBackupSnapshots(gateway, "user-1")).flatMap((snapshot) =>
       snapshot.payload.memos.map((item) => item.id)
-    )).toContain(memo.id);
+    )).not.toContain(memo.id);
     expect((await listBackupSnapshots(gateway, "user-1")).flatMap((snapshot) =>
       snapshot.payload.memos.map((item) => item.id)
     )).not.toContain(legacyMemo.id);

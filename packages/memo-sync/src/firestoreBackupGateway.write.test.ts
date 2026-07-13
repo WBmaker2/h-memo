@@ -61,12 +61,51 @@ describe("FirestoreBackupGateway driver contract", () => {
     driver.setServerClock("2026-07-13T01:00:00.000Z");
 
     const first = await gateway.saveBackup("user-1", payloadAt("2026-07-13T01:00:00.000Z"));
+    driver.seed("users/user-1/backupSnapshots/duplicate", {
+      schemaVersion: 3,
+      state: "complete",
+      userId: "user-1",
+      memoCount: 0,
+      contentHash: "b".repeat(64),
+      previewText: "duplicate",
+      clientCreatedAt: "2026-07-13T00:00:00.000Z",
+      savedAt: new FakeTimestamp("2026-07-13T00:00:00.000Z"),
+    });
     const commits = driver.transactionCommitCount;
     const second = await gateway.saveBackup("user-1", payloadAt("2026-07-13T10:00:00.000Z"));
 
     expect(second.outcome).toBe("unchanged");
     expect(second.snapshotId).toBe(first.snapshotId);
     expect(driver.transactionCommitCount).toBe(commits);
+    expect(driver.hasPath("users/user-1/backupSnapshots/duplicate")).toBe(true);
+    expect(driver.batchOperationCounts).toEqual([]);
+  });
+
+  it("keeps a successful activated backup when cleanup commit fails", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    driver.setServerClock("2026-07-13T01:00:00.000Z");
+    await gateway.saveBackup("user-1", payloadWithText("첫 내용"));
+    driver.seed("users/user-1/backupSnapshots/duplicate", {
+      schemaVersion: 3,
+      state: "complete",
+      userId: "user-1",
+      memoCount: 0,
+      contentHash: "b".repeat(64),
+      previewText: "duplicate",
+      clientCreatedAt: "2026-07-13T00:00:00.000Z",
+      savedAt: new FakeTimestamp("2026-07-13T00:00:00.000Z"),
+    });
+    driver.failBatchCommit = 1;
+
+    const result = await gateway.saveBackup("user-1", payloadWithText("바뀐 내용"));
+
+    expect(result.outcome).toBe("replaced");
+    expect(result.cleanupPending).toBe(true);
+    expect(driver.read("users/user-1/backupState/current")).toMatchObject({
+      activeSnapshotId: result.snapshotId,
+      pendingSnapshotId: null,
+    });
   });
 
   it("writes a new v3 snapshot when the same-day content changes", async () => {

@@ -72,6 +72,7 @@ export function createStorage(): Storage {
 
 export class FakeFirestoreDriver {
   readonly docs = new Map<string, Record<string, unknown>>();
+  readonly committedDeletePaths: string[] = [];
   readonly batchOperationCounts: number[] = [];
   readonly transactionOperationCounts: number[] = [];
   readonly transactionReadCounts: number[] = [];
@@ -154,6 +155,9 @@ export class FakeFirestoreDriver {
         if (this.failBatchCommit === this.batchCommits) {
           throw new Error(`forced batch failure ${this.batchCommits}`);
         }
+        for (const operation of operations) {
+          if (operation.kind === "delete") this.committedDeletePaths.push(operation.ref.path);
+        }
         this.apply(operations);
       },
     };
@@ -231,6 +235,10 @@ export class FakeFirestoreDriver {
   read(path: string) {
     const data = this.docs.get(path);
     return data ? cloneValue(data) : undefined;
+  }
+
+  hasPath(path: string) {
+    return this.docs.has(path);
   }
 
   private joinPath(parent: unknown, segments: string[]) {

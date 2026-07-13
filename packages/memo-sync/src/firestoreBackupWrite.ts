@@ -2,6 +2,7 @@ import { type Memo } from "@h-memo/memo-core";
 import { createBackupContentHash, createBackupPreviewText } from "./backupFingerprint";
 import { toKstDateKey } from "./backupKstDate";
 import type { BackupSaveResult, MemoBackupPayload } from "./backupTypes";
+import { cleanupFirestoreBackups } from "./firestoreBackupCleanup";
 import { encodeMemoDocumentId } from "./memoDocumentId";
 import {
   activeSchemaVersionFromState,
@@ -78,12 +79,32 @@ export async function saveFirestoreBackup(
   const saved = await loadSnapshotSummaryById(context, userId, written.snapshotId);
   if (!saved?.kstDate) throw new Error("Completed backup is missing server savedAt");
 
+  let cleanupPending = false;
+  try {
+    const state = await context.driver.getDoc(activationDoc(context, userId));
+    cleanupPending = (
+      await cleanupFirestoreBackups(context, userId, {
+        now: saved.savedAt ?? payload.createdAt,
+        activeSnapshotId: activeSnapshotIdFromState(state),
+        pendingSnapshotId: pendingSnapshotIdFromState(state),
+      })
+    ).pending;
+  } catch {
+    cleanupPending = true;
+  }
+
   return {
     path: written.path,
     snapshotId: written.snapshotId,
     outcome: prior?.kstDate === saved.kstDate ? "replaced" : "created",
-    cleanupPending: false,
+    cleanupPending,
   };
+}
+
+function pendingSnapshotIdFromState(snapshot: { exists(): boolean; data(): Record<string, unknown> }) {
+  if (!snapshot.exists()) return null;
+  const value = snapshot.data().pendingSnapshotId;
+  return typeof value === "string" && value !== "" ? value : null;
 }
 
 type SchemaV3WriteInput = {
