@@ -159,6 +159,9 @@ describe("LandingPage", () => {
     expect(screen.getByText("2026-05-13")).toBeInTheDocument();
     expect(screen.getByText("접근성 검토 보완")).toBeInTheDocument();
     expect(
+      screen.getByText("Node와 실행 환경이 달라도 한국어 오전·오후 표기가 한결같이 보이도록 보완했습니다."),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText("데이터 안전성, 복원 안전성, 접근성, 메뉴 개선"),
     ).toBeInTheDocument();
 

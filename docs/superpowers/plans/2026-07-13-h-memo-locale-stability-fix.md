@@ -14,6 +14,7 @@
 - Use `Intl.DateTimeFormat#formatToParts` and normalize only Korean day-period parts (`AM`/`PM` to `오전`/`오후`).
 - Preserve non-Korean locale output and the existing invalid-date fallback.
 - Limit code changes to the small shared date formatter and its focused test; do not add code to the large desktop/web app modules.
+- Add the locale stability improvement to the existing 2026-07-13 in-app and landing-page update history entries.
 
 ## Verification
 
