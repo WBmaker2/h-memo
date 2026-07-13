@@ -19,6 +19,12 @@ describe("formatDateTime", () => {
     expect(formatted).not.toContain("오후");
   });
 
+  it("formats an optional timezone without changing the default signature", () => {
+    expect(
+      formatDateTime("2026-07-12T15:30:00.000Z", "ko-KR", "Asia/Seoul")
+    ).toBe("2026. 7. 13. 오전 12:30:00");
+  });
+
   it.each(["", "   ", "not-a-date"])(
     "returns a Korean empty-state label for invalid input %j",
     (value) => {

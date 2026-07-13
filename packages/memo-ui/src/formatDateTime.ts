@@ -1,6 +1,29 @@
 const INVALID_DATE_LABEL = "날짜 정보 없음";
 
-export function formatDateTime(value: string, locale = "ko-KR"): string {
+function normalizeKoreanDayPeriod(
+  part: Intl.DateTimeFormatPart,
+  isKoreanLocale: boolean
+): string {
+  if (!isKoreanLocale || part.type !== "dayPeriod") {
+    return part.value;
+  }
+
+  if (part.value === "AM") {
+    return "오전";
+  }
+
+  if (part.value === "PM") {
+    return "오후";
+  }
+
+  return part.value;
+}
+
+export function formatDateTime(
+  value: string,
+  locale = "ko-KR",
+  timeZone?: string
+): string {
   const trimmedValue = value.trim();
   if (!trimmedValue) {
     return INVALID_DATE_LABEL;
@@ -19,14 +42,9 @@ export function formatDateTime(value: string, locale = "ko-KR"): string {
     hour: "numeric",
     minute: "numeric",
     second: "numeric",
+    ...(timeZone ? { timeZone } : {}),
   })
     .formatToParts(date)
-    .map((part) => {
-      if (!isKoreanLocale || part.type !== "dayPeriod") {
-        return part.value;
-      }
-
-      return part.value === "AM" ? "오전" : part.value === "PM" ? "오후" : part.value;
-    })
+    .map((part) => normalizeKoreanDayPeriod(part, isKoreanLocale))
     .join("");
 }

@@ -11,4 +11,14 @@ export {
   type ServerMemoManagerDialogProps,
   ServerMemoManagerDialog,
 } from "./ServerMemoManagerDialog";
+export {
+  BackupHistoryDialog,
+  type BackupHistoryDialogProps,
+  type BackupHistoryItem,
+} from "./BackupHistoryDialog";
+export { formatBackupSaveStatus } from "./backupStatusText";
+export type {
+  BackupSaveOutcome,
+  BackupSaveStatusInput,
+} from "./backupStatusText";
 export { formatDateTime } from "./formatDateTime";
