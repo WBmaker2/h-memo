@@ -3414,7 +3414,18 @@ describe("desktop App", () => {
     });
   });
 
-  it("does not hide local memo when restore persistence fails", async () => {
+  it.each([
+    {
+      label: "returns null",
+      loadError: null,
+      expectedStatus: "복원 실패: 선택한 백업을 불러오지 못했습니다.",
+    },
+    {
+      label: "throws",
+      loadError: new Error("selected payload failed"),
+      expectedStatus: "복원 실패: selected payload failed",
+    },
+  ])("keeps local state unchanged when selected payload $label", async ({ loadError, expectedStatus }) => {
     const user = userEvent.setup();
     setTauriRuntime(true);
     mockGetStartupEnabled.mockResolvedValue(false);
@@ -3425,13 +3436,6 @@ describe("desktop App", () => {
       appId: "app-id",
     });
 
-    const restoredMemo = getMemoFromTime({
-      id: "server-1",
-      now: "2026-01-02T03:00:00.000Z",
-      title: "서버복원메모",
-      text: "서버 복원 텍스트",
-    });
-
     mockSignInWithGoogle.mockResolvedValue({
       uid: "user-1",
       displayName: "테스터",
@@ -3439,16 +3443,13 @@ describe("desktop App", () => {
       photoURL: "",
     });
     mockListBackupSnapshotSummaries.mockResolvedValue([
-      getBackupSummary({ id: "failed-soft-delete-snapshot", savedAt: "2026-01-01T00:00:00.000Z" }),
+      getBackupSummary({ id: "selected-load-failure-snapshot", savedAt: "2026-01-01T00:00:00.000Z" }),
     ]);
-    mockLoadBackupSnapshot.mockResolvedValue({
-      version: 1,
-      userId: "user-1",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      memos: [restoredMemo],
-    });
-    mockSoftDeleteMemo.mockImplementation(async () => {
-      throw new Error("persist soft delete failed");
+    mockLoadBackupSnapshot.mockImplementation(async () => {
+      if (loadError) {
+        throw loadError;
+      }
+      return null;
     });
 
     render(<App />);
@@ -3456,6 +3457,14 @@ describe("desktop App", () => {
     fireEvent.change(screen.getByLabelText("메모 내용"), {
       target: { value: "로컬 내용" },
     });
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("로컬 내용")).toBeInTheDocument();
+    });
+    const repositoryBeforeRestore = JSON.stringify([...tauriRepositoryState.entries()]);
+    const saveCallsBeforeRestore = mockSaveMemo.mock.calls.length;
+    const softDeleteCallsBeforeRestore = mockSoftDeleteMemo.mock.calls.length;
+    const restoreStoreApplyCallsBeforeRestore =
+      mockNotifyRestoreStoreApplyRequested.mock.calls.length;
 
     await user.click(screen.getByRole("button", { name: "구글 로그인" }));
     await waitFor(() => {
@@ -3468,10 +3477,22 @@ describe("desktop App", () => {
     await user.click(within(dialog).getByRole("button", { name: /백업 복원/ }));
 
     await waitFor(() => {
-      expect(screen.getByRole("status")).toHaveTextContent("복원 실패:");
-      expect(screen.queryByDisplayValue("서버 복원 텍스트")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(expectedStatus);
       expect(screen.getByDisplayValue("로컬 내용")).toBeInTheDocument();
     });
+    expect(mockListBackupSnapshotSummaries).toHaveBeenCalledOnce();
+    expect(mockLoadBackupSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      "user-1",
+      "selected-load-failure-snapshot"
+    );
+    expect(JSON.stringify([...tauriRepositoryState.entries()])).toBe(repositoryBeforeRestore);
+    expect(mockSaveMemo).toHaveBeenCalledTimes(saveCallsBeforeRestore);
+    expect(mockSoftDeleteMemo).toHaveBeenCalledTimes(softDeleteCallsBeforeRestore);
+    expect(mockNotifyRestoreStoreApplyRequested).toHaveBeenCalledTimes(
+      restoreStoreApplyCallsBeforeRestore
+    );
+    expect(screen.getByRole("dialog", { name: "백업 기록 선택" })).toBeInTheDocument();
   });
 
   it("does not soft delete local memo when restored memo save fails", async () => {
