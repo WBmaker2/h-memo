@@ -59,8 +59,8 @@ export type BackupCleanupCandidate = {
 
 export interface BackupGateway {
   saveBackup(userId: string, payload: MemoBackupPayload): Promise<BackupSaveResult>;
-  loadLatestBackup(userId: string): Promise<unknown | null>;
-  loadBackups(userId: string): Promise<unknown[]>;
+  listBackupSummaries(userId: string): Promise<BackupSnapshotSummary[]>;
+  loadBackup(userId: string, snapshotId: string): Promise<unknown | null>;
   loadCurrentMemos(userId: string): Promise<StoredCurrentMemo[]>;
   loadDeletedMemoIds(userId: string): Promise<string[]>;
   deleteCurrentMemo(userId: string, memoId: string): Promise<number>;

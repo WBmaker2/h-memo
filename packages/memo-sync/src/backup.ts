@@ -5,6 +5,7 @@ import {
 } from "@h-memo/memo-core";
 import { validateLegacyFirestoreV1Payload } from "./legacyBackupPayload";
 import { isRecord, normalizeFirestoreTimestamp } from "./firestoreBackupShared";
+import { selectDailyBackupSummaries } from "./backupRetention";
 import type {
   BackedUpMemo,
   BackedUpSnapshot,
@@ -34,6 +35,7 @@ export type {
   StoredCurrentMemo,
 } from "./backupTypes";
 export type { FirestoreBackupDriver } from "./firestoreBackupDriver";
+export type { BackupSnapshotSummary } from "./backupTypes";
 
 function isIncompleteSchemaV2Snapshot(value: unknown) {
   return isRecord(value) && value.schemaVersion === 2 && value.state !== "complete";
@@ -60,14 +62,25 @@ function toStoredBackupSnapshot(
   };
 }
 
-async function loadStoredBackupSnapshots(
+export async function listBackupSnapshotSummaries(
   gateway: BackupGateway,
-  userId: string
-): Promise<StoredBackupSnapshot[]> {
-  const snapshots = (await gateway.loadBackups(userId))
-    .map((snapshot) => toStoredBackupSnapshot(snapshot, userId))
-    .filter((snapshot): snapshot is StoredBackupSnapshot => snapshot !== null);
-  return [...snapshots].sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  userId: string,
+  now = new Date().toISOString()
+) {
+  return selectDailyBackupSummaries(await gateway.listBackupSummaries(userId), now);
+}
+
+export async function loadBackupSnapshot(
+  gateway: BackupGateway,
+  userId: string,
+  snapshotId: string
+): Promise<MemoBackupPayload | null> {
+  const stored = await gateway.loadBackup(userId, snapshotId);
+  if (stored === null) return null;
+  const parsed = toStoredBackupSnapshot(stored, userId);
+  if (!parsed) return null;
+  const deletedMemoIds = await loadDeletedMemoIdSet(gateway, userId);
+  return filterDeletedServerMemos(parsed.payload, deletedMemoIds);
 }
 
 function loadDeletedMemoIdSet(gateway: BackupGateway, userId: string) {
@@ -96,9 +109,8 @@ export async function restoreLatestBackup(
   gateway: BackupGateway,
   userId: string
 ): Promise<MemoBackupPayload | null> {
-  const latest = (await loadStoredBackupSnapshots(gateway, userId))[0];
-  if (!latest) return null;
-  return filterDeletedServerMemos(latest.payload, await loadDeletedMemoIdSet(gateway, userId));
+  const latest = (await listBackupSnapshotSummaries(gateway, userId))[0];
+  return latest === undefined ? null : loadBackupSnapshot(gateway, userId, latest.id);
 }
 
 export async function listBackedUpMemos(
@@ -119,14 +131,18 @@ export async function listBackupSnapshots(
   gateway: BackupGateway,
   userId: string
 ): Promise<BackedUpSnapshot[]> {
-  const [backups, deletedMemoIds] = await Promise.all([
-    loadStoredBackupSnapshots(gateway, userId),
-    loadDeletedMemoIdSet(gateway, userId),
-  ]);
-  return backups.map((backup) => {
-    const payload = filterDeletedServerMemos(backup.payload, deletedMemoIds);
-    return { createdAt: backup.savedAt, memoCount: payload.memos.length, payload };
-  });
+  const summaries = [...(await gateway.listBackupSummaries(userId))].sort(
+    (left, right) => (right.savedAt ?? "").localeCompare(left.savedAt ?? "")
+  );
+  const backups = await Promise.all(
+    summaries.map(async (summary) => {
+      const payload = await loadBackupSnapshot(gateway, userId, summary.id);
+      return payload === null
+        ? null
+        : { createdAt: summary.savedAt ?? payload.createdAt, memoCount: payload.memos.length, payload };
+    })
+  );
+  return backups.filter((backup): backup is BackedUpSnapshot => backup !== null);
 }
 
 export async function deleteBackedUpMemo(

@@ -25,26 +25,27 @@ function isValidMemo(memo: unknown, userId: string): memo is Memo {
   ).ok;
 }
 
-export async function loadLatestFirestoreBackup(
+export async function listFirestoreBackupSummaries(
   context: FirestoreBackupContext,
   userId: string
-): Promise<unknown | null> {
-  return (await loadAllFirestoreBackups(context, userId))[0] ?? null;
+): Promise<BackupSnapshotSummary[]> {
+  const snapshotDocs = await context.driver.getDocs(snapshotCollection(context, userId));
+  return snapshotDocs.docs
+    .filter((snapshot) => snapshot.data().userId === userId)
+    .map((snapshot) => parseBackupSnapshotSummary(snapshot.id, snapshot.data()))
+    .filter((summary): summary is BackupSnapshotSummary => summary !== null);
 }
 
-export async function loadAllFirestoreBackups(
+export async function loadFirestoreBackup(
   context: FirestoreBackupContext,
-  userId: string
-): Promise<unknown[]> {
-  const snapshotDocs = await context.driver.getDocs(snapshotCollection(context, userId));
-  const storedSnapshots = await Promise.all(
-    snapshotDocs.docs.map((snapshot) => loadStoredSnapshot(context, snapshot, userId))
+  userId: string,
+  snapshotId: string
+): Promise<unknown | null> {
+  const snapshot = await context.driver.getDoc(
+    context.driver.doc(snapshotCollection(context, userId), snapshotId)
   );
-  return sortStoredSnapshots(
-    storedSnapshots.filter(
-      (snapshot): snapshot is StoredBackupSnapshot => snapshot !== null
-    )
-  );
+  if (!snapshot.exists() || snapshot.data().userId !== userId) return null;
+  return loadStoredSnapshot(context, snapshot, userId);
 }
 
 export async function loadCompleteSchemaV2Snapshot(

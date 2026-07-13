@@ -4,6 +4,7 @@ import type {
   MemoBackupPayload,
   StoredCurrentMemo,
 } from "../backupTypes";
+import { parseBackupSnapshotSummary } from "../backupSnapshotSummary";
 
 const SERVER_TIMESTAMP = Symbol("serverTimestamp");
 const DELETE_FIELD = Symbol("deleteField");
@@ -77,6 +78,7 @@ export class FakeFirestoreDriver {
   readonly transactionOperationCounts: number[] = [];
   readonly transactionReadCounts: number[] = [];
   readonly transactionWriteCounts: number[] = [];
+  readonly readCollectionPaths: string[] = [];
   private readonly versions = new Map<string, number>();
   private nextDocument = 1;
   private serverClockMs = Date.parse("2026-05-13T09:00:00.000Z");
@@ -120,6 +122,7 @@ export class FakeFirestoreDriver {
   }
 
   async getDocs(ref: DriverRef) {
+    this.readCollectionPaths.push(ref.path);
     const prefix = `${ref.path}/`;
     const docs: DriverSnapshot[] = [...this.docs.entries()]
       .filter(([path]) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
@@ -391,14 +394,18 @@ export class FakeBackupGateway implements BackupGateway {
     };
   }
 
-  async loadLatestBackup(userId: string): Promise<unknown | null> {
-    const matching = this.snapshots.filter((snapshot) => snapshot.userId === userId);
-    return matching[matching.length - 1] ?? null;
+  async listBackupSummaries(userId: string) {
+    return this.snapshots
+      .filter((snapshot) => snapshot.userId === userId)
+      .map((snapshot) => parseBackupSnapshotSummary(snapshot.id, snapshot))
+      .filter((summary): summary is NonNullable<typeof summary> => summary !== null);
   }
 
-  async loadBackups(userId: string): Promise<unknown[]> {
+  async loadBackup(userId: string, snapshotId: string): Promise<unknown | null> {
     this.snapshotLoadCount += 1;
-    return this.snapshots.filter((snapshot) => snapshot.userId === userId).reverse();
+    return this.snapshots.find(
+      (snapshot) => snapshot.userId === userId && snapshot.id === snapshotId
+    ) ?? null;
   }
 
   async loadCurrentMemos(userId: string): Promise<StoredCurrentMemo[]> {

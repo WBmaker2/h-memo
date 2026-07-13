@@ -2,8 +2,8 @@ import type { Firestore } from "firebase/firestore";
 import type { MemoBackupPayload, BackupGateway, StoredCurrentMemo } from "./backupTypes";
 import { firebaseBackupDriver, type FirestoreBackupDriver } from "./firestoreBackupDriver";
 import {
-  loadAllFirestoreBackups,
-  loadLatestFirestoreBackup,
+  listFirestoreBackupSummaries,
+  loadFirestoreBackup,
 } from "./firestoreBackupRead";
 import { saveFirestoreBackup } from "./firestoreBackupWrite";
 import {
@@ -27,12 +27,12 @@ export class FirestoreBackupGateway implements BackupGateway {
     return saveFirestoreBackup(this.context, userId, payload);
   }
 
-  loadLatestBackup(userId: string) {
-    return loadLatestFirestoreBackup(this.context, userId);
+  listBackupSummaries(userId: string) {
+    return listFirestoreBackupSummaries(this.context, userId);
   }
 
-  loadBackups(userId: string) {
-    return loadAllFirestoreBackups(this.context, userId);
+  loadBackup(userId: string, snapshotId: string) {
+    return loadFirestoreBackup(this.context, userId, snapshotId);
   }
 
   loadCurrentMemos(userId: string): Promise<StoredCurrentMemo[]> {

@@ -7,8 +7,10 @@ export {
   FirestoreBackupGateway,
   backupMemos,
   deleteBackedUpMemo,
+  listBackupSnapshotSummaries,
   listBackedUpMemos,
   listBackupSnapshots,
+  loadBackupSnapshot,
   restoreLatestBackup,
 } from "./backup";
 export {
@@ -26,6 +28,7 @@ export type {
   BackedUpSnapshot,
   BackupGateway,
   BackupSaveResult,
+  BackupSnapshotSummary,
   BackupWriteOutcome,
   MemoBackupPayload,
   StoredCurrentMemo,

@@ -10,8 +10,10 @@ import {
   backupMemos,
   encodeMemoDocumentId,
   deleteBackedUpMemo,
+  listBackupSnapshotSummaries,
   listBackupSnapshots,
   listBackedUpMemos,
+  loadBackupSnapshot,
   type BackupGateway,
   type BackupSaveResult,
   type MemoBackupPayload,
@@ -26,6 +28,85 @@ import {
 } from "./testing/fakeFirestoreBackupDriver";
 
 describe("memo-sync backup", () => {
+  it("restores the first selected daily summary by loading only its snapshot ID", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    await backupMemos(
+      gateway,
+      userId,
+      [createMemo({ id: "memo-old", now: "2026-05-13T09:00:00.000Z" })],
+      "2026-05-13T09:01:00.000Z"
+    );
+    await backupMemos(
+      gateway,
+      userId,
+      [createMemo({ id: "memo-new", now: "2026-05-13T09:02:00.000Z" })],
+      "2026-05-13T09:03:00.000Z"
+    );
+
+    const restored = await restoreLatestBackup(gateway, userId);
+
+    expect(restored?.memos[0]?.id).toBe("memo-new");
+    expect(gateway.snapshotLoadCount).toBe(1);
+  });
+
+  it("filters daily summaries before any snapshot payload is loaded", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    await backupMemos(
+      gateway,
+      userId,
+      [createMemo({ id: "memo-one", now: "2026-05-12T09:00:00.000Z" })],
+      "2026-05-12T09:01:00.000Z"
+    );
+    await backupMemos(
+      gateway,
+      userId,
+      [createMemo({ id: "memo-two", now: "2026-05-13T09:00:00.000Z" })],
+      "2026-05-13T09:01:00.000Z"
+    );
+
+    const summaries = await listBackupSnapshotSummaries(
+      gateway,
+      userId,
+      "2026-05-13T10:00:00.000Z"
+    );
+
+    expect(summaries.map((summary) => summary.kstDate)).toEqual([
+      "2026-05-13",
+      "2026-05-12",
+    ]);
+    expect(gateway.snapshotLoadCount).toBe(0);
+  });
+
+  it("returns null instead of a partial payload when a selected child wrapper is invalid", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = new FirestoreBackupGateway({} as never, driver as never);
+    const memo = createMemo({ id: "memo-valid", now: "2026-05-13T09:00:00.000Z" });
+    driver.seed("users/user-1/backupSnapshots/malformed-selected", {
+      schemaVersion: 3,
+      userId: "user-1",
+      clientCreatedAt: "2026-05-13T09:00:00.000Z",
+      memoCount: 2,
+      contentHash: "a".repeat(64),
+      previewText: "손상 선택",
+      state: "complete",
+      savedAt: new FakeTimestamp("2026-05-13T09:01:00.000Z"),
+    });
+    driver.seed("users/user-1/backupSnapshots/malformed-selected/memosV3/memo-valid", {
+      userId: "user-1",
+      memoId: "memo-valid",
+      memo,
+    });
+    driver.seed("users/user-1/backupSnapshots/malformed-selected/memosV3/memo-invalid", {
+      userId: "another-user",
+      memoId: "memo-invalid",
+      memo: { ...memo, id: "memo-invalid" },
+    });
+
+    await expect(loadBackupSnapshot(gateway, "user-1", "malformed-selected")).resolves.toBeNull();
+  });
+
   it("stores a version-1 local payload while returning the snapshot path", async () => {
     const gateway = new FakeBackupGateway();
     const memos = [createMemo({ id: "memo-1", now: "2026-05-13T09:00:00.000Z" })];
@@ -218,11 +299,11 @@ describe("memo-sync backup", () => {
       savedAt: "",
     });
 
-    const backups = await gateway.loadBackups("user-1");
+    const backup = await gateway.loadBackup("user-1", "legacy-inline");
     const restored = await restoreLatestBackup(gateway, "user-1");
     const snapshots = await listBackupSnapshots(gateway, "user-1");
 
-    expect(backups).toHaveLength(1);
+    expect(backup).not.toBeNull();
     expect(restored?.memos[0]).toMatchObject({
       id: legacyMemo.id,
       createdAt: "1970-01-01T00:00:00.000Z",
@@ -278,17 +359,27 @@ describe("memo-sync backup", () => {
         return { path: "", snapshotId: "", outcome: "created", cleanupPending: false };
       }
 
-      async loadLatestBackup(): Promise<unknown | null> {
+      async listBackupSummaries() {
+        return [{
+          id: "invalid",
+          savedAt: "2026-05-13T09:00:00.000Z",
+          kstDate: "2026-05-13",
+          memoCount: 0,
+          previewText: "",
+          contentHash: null,
+          schemaVersion: 2 as const,
+          state: "complete" as const,
+          legacyUndated: false,
+        }];
+      }
+
+      async loadBackup(): Promise<unknown | null> {
         return {
           version: 2,
           userId: "user-1",
           createdAt: "2026-05-13T09:00:00.000Z",
           memos: [],
         };
-      }
-
-      async loadBackups(): Promise<unknown[]> {
-        return [await this.loadLatestBackup()];
       }
 
       async loadCurrentMemos(): Promise<StoredCurrentMemo[]> {
