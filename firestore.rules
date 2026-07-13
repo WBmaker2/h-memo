@@ -218,8 +218,7 @@ service cloud.firestore {
 
     match /users/{uid}/memos/{memoId} {
       allow read: if isOwner(uid);
-      allow create: if isOwner(uid) && hasValidCanonicalMemoShape(uid, memoId);
-      allow update: if isOwner(uid) && hasValidCanonicalMemoTransition(uid, memoId);
+      allow create, update: if false;
       allow delete: if false;
     }
 
@@ -232,7 +231,7 @@ service cloud.firestore {
 
     match /users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId} {
       allow read: if isOwner(uid);
-      allow create: if isOwner(uid) && hasValidSnapshotMemoShape(uid, memoId);
+      allow create: if false;
       allow update, delete: if false;
     }
 
@@ -247,6 +246,24 @@ service cloud.firestore {
     }
 
     match /users/{uid}/serverMemoDeletes/{memoId} {
+      allow read: if isOwner(uid);
+      allow create, update, delete: if false;
+    }
+
+    match /users/{uid}/memosV2/{memoId} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid) && hasValidCanonicalMemoShape(uid, memoId);
+      allow update: if isOwner(uid) && hasValidCanonicalMemoTransition(uid, memoId);
+      allow delete: if false;
+    }
+
+    match /users/{uid}/backupSnapshots/{snapshotId}/memosV2/{memoId} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid) && hasValidSnapshotMemoShape(uid, memoId);
+      allow update, delete: if false;
+    }
+
+    match /users/{uid}/serverMemoDeletesV2/{memoId} {
       allow read: if isOwner(uid);
       allow create, update: if isOwner(uid) && hasValidServerMemoDeleteShape(uid, memoId);
       allow delete: if isOwner(uid);

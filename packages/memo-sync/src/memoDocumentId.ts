@@ -43,6 +43,12 @@ export function decodeMemoDocumentId(documentId: string): string {
 }
 
 export function isMemoDocumentIdFor(documentId: string, memoId: string): boolean {
+  // A legacy raw document may itself look like an encoded path. Prefer the
+  // stored original ID before attempting the v2 codec.
+  if (documentId === memoId) {
+    return true;
+  }
+
   if (ENCODED_MEMO_DOCUMENT_ID.test(documentId)) {
     try {
       return decodeMemoDocumentId(documentId) === memoId;
@@ -59,7 +65,6 @@ export function canUseLegacyRawMemoDocumentId(memoId: string): boolean {
     memoId.length > 0 &&
     memoId !== "." &&
     memoId !== ".." &&
-    !memoId.includes("/") &&
-    !ENCODED_MEMO_DOCUMENT_ID.test(memoId)
+    !memoId.includes("/")
   );
 }

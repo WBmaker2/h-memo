@@ -13,9 +13,20 @@ export type RestoreSafetyPoint = {
 const INVALID_RESTORE_SAFETY_POINT_MESSAGE = "복원 안전 지점 데이터가 올바르지 않습니다.";
 const RESTORE_SAFETY_SAVE_FAILED_MESSAGE =
   "복원 안전 지점을 저장하지 못했습니다. 저장 공간을 확인해 주세요.";
+const ISO_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
+}
+
+function isStrictTimestamp(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    ISO_TIMESTAMP_PATTERN.test(value) &&
+    !Number.isNaN(Date.parse(value))
+  );
 }
 
 function isRestoreSafetyPoint(value: unknown): value is RestoreSafetyPoint {
@@ -27,9 +38,7 @@ function isRestoreSafetyPoint(value: unknown): value is RestoreSafetyPoint {
     return false;
   }
   if (
-    typeof value.createdAt !== "string" ||
-    value.createdAt.trim() === "" ||
-    Number.isNaN(Date.parse(value.createdAt))
+    !isStrictTimestamp(value.createdAt)
   ) {
     return false;
   }

@@ -1,4 +1,9 @@
-import type { BackupPayload, Memo, ValidationResult } from "@h-memo/memo-core";
+import {
+  validateBackupPayload,
+  type BackupPayload,
+  type Memo,
+  type ValidationResult,
+} from "@h-memo/memo-core";
 
 const INVALID_MEMO_REASON = "잘못된 메모 데이터가 포함되어 있습니다.";
 const SYNC_STATES: Memo["syncState"][] = [
@@ -7,6 +12,7 @@ const SYNC_STATES: Memo["syncState"][] = [
   "backed-up",
   "conflict",
 ];
+const LEGACY_TIMESTAMP_FALLBACK = "1970-01-01T00:00:00.000Z";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -61,9 +67,55 @@ function isLegacyMemoShape(value: unknown): value is Memo {
   );
 }
 
+function normalizeTimestamp(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function earliestTimestamp(values: Array<string | null>): string | null {
+  return values.filter((value): value is string => value !== null).sort()[0] ?? null;
+}
+
+function normalizeLegacyPayload(value: UnknownRecord): BackupPayload {
+  const rawMemos = value.memos as Memo[];
+  const payloadCreatedAt = normalizeTimestamp(value.createdAt);
+  const validMemoTimestamp = earliestTimestamp(
+    rawMemos.flatMap((memo) => [normalizeTimestamp(memo.createdAt), normalizeTimestamp(memo.updatedAt)])
+  );
+  const fallbackTimestamp = payloadCreatedAt ?? validMemoTimestamp ?? LEGACY_TIMESTAMP_FALLBACK;
+  const memos = rawMemos.map((memo) => {
+    const updatedAt = normalizeTimestamp(memo.updatedAt);
+    const createdAt = normalizeTimestamp(memo.createdAt) ?? updatedAt ?? fallbackTimestamp;
+    const normalizedUpdatedAt = updatedAt === null || updatedAt < createdAt ? createdAt : updatedAt;
+    const deletedAt =
+      memo.deletedAt === null || (typeof memo.deletedAt === "string" && memo.deletedAt.trim() === "")
+        ? null
+        : normalizeTimestamp(memo.deletedAt) ?? normalizedUpdatedAt;
+
+    return {
+      ...memo,
+      createdAt,
+      updatedAt: normalizedUpdatedAt,
+      deletedAt,
+    };
+  });
+
+  return {
+    version: 1,
+    userId: value.userId as string,
+    createdAt: payloadCreatedAt ?? earliestTimestamp(memos.map((memo) => memo.createdAt)) ?? fallbackTimestamp,
+    memos,
+  };
+}
+
 /**
- * Reads only the old inline Firestore shape. Timestamp strings are metadata
- * here, so the pre-v2 reader intentionally preserves even empty/non-ISO values.
+ * Reads the old inline Firestore shape and returns a strict-valid local
+ * payload. Valid timestamps keep their instant; invalid legacy timestamp
+ * fields use deterministic fallbacks before local restore can mutate state.
  */
 export function validateLegacyFirestoreV1Payload(
   value: unknown,
@@ -100,10 +152,7 @@ export function validateLegacyFirestoreV1Payload(
     return { ok: false, reason: INVALID_MEMO_REASON };
   }
 
-  return {
-    ok: true,
-    payload: value as BackupPayload,
-  };
+  return validateBackupPayload(normalizeLegacyPayload(value), expectedUserId);
 }
 
 export const parseLegacyFirestoreV1Payload = validateLegacyFirestoreV1Payload;

@@ -136,9 +136,12 @@ export interface BackupGateway {
 const backupSnapshotsCollection = "backupSnapshots";
 const backupStateCollection = "backupState";
 const backupStateDocument = "current";
-const canonicalMemosCollection = "memos";
-const snapshotMemosCollection = "memos";
-const serverMemoDeletesCollection = "serverMemoDeletes";
+const legacyCanonicalMemosCollection = "memos";
+const canonicalMemosCollection = "memosV2";
+const legacySnapshotMemosCollection = "memos";
+const snapshotMemosCollection = "memosV2";
+const legacyServerMemoDeletesCollection = "serverMemoDeletes";
+const serverMemoDeletesCollection = "serverMemoDeletesV2";
 const maxMemosPerBatch = 200;
 
 type FirestoreTimestamp = {
@@ -290,6 +293,7 @@ type CanonicalReference = {
 type CanonicalMemoCandidate = {
   ref: unknown;
   snapshot: DriverDocumentSnapshot;
+  isLegacy: boolean;
 };
 
 function readCanonicalReference(value: unknown): CanonicalReference | null {
@@ -322,6 +326,34 @@ function canonicalReferenceData(reference: CanonicalReference | null) {
         snapshotId: reference.snapshotId,
         savedAt: reference.savedAt,
       };
+}
+
+function isMemoDocumentForPath(
+  documentId: string,
+  memoId: string,
+  isLegacy: boolean
+): boolean {
+  // A legacy raw path can also look like a v2 encoded ID. Only an exact
+  // stored-ID match is safe there; new writes use the isolated v2 namespace.
+  return isLegacy ? documentId === memoId : documentId === encodeMemoDocumentId(memoId);
+}
+
+function isStoredCanonicalMemoFor(
+  snapshot: DriverDocumentSnapshot,
+  userId: string,
+  memoId: string,
+  isLegacy: boolean
+): boolean {
+  if (!snapshot.exists()) {
+    return false;
+  }
+
+  const data = snapshot.data();
+  return (
+    data.userId === userId &&
+    data.memoId === memoId &&
+    isMemoDocumentForPath(snapshot.id, memoId, isLegacy)
+  );
 }
 
 export class FirestoreBackupGateway implements BackupGateway {
@@ -359,14 +391,27 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   private canonicalMemoDocCandidates(userId: string, memoId: string) {
-    const encodedDocumentId = encodeMemoDocumentId(memoId);
-    const candidates = [this.canonicalMemoDoc(userId, memoId)];
-    if (canUseLegacyRawMemoDocumentId(memoId) && encodedDocumentId !== memoId) {
-      candidates.push(
-        this.driver.doc(this.firestore, "users", userId, canonicalMemosCollection, memoId)
-      );
+    const documentIds = [encodeMemoDocumentId(memoId)];
+    if (canUseLegacyRawMemoDocumentId(memoId)) {
+      documentIds.push(memoId);
     }
-    return candidates;
+
+    return [
+      {
+        ref: this.canonicalMemoDoc(userId, memoId),
+        isLegacy: false,
+      },
+      ...[...new Set(documentIds)].map((documentId) => ({
+        ref: this.driver.doc(
+          this.firestore,
+          "users",
+          userId,
+          legacyCanonicalMemosCollection,
+          documentId
+        ),
+        isLegacy: true,
+      })),
+    ];
   }
 
   private deletedMemoCollection(userId: string) {
@@ -380,6 +425,15 @@ export class FirestoreBackupGateway implements BackupGateway {
       userId,
       serverMemoDeletesCollection,
       encodeMemoDocumentId(memoId)
+    );
+  }
+
+  private legacyDeletedMemoDocs(userId: string) {
+    return this.driver.collection(
+      this.firestore,
+      "users",
+      userId,
+      legacyServerMemoDeletesCollection
     );
   }
 
@@ -434,16 +488,19 @@ export class FirestoreBackupGateway implements BackupGateway {
           memoChunk.map(async (memo) => {
             const candidates = this.canonicalMemoDocCandidates(userId, memo.id);
             const snapshots = await Promise.all(
-              candidates.map((candidate) => transaction.get(candidate))
+              candidates.map((candidate) => transaction.get(candidate.ref))
             );
             const entries: CanonicalMemoCandidate[] = candidates.map((ref, index) => ({
-              ref,
+              ref: ref.ref,
               snapshot: snapshots[index]!,
+              isLegacy: ref.isLegacy,
             }));
             let previousActiveReference: CanonicalReference | null = null;
             if (activeSnapshotId) {
               for (const entry of entries) {
-                if (!entry.snapshot.exists()) {
+                if (
+                  !isStoredCanonicalMemoFor(entry.snapshot, userId, memo.id, entry.isLegacy)
+                ) {
                   continue;
                 }
                 const reference = canonicalReferenceForSnapshot(
@@ -458,7 +515,9 @@ export class FirestoreBackupGateway implements BackupGateway {
             }
             return {
               primary: entries[0]!,
-              existing: entries.filter((entry) => entry.snapshot.exists()),
+              existing: entries.filter((entry) =>
+                isStoredCanonicalMemoFor(entry.snapshot, userId, memo.id, entry.isLegacy)
+              ),
               previousActiveReference,
             };
           })
@@ -475,6 +534,16 @@ export class FirestoreBackupGateway implements BackupGateway {
           };
 
           if (canonicalMemo.primary.snapshot.exists()) {
+            if (
+              !isStoredCanonicalMemoFor(
+                canonicalMemo.primary.snapshot,
+                userId,
+                memo.id,
+                canonicalMemo.primary.isLegacy
+              )
+            ) {
+              throw new Error(`Canonical memo document does not match memo ID: ${memo.id}`);
+            }
             transaction.update(canonicalMemo.primary.ref, stagedReferences);
           } else {
             transaction.set(canonicalMemo.primary.ref, {
@@ -482,11 +551,6 @@ export class FirestoreBackupGateway implements BackupGateway {
               memoId: memo.id,
               ...stagedReferences,
             });
-          }
-          for (const existingCanonicalMemo of canonicalMemo.existing) {
-            if (existingCanonicalMemo !== canonicalMemo.primary) {
-              transaction.update(existingCanonicalMemo.ref, stagedReferences);
-            }
           }
           transaction.set(
             this.driver.doc(
@@ -595,27 +659,35 @@ export class FirestoreBackupGateway implements BackupGateway {
       return null;
     }
 
-    const memoDocs = await this.driver.getDocs(
-      this.driver.collection(snapshot.ref, snapshotMemosCollection)
-    );
-    if (memoDocs.docs.length !== data.memoCount) {
+    const [currentMemoDocs, legacyMemoDocs] = await Promise.all([
+      this.driver.getDocs(this.driver.collection(snapshot.ref, snapshotMemosCollection)),
+      this.driver.getDocs(this.driver.collection(snapshot.ref, legacySnapshotMemosCollection)),
+    ]);
+    const memoDocs = [
+      ...currentMemoDocs.docs.map((memoSnapshot) => ({ memoSnapshot, isLegacy: false })),
+      ...legacyMemoDocs.docs.map((memoSnapshot) => ({ memoSnapshot, isLegacy: true })),
+    ];
+    if (memoDocs.length !== data.memoCount) {
       return null;
     }
 
     const memos: Memo[] = [];
-    for (const memoSnapshot of memoDocs.docs) {
+    const seenMemoIds = new Set<string>();
+    for (const { memoSnapshot, isLegacy } of memoDocs) {
       const wrapper = memoSnapshot.data();
       const memo = wrapper.memo;
       const memoId = wrapper.memoId;
       if (
         wrapper.userId !== userId ||
         typeof memoId !== "string" ||
-        !isMemoDocumentIdFor(memoSnapshot.id, memoId) ||
+        !isMemoDocumentForPath(memoSnapshot.id, memoId, isLegacy) ||
         !isValidMemo(memo, userId) ||
-        memo.id !== memoId
+        memo.id !== memoId ||
+        seenMemoIds.has(memoId)
       ) {
         return null;
       }
+      seenMemoIds.add(memoId);
       memos.push(memo);
     }
 
@@ -658,10 +730,19 @@ export class FirestoreBackupGateway implements BackupGateway {
     const snapshotMemosById = new Map(
       activeSnapshot.payload.memos.map((memo) => [memo.id, memo])
     );
-    const memoDocs = await this.driver.getDocs(this.canonicalMemoCollection(userId));
+    const [currentMemoDocs, legacyMemoDocs] = await Promise.all([
+      this.driver.getDocs(this.canonicalMemoCollection(userId)),
+      this.driver.getDocs(
+        this.driver.collection(this.firestore, "users", userId, legacyCanonicalMemosCollection)
+      ),
+    ]);
+    const memoDocs = [
+      ...currentMemoDocs.docs.map((memoSnapshot) => ({ memoSnapshot, isLegacy: false })),
+      ...legacyMemoDocs.docs.map((memoSnapshot) => ({ memoSnapshot, isLegacy: true })),
+    ];
     const currentMemos: StoredCurrentMemo[] = [];
     const seenMemoIds = new Set<string>();
-    for (const memoSnapshot of memoDocs.docs) {
+    for (const { memoSnapshot, isLegacy } of memoDocs) {
       const data = memoSnapshot.data();
       const reference = canonicalReferenceForSnapshot(data, activeSnapshotId);
       const memoId = data.memoId;
@@ -670,7 +751,7 @@ export class FirestoreBackupGateway implements BackupGateway {
       if (
         data.userId !== userId ||
         typeof memoId !== "string" ||
-        !isMemoDocumentIdFor(memoSnapshot.id, memoId) ||
+        !isMemoDocumentForPath(memoSnapshot.id, memoId, isLegacy) ||
         reference?.snapshotId !== activeSnapshotId ||
         !isValidMemo(memo, userId) ||
         memo.id !== memoId ||
@@ -686,24 +767,30 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   async loadDeletedMemoIds(userId: string): Promise<string[]> {
-    const [currentMemos, querySnapshot] = await Promise.all([
+    const [currentMemos, querySnapshot, legacyQuerySnapshot] = await Promise.all([
       this.loadCurrentMemos(userId),
       this.driver.getDocs(this.deletedMemoCollection(userId)),
+      this.driver.getDocs(this.legacyDeletedMemoDocs(userId)),
     ]);
     const activeMemoIds = new Set(currentMemos.map((entry) => entry.memo.id));
-    return querySnapshot.docs
-      .flatMap((snapshot) => {
+    const seenMemoIds = new Set<string>();
+    return [
+      ...querySnapshot.docs.map((snapshot) => ({ snapshot, isLegacy: false })),
+      ...legacyQuerySnapshot.docs.map((snapshot) => ({ snapshot, isLegacy: true })),
+    ].flatMap(({ snapshot, isLegacy }) => {
         const data = snapshot.data();
         const memoId = data.memoId;
         if (
           data.userId !== userId ||
           typeof memoId !== "string" ||
-          !isMemoDocumentIdFor(snapshot.id, memoId) ||
+          !isMemoDocumentForPath(snapshot.id, memoId, isLegacy) ||
           snapshot.id.trim() === "" ||
-          activeMemoIds.has(memoId)
+          activeMemoIds.has(memoId) ||
+          seenMemoIds.has(memoId)
         ) {
           return [];
         }
+        seenMemoIds.add(memoId);
         return [memoId];
       });
   }
@@ -719,10 +806,11 @@ export class FirestoreBackupGateway implements BackupGateway {
 
       const canonicalCandidates = this.canonicalMemoDocCandidates(userId, memoId);
       const canonicalSnapshots = await Promise.all(
-        canonicalCandidates.map((candidate) => transaction.get(candidate))
+        canonicalCandidates.map((candidate) => transaction.get(candidate.ref))
       );
       const matchingCanonicalMemos = canonicalSnapshots.flatMap((canonicalMemo, index) => {
-        if (!canonicalMemo.exists()) {
+        const candidate = canonicalCandidates[index]!;
+        if (!isStoredCanonicalMemoFor(canonicalMemo, userId, memoId, candidate.isLegacy)) {
           return [];
         }
         const data = canonicalMemo.data();
@@ -738,7 +826,7 @@ export class FirestoreBackupGateway implements BackupGateway {
           return [];
         }
         return [{
-          ref: canonicalCandidates[index]!,
+          ref: candidate.ref,
           active,
           pending,
           activeMatches,

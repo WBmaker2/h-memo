@@ -29,9 +29,21 @@ describe("memo Firestore document-id codec", () => {
 
     expect(encodedNul).toBe("memo~0000");
     expect(isMemoDocumentIdFor(encodedNul, "\u0000")).toBe(true);
-    expect(isMemoDocumentIdFor(encodedNul, "memo~0000")).toBe(false);
+    expect(isMemoDocumentIdFor(encodedNul, "memo~0000")).toBe(true);
     expect(isMemoDocumentIdFor("memo~legacy", "memo~legacy")).toBe(true);
-    expect(canUseLegacyRawMemoDocumentId("memo~0000")).toBe(false);
+    expect(canUseLegacyRawMemoDocumentId("memo~0000")).toBe(true);
     expect(canUseLegacyRawMemoDocumentId("memo~legacy")).toBe(true);
+  });
+
+  it("round-trips empty, reserved-prefix raw, unsafe, Unicode, and edge IDs", () => {
+    const memoIds = ["", "memo~003f", "?", "a/b", "a?b", "유니코드", ".", ".."];
+    const documentIds = memoIds.map(encodeMemoDocumentId);
+
+    expect(new Set(documentIds).size).toBe(memoIds.length);
+    expect(documentIds.map(decodeMemoDocumentId)).toEqual(memoIds);
+    expect(isMemoDocumentIdFor("memo~003f", "memo~003f")).toBe(true);
+    expect(canUseLegacyRawMemoDocumentId("")).toBe(false);
+    expect(canUseLegacyRawMemoDocumentId(".")).toBe(false);
+    expect(canUseLegacyRawMemoDocumentId("../memo")).toBe(false);
   });
 });

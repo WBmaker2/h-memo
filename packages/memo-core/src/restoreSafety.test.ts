@@ -92,6 +92,13 @@ describe("restoreSafety", () => {
     expect(restoreSafety.loadRestoreSafetyPoint(storage)).toBeNull();
   });
 
+  it("rejects a safety point whose envelope timestamp is not canonical ISO", () => {
+    const point = createSafetyPoint();
+    point.createdAt = "May 13, 2026";
+
+    expect(restoreSafety.loadRestoreSafetyPoint(createStorage(JSON.stringify(point)))).toBeNull();
+  });
+
   it("rejects a safety point whose nested memo timestamp is not parseable", () => {
     const point = createSafetyPoint();
     point.payload = {

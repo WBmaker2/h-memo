@@ -43,6 +43,29 @@ describe("Firestore backup rules", () => {
     expect(rules).not.toContain('"generations"');
   });
 
+  it("isolates new memo writes in versioned namespaces while retaining legacy reads", () => {
+    const rules = readFileSync(path.resolve("firestore.rules"), "utf8");
+    const legacyCanonicalRules = rules.slice(
+      rules.indexOf("match /users/{uid}/memos/{memoId}"),
+      rules.indexOf("match /users/{uid}/backupSnapshots/{snapshotId}")
+    );
+    const legacySnapshotRules = rules.slice(
+      rules.indexOf("match /users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId}"),
+      rules.indexOf("match /users/{uid}/backupState/current")
+    );
+
+    expect(rules).toContain("match /users/{uid}/memosV2/{memoId}");
+    expect(rules).toContain(
+      "match /users/{uid}/backupSnapshots/{snapshotId}/memosV2/{memoId}"
+    );
+    expect(rules).toContain("match /users/{uid}/serverMemoDeletesV2/{memoId}");
+    expect(legacyCanonicalRules).toContain("allow read: if isOwner(uid);");
+    expect(legacyCanonicalRules).not.toContain("allow create: if isOwner(uid)");
+    expect(legacyCanonicalRules).not.toContain("allow update: if isOwner(uid)");
+    expect(legacySnapshotRules).toContain("allow read: if isOwner(uid);");
+    expect(legacySnapshotRules).not.toContain("allow create: if isOwner(uid)");
+  });
+
   it("allows immutable owner-created schema-v2 snapshot memo documents", () => {
     const rules = readFileSync(path.resolve("firestore.rules"), "utf8");
 
