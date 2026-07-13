@@ -71,23 +71,41 @@ Firebase Console → **Authentication** → **Settings** → **Authorized domain
 
 ## 5) Firestore 경로 및 규칙
 
-백업 문서는 아래 v2 경로를 사용합니다.
+백업 문서는 기존 v1·v2와 현재 신규 v3 경로를 함께 사용합니다.
 
-- 현재 서버 메모: `users/{uid}/memos/{memoId}`
+- 기존 서버 메모(v1): `users/{uid}/memos/{memoId}`
+- 기존 v2 서버 메모: `users/{uid}/memosV2/{encodedMemoId}`
 - 스냅샷 메타데이터: `users/{uid}/backupSnapshots/{snapshotId}`
-- 불변 스냅샷 메모: `users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId}`
+- v3 불변 스냅샷 본문: `users/{uid}/backupSnapshots/{snapshotId}/memosV3/{encodedMemoId}`
+- 기존 v2 불변 스냅샷 본문: `users/{uid}/backupSnapshots/{snapshotId}/memosV2/{encodedMemoId}`
 - 현재 활성 generation 포인터: `users/{uid}/backupState/current`
-- 서버 삭제 표시: `users/{uid}/serverMemoDeletes/{memoId}`
+- 기존 서버 삭제 표시(v1): `users/{uid}/serverMemoDeletes/{memoId}`
+- 기존 v2 서버 삭제 표시: `users/{uid}/serverMemoDeletesV2/{encodedMemoId}`
+
+### 현재 신규 백업 규약 (schema v3)
+
+현재 백업은 다음 규약으로 저장하고 복원합니다.
+
+- 신규 쓰기: `users/{uid}/backupSnapshots/{snapshotId}` (`schemaVersion: 3`)
+- 신규 본문: `users/{uid}/backupSnapshots/{snapshotId}/memosV3/{encodedMemoId}`
+- 복원 목록: 스냅샷 메타데이터만 조회하고, 날짜를 선택할 때 해당 스냅샷의 본문을 조회합니다.
+- 보존 기준: `Asia/Seoul` 기준 오늘을 포함한 최근 365개 달력 날짜 중 날짜별 최신 백업 1개
+- 정리 기준: `active` 또는 `pending` 스냅샷은 제외하고, 성공한 신규 백업 뒤 최대 400개 문서를 삭제합니다.
+- 규칙 배포: `npx firebase-tools deploy --only firestore:rules --project h-memo-60c6b`
+
+같은 대한민국 날짜에 백업을 여러 번 하면 마지막으로 완료된 백업만 복원 목록에 남습니다. 같은 날짜에 내용이 같으면 쓰기를 생략하고, 내용이 다르면 새 v3 스냅샷을 완전히 저장·활성화한 뒤 이전 중복 또는 만료 스냅샷을 점진적으로 정리합니다. 백업하지 않은 날짜에는 자리 표시자 문서를 만들지 않습니다. 정리 한도에 걸리거나 정리가 실패해도 새 백업의 활성화는 유지되며 다음 성공한 백업에서 다시 정리합니다.
+
+복원 목록은 `backupSnapshots` 부모 문서의 메타데이터만 읽으므로 처음부터 모든 메모 본문을 읽지 않습니다. 사용자가 특정 날짜를 선택한 뒤에만 `memosV3` 본문을 지연 조회하고 검증합니다. 정리 작업은 현재 `activeSnapshotId`와 `pendingSnapshotId`를 보호하여 활성 또는 작성 중인 백업과 그 하위 본문을 삭제하지 않습니다.
 
 ### 이전 초기 구현 (역사적 기록)
 
 초기 Task 3 구현에서 사용한 canonical `generations.{snapshotId}` map과 그 안의 memo body는 역사적 설계 기록일 뿐입니다. 현재 저장 규약에서는 이 map이나 canonical memo body를 작성하지 않습니다.
 
-### 현재 canonical 규약 (기준)
+### 기존 v2 canonical 규약 (호환 기준)
 
-현재 서버 메모 문서는 정확히 `userId`, `memoId`, `active`, `pending`만 보관합니다. `active`와 `pending`은 `null` 또는 정확히 `snapshotId`와 서버 시각 `savedAt`만 가진 참조 map입니다. 실제 memo body는 오직 `backupSnapshots/{snapshotId}/memos/{memoId}`의 불변 문서에만 보관합니다. `backupState/current`은 `activeSnapshotId`, nullable `pendingSnapshotId`, 서버 `activatedAt`을 보관합니다. 앱은 활성 포인터와 일치하는 `active` 또는 `pending` 참조를 찾은 뒤 해당 불변 body를 검증하여 현재 메모를 노출합니다. 스냅샷 메타데이터는 `schemaVersion: 2`, `userId`, 클라이언트 payload의 `createdAt`, `memoCount`, `state`, 서버 시각 `savedAt`을 저장합니다.
+기존 v2 서버 메모 문서는 정확히 `userId`, `memoId`, `active`, `pending`만 보관합니다. `active`와 `pending`은 `null` 또는 정확히 `snapshotId`와 서버 시각 `savedAt`만 가진 참조 map입니다. 실제 v2 memo body는 `users/{uid}/memosV2/{encodedMemoId}`와 `backupSnapshots/{snapshotId}/memosV2/{encodedMemoId}`의 불변 문서에 보관하고, 역사적 v1 body는 `backupSnapshots/{snapshotId}/memos/{memoId}`에서 호환 읽기합니다. `backupState/current`은 `activeSnapshotId`, nullable `pendingSnapshotId`, 서버 `activatedAt`을 보관합니다. 앱은 활성 포인터와 일치하는 `active` 또는 `pending` 참조를 찾은 뒤 해당 불변 body를 검증하여 현재 메모를 노출합니다. 스냅샷 메타데이터는 `schemaVersion: 2`, `userId`, 클라이언트 payload의 `createdAt`, `memoCount`, `state`, 서버 시각 `savedAt`을 저장합니다.
 
-백업은 시작 transaction에서 `state: "writing"` 메타데이터와 사용자별 `pendingSnapshotId` lease를 함께 기록합니다. 활성 memo ID가 중복되면 이 단계 이전에 실패하며 어떤 Firestore 문서도 쓰지 않습니다. 새 백업은 이전 pending lease를 교체하되 `activeSnapshotId`는 보존하므로, 교체된 백업은 다음 작업에서 안전하게 중단됩니다. 활성 메모는 최대 200개씩 처리하며, 각 transaction은 자기 `pendingSnapshotId`를 확인한 뒤 그 청크의 모든 canonical 문서를 읽고, 그 최신 참조를 기준으로 canonical `pending` 참조와 불변 snapshot body를 최대 400개 write합니다. 이 읽기는 동시 서버 삭제와 충돌하면 transaction을 재시도하게 합니다. 기존 활성 참조는 보존하고, 이전 실패 시 남은 `pending`은 다음 백업이 덮어써 canonical 문서 크기가 고정됩니다. 최종 activation transaction도 같은 lease를 확인한 뒤에만 메타데이터를 `state: "complete"` 및 서버 `savedAt`으로 전환하고, `activeSnapshotId`를 새 snapshot으로 바꾸며 `pendingSnapshotId`를 `null`로 지웁니다. 따라서 body와 참조가 durable해지기 전에는 새 상태가 읽기 경로에 노출되지 않고, superseded 또는 실패한 백업 뒤에도 이전 활성 상태가 유지됩니다. 정리 작업은 `pending`을 `active`로 옮길 수 있지만 정확성은 그 정리에 의존하지 않습니다. 읽기 경로는 완료된 v2 스냅샷만 사용하며, 기록 표시와 정렬에는 서버 `savedAt`을 사용합니다.
+백업은 시작 transaction에서 `state: "writing"` 메타데이터와 사용자별 `pendingSnapshotId` lease를 함께 기록합니다. 활성 memo ID가 중복되면 이 단계 이전에 실패하며 어떤 Firestore 문서도 쓰지 않습니다. 새 백업은 이전 pending lease를 교체하되 `activeSnapshotId`는 보존하므로, 교체된 백업은 다음 작업에서 안전하게 중단됩니다. 활성 메모는 최대 200개씩 처리하며, 각 transaction은 자기 `pendingSnapshotId`를 확인한 뒤 그 청크의 모든 canonical 문서를 읽고, 그 최신 참조를 기준으로 canonical `pending` 참조와 불변 snapshot body를 최대 400개 write합니다. 이 읽기는 동시 서버 삭제와 충돌하면 transaction을 재시도하게 합니다. 기존 활성 참조는 보존하고, 이전 실패 시 남은 `pending`은 다음 백업이 덮어써 canonical 문서 크기가 고정됩니다. 최종 activation transaction도 같은 lease를 확인한 뒤에만 메타데이터를 `state: "complete"` 및 서버 `savedAt`으로 전환하고, `activeSnapshotId`를 새 snapshot으로 바꾸며 `pendingSnapshotId`를 `null`로 지웁니다. 따라서 body와 참조가 durable해지기 전에는 새 상태가 읽기 경로에 노출되지 않고, superseded 또는 실패한 백업 뒤에도 이전 활성 상태가 유지됩니다. 정리 작업은 `pending`을 `active`로 옮길 수 있지만 정확성은 그 정리에 의존하지 않습니다. 기존 v2 호환 읽기 경로는 완료된 v2 스냅샷만 사용하며, 기록 표시와 정렬에는 서버 `savedAt`을 사용합니다.
 
 `uid` 단위로 사용자를 격리해야 합니다.
 

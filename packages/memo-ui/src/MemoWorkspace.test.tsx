@@ -36,6 +36,12 @@ describe("MemoWorkspace", () => {
     expect(screen.getByRole("region", { name: "업데이트 내역" })).toBeInTheDocument();
     expect(screen.getByText("2026-05-13")).toBeInTheDocument();
     expect(screen.getByText("최종 호환성 보강")).toBeInTheDocument();
+    expect(screen.getByText("KST 일별 백업 보존")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "대한민국 날짜별 최신 백업 1개를 최근 365일 동안 보관하고, 선택한 날짜의 메모만 불러오도록 개선했습니다.",
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(/Node\/환경이 달라도 한국어 오전·오후 표기가 일관되게 보이도록 보강했습니다\./),
     ).toBeInTheDocument();

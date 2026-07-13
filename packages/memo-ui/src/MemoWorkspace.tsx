@@ -20,6 +20,12 @@ const UPDATE_HISTORY = [
     detail:
       "legacy 백업, memo ID codec, 창 예약 복구, 삭제 재조정을 보강했습니다. Node/환경이 달라도 한국어 오전·오후 표기가 일관되게 보이도록 보강했습니다.",
   },
+  {
+    date: "2026-07-13",
+    title: "KST 일별 백업 보존",
+    detail:
+      "대한민국 날짜별 최신 백업 1개를 최근 365일 동안 보관하고, 선택한 날짜의 메모만 불러오도록 개선했습니다.",
+  },
 ] as const;
 
 type MemoWorkspaceShellProps = {
@@ -136,7 +142,7 @@ export function MemoWorkspace({
           <h2 className="memo-menu__updates-title">업데이트 내역</h2>
           <ul className="memo-menu__updates-list">
             {UPDATE_HISTORY.map((entry) => (
-              <li key={entry.date}>
+              <li key={`${entry.date}-${entry.title}`}>
                 <time dateTime={entry.date}>{entry.date}</time>
                 <strong>{entry.title}</strong>
                 <span>{entry.detail}</span>

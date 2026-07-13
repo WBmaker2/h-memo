@@ -28,6 +28,13 @@ const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
     ],
   },
   {
+    date: "2026-07-13",
+    title: "KST 일별 백업 보존",
+    items: [
+      "대한민국 날짜별 최신 백업 1개를 최근 365일 동안 보관하고, 선택한 날짜의 메모만 불러오도록 개선했습니다.",
+    ],
+  },
+  {
     date: "2026-07-12",
     title: "데이터 안전성, 복원 안전성, 접근성, 메뉴 개선",
     items: [
@@ -222,7 +229,7 @@ export function LandingPage() {
               {RELEASE_HISTORY.map((release) => (
                 <article
                   className="landing-page__release-card"
-                  key={release.date ?? release.version}
+                  key={`${release.date ?? release.version}-${release.title}`}
                 >
                   <h3>
                     {release.date ? (
