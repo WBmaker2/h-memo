@@ -36,6 +36,31 @@ describe("StickyMemo", () => {
     });
   });
 
+  it("blocks body and style edits while restore mutation is locked", async () => {
+    const user = userEvent.setup();
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-locked" });
+    const onChange = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        onChange={onChange}
+        onDelete={vi.fn()}
+        isEditingDisabled
+      />
+    );
+
+    const content = screen.getByRole("textbox", { name: "메모 내용" });
+    expect(content).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "노란색 배경" })).toBeDisabled();
+
+    fireEvent.change(content, { target: { value: "잠금 중 변경" } });
+    await user.click(screen.getByRole("button", { name: "노란색 배경" }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(content).toHaveValue("");
+  });
+
   it("renders memo menu sections with style and app actions", async () => {
     const user = userEvent.setup();
     const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-menu" });
@@ -124,6 +149,38 @@ describe("StickyMemo", () => {
     expect(screen.queryByRole("button", { name: "종료" })).not.toBeInTheDocument();
   });
 
+  it("disables titlebar close controls while restore mutation is locked", async () => {
+    const user = userEvent.setup();
+    const memo = createMemo({
+      now: "2026-07-13T09:00:00.000Z",
+      id: "memo-locked-close",
+      plainText: "잠긴 메모",
+    });
+    const onCloseMemo = vi.fn();
+    const onRequestWindowClose = vi.fn();
+
+    render(
+      <StickyMemo
+        memo={memo}
+        onChange={vi.fn()}
+        onDelete={vi.fn()}
+        onCloseMemo={onCloseMemo}
+        onRequestWindowClose={onRequestWindowClose}
+        isEditingDisabled
+      />
+    );
+
+    const memoClose = screen.getByRole("button", { name: "잠긴 메모 메모창 닫기" });
+    const appClose = screen.getByRole("button", { name: "종료" });
+    expect(memoClose).toBeDisabled();
+    expect(appClose).toBeDisabled();
+
+    await user.click(memoClose);
+    await user.click(appClose);
+    expect(onCloseMemo).not.toHaveBeenCalled();
+    expect(onRequestWindowClose).not.toHaveBeenCalled();
+  });
+
   it("closes another memo menu when a different memo menu opens", async () => {
     const user = userEvent.setup();
     const firstMemo = createMemo({
@@ -174,6 +231,9 @@ describe("StickyMemo", () => {
       />
     );
 
+    const titlebar = screen.getByLabelText("상단 메뉴바");
+    expect(titlebar).toHaveAttribute("data-tauri-drag-region");
+    expect(titlebar).toHaveAttribute("title", "드래그해서 이동, 더블클릭해서 접기/펼치기");
     fireEvent.mouseDown(screen.getByLabelText("상단 메뉴바"), { button: 0 });
     fireEvent.pointerDown(screen.getByLabelText("창 크기 조절"), { button: 0 });
     expect(screen.queryByRole("button", { name: "최소화" })).not.toBeInTheDocument();
@@ -183,6 +243,36 @@ describe("StickyMemo", () => {
     expect(onRequestWindowDrag).toHaveBeenCalledTimes(1);
     expect(onRequestWindowResize).toHaveBeenCalledWith("SouthEast");
     expect(onRequestWindowClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the memo menu with Escape and restores focus to its summary", async () => {
+    const user = userEvent.setup();
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-escape" });
+
+    render(<StickyMemo memo={memo} onChange={vi.fn()} onDelete={vi.fn()} />);
+
+    const summary = screen.getByTitle("메모 메뉴");
+    const menu = summary.closest("details");
+    await user.click(summary);
+    const deleteButton = screen.getByRole("button", { name: "메모 삭제" });
+    deleteButton.focus();
+
+    await user.keyboard("{Escape}");
+
+    expect(menu).not.toHaveAttribute("open");
+    expect(summary).toHaveFocus();
+  });
+
+  it("omits native drag and resize affordances when handlers are absent", () => {
+    const memo = createMemo({ now: "2026-05-13T09:00:00.000Z", id: "memo-web" });
+
+    render(<StickyMemo memo={memo} onChange={vi.fn()} onDelete={vi.fn()} />);
+
+    const titlebar = screen.getByLabelText("상단 메뉴바");
+    expect(titlebar).not.toHaveAttribute("data-tauri-drag-region");
+    expect(titlebar).not.toHaveAttribute("title");
+    expect(titlebar.querySelector("[data-tauri-drag-region]")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("창 크기 조절")).not.toBeInTheDocument();
   });
 
   it("renders the app version next to the title", () => {

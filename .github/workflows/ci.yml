@@ -29,6 +29,9 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Test Firestore security rules
+        run: npm run test:firestore-rules
+
       - name: Run typecheck
         run: npm run typecheck
 

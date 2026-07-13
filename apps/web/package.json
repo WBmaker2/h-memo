@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run --passWithNoTests",
+    "dev": "vite --host 127.0.0.1",
+    "test": "node ../../scripts/run-vitest.mjs --config apps/web/vite.config.ts run --passWithNoTests",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
   },

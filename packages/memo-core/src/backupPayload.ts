@@ -1,12 +1,25 @@
 import type { BackupPayload, Memo, ValidationResult } from "./types";
 
 const INVALID_MEMO_REASON = "잘못된 메모 데이터가 포함되어 있습니다.";
+const DUPLICATE_MEMO_ID_REASON = "중복된 메모 ID가 포함되어 있습니다.";
 const SYNC_STATES = ["local-only", "queued", "backed-up", "conflict"];
 
 type JsonUnknown = { [key: string]: unknown };
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
+}
+
+const ISO_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function isStrictTimestamp(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    ISO_TIMESTAMP_PATTERN.test(value) &&
+    !Number.isNaN(Date.parse(value))
+  );
 }
 
 function isValidMemoShape(memo: unknown): memo is Memo {
@@ -16,7 +29,7 @@ function isValidMemoShape(memo: unknown): memo is Memo {
 
   const candidate = memo as JsonUnknown;
 
-  if (typeof candidate.id !== "string") {
+  if (typeof candidate.id !== "string" || candidate.id.trim() === "") {
     return false;
   }
   if (typeof candidate.title !== "string") {
@@ -25,10 +38,10 @@ function isValidMemoShape(memo: unknown): memo is Memo {
   if (typeof candidate.plainText !== "string") {
     return false;
   }
-  if (typeof candidate.createdAt !== "string") {
+  if (!isStrictTimestamp(candidate.createdAt)) {
     return false;
   }
-  if (typeof candidate.updatedAt !== "string") {
+  if (!isStrictTimestamp(candidate.updatedAt)) {
     return false;
   }
   if (typeof candidate.syncState !== "string" || !SYNC_STATES.includes(candidate.syncState)) {
@@ -38,7 +51,7 @@ function isValidMemoShape(memo: unknown): memo is Memo {
     return false;
   }
 
-  if (!(candidate.deletedAt === null || typeof candidate.deletedAt === "string")) {
+  if (!(candidate.deletedAt === null || isStrictTimestamp(candidate.deletedAt))) {
     return false;
   }
 
@@ -137,13 +150,21 @@ function validateBackupPayloadShape(
     return { ok: false, reason: "메모 목록이 없습니다." };
   }
 
-  if (typeof candidate.createdAt !== "string") {
+  if (!isStrictTimestamp(candidate.createdAt)) {
     return { ok: false, reason: INVALID_MEMO_REASON };
   }
 
   const hasInvalidMemo = candidate.memos.some((memo) => !isValidMemoShape(memo));
   if (hasInvalidMemo) {
     return { ok: false, reason: INVALID_MEMO_REASON };
+  }
+
+  const memoIds = new Set<string>();
+  for (const memo of candidate.memos) {
+    if (memoIds.has(memo.id)) {
+      return { ok: false, reason: DUPLICATE_MEMO_ID_REASON };
+    }
+    memoIds.add(memo.id);
   }
 
   return {

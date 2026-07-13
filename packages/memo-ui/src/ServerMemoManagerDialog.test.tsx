@@ -44,8 +44,14 @@ describe("ServerMemoManagerDialog", () => {
     expect(screen.getByRole("status")).toHaveTextContent("로드 완료");
     expect(screen.getByRole("heading", { name: "서버 메모 관리" })).toBeInTheDocument();
     expect(screen.getByText("서버에 저장된 메모")).toBeInTheDocument();
-    expect(screen.getByText("백업 시각: 2026-05-17T09:05:00.000Z")).toBeInTheDocument();
+    expect(screen.getByText("백업 시각: 2026. 5. 17. 오후 6:05:00")).toBeInTheDocument();
     expect(screen.getByText("로컬 삭제 기록 있음")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "서버에 저장된 메모 서버 삭제" })).toHaveClass(
+      "server-memo-dialog__action--destructive"
+    );
+    expect(screen.getByRole("button", { name: "서버에 저장된 메모 복원" })).not.toHaveClass(
+      "server-memo-dialog__action--destructive"
+    );
   });
 
   it("calls refresh, restore, delete, and close handlers", async () => {

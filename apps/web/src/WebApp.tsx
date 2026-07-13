@@ -2,14 +2,24 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } f
 import type { Auth } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
 import {
+  clearRestoreSafetyPoint,
   createMemo,
   createBackupPayload,
   formatMemosAsCombinedText,
+  loadRestoreSafetyPoint,
+  saveRestoreSafetyPoint,
+  RESTORE_SAFETY_STORAGE_KEY,
   validateLocalBackupPayload,
   type Memo,
   type MemoRepository,
+  type RestoreSafetyPoint,
 } from "@h-memo/memo-core";
-import { MemoWorkspace, ServerMemoManagerDialog } from "@h-memo/memo-ui";
+import {
+  BackupHistoryDialog,
+  MemoWorkspace,
+  ServerMemoManagerDialog,
+  formatBackupSaveStatus,
+} from "@h-memo/memo-ui";
 import {
   FirestoreBackupGateway,
   backupMemos,
@@ -19,13 +29,14 @@ import {
   getFirebaseAuth,
   hasFirebaseConfig,
   listBackedUpMemos,
-  listBackupSnapshots,
+  listBackupSnapshotSummaries,
+  loadBackupSnapshot,
   signInWithGoogle,
   signOutUser,
   subscribeAuthUser,
   waitForSignedInUser,
   type BackedUpMemo,
-  type BackedUpSnapshot,
+  type BackupSnapshotSummary,
   type HMemoUser,
 } from "@h-memo/memo-sync";
 import {
@@ -38,7 +49,16 @@ import {
 import { validateFirebaseClientEnv } from "@h-memo/memo-sync/firebase-env-validation";
 import type { FirebaseConfigFormValue } from "@h-memo/memo-ui";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
-import { LocalStorageMemoRepository } from "./adapters/localStorageMemoRepository";
+import {
+  LocalStorageMemoRepository,
+  WEB_MEMO_STORAGE_CHANGED_EVENT,
+  WEB_MEMO_STORAGE_KEY,
+} from "./adapters/localStorageMemoRepository";
+import {
+  WEB_LOCKS_REQUIRED_MESSAGE,
+  WebMutationBarrier,
+} from "./adapters/webMutationBarrier";
+import { restoreWebBackupSelection } from "./webBackupHistory";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
@@ -51,8 +71,28 @@ const BACKUP_FAILED_PREFIX = "백업 실패:";
 const RESTORE_FAILED_PREFIX = "복원 실패:";
 const JSON_RESTORE_CONFIRM_MESSAGE =
   "JSON 백업 파일 내용으로 현재 메모를 대체합니다. 백업에 없는 메모는 삭제됩니다. 계속할까요?";
+const SERVER_DELETE_CONFIRM_MESSAGE =
+  "서버 백업에서 이 메모를 삭제합니다. 삭제한 뒤에는 서버에서 복원할 수 없습니다. 계속할까요?";
+type ServerMemoDeleteState = "deleted" | "absent" | "present" | "unknown";
+const SERVER_MEMO_STALE_DELETE_MESSAGE = (
+  label: string,
+  state: ServerMemoDeleteState
+) => {
+  if (state === "deleted") {
+    return "서버 메모를 삭제했습니다.";
+  }
+  if (state === "absent") {
+    return `서버 백업에서 "${label}" 메모를 찾지 못했습니다. 서버 목록을 새로고침했습니다.`;
+  }
+  if (state === "present") {
+    return `서버 백업에서 "${label}" 메모를 삭제하지 못했습니다. 서버 목록을 새로고침했습니다.`;
+  }
+  return `서버 백업에서 "${label}" 메모를 삭제하지 못했습니다. 서버 목록을 확인하지 못했습니다.`;
+};
 const NO_BACKUP_MESSAGE = "복원할 백업이 없습니다.";
 const SERVER_MEMO_INITIAL_STATUS = "서버 메모를 불러오지 않았습니다.";
+const RESTORE_SAFETY_CHANGED_EVENT = "h-memo:restore-safety-changed";
+const RESTORE_SAFETY_POLL_INTERVAL_MS = 250;
 
 type BackupMessage = string;
 type SyncServices = {
@@ -67,8 +107,10 @@ type WebPreviewUser = {
   email?: string | null;
 };
 
-function createRepository() {
-  return new LocalStorageMemoRepository();
+function createRepository(mutationBarrier: WebMutationBarrier) {
+  return new LocalStorageMemoRepository({
+    beforeWrite: () => mutationBarrier.assertMutationWriteAllowed(),
+  });
 }
 
 function createMemoId(): string {
@@ -118,20 +160,60 @@ function getMemoLabel(memo: Memo): string {
   return memo.plainText.trim().replace(/\s+/g, " ") || "빈 메모";
 }
 
+function getRestoreSafetyStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function createRestoreSafetyPoint(
+  source: RestoreSafetyPoint["source"],
+  userId: string,
+  memos: Memo[]
+): RestoreSafetyPoint {
+  const createdAt = new Date().toISOString();
+  return {
+    version: 1,
+    source,
+    createdAt,
+    payload: createBackupPayload({
+      userId,
+      createdAt,
+      memos,
+    }),
+  };
+}
+
+function broadcastRestoreSafetyChanged() {
+  window.dispatchEvent(new Event(RESTORE_SAFETY_CHANGED_EVENT));
+}
+
 export function WebApp() {
-  const repository = useMemo<MemoRepository>(() => createRepository(), []);
+  const mutationBarrier = useMemo(() => new WebMutationBarrier(), []);
+  const supportsSafeMutations = mutationBarrier.isSupported();
+  const repository = useMemo<MemoRepository>(
+    () => createRepository(mutationBarrier),
+    [mutationBarrier]
+  );
+  const restoreSafetyStorage = useMemo(() => getRestoreSafetyStorage(), []);
   const [memos, setMemos] = useState<Memo[]>([]);
+  const [restoreSafetyPoint, setRestoreSafetyPoint] = useState<RestoreSafetyPoint | null>(() =>
+    restoreSafetyStorage ? loadRestoreSafetyPoint(restoreSafetyStorage) : null
+  );
   const [startupEnabled, setStartupEnabled] = useState(false);
   const [backupStatus, setBackupStatus] = useState<BackupMessage>(BROWSER_BACKUP_READY_MESSAGE);
   const [user, setUser] = useState<WebPreviewUser | null>(null);
   const [backupHistoryDialog, setBackupHistoryDialog] = useState<{
     isOpen: boolean;
-    snapshots: BackedUpSnapshot[];
+    snapshots: BackupSnapshotSummary[];
   }>({
     isOpen: false,
     snapshots: [],
   });
   const [isBusy, setIsBusy] = useState(false);
+  const [isRestoreLocked, setIsRestoreLocked] = useState(false);
   const [syncServicesInitialized, setSyncServicesInitialized] = useState(false);
   const [serverMemoManagerOpen, setServerMemoManagerOpen] = useState(false);
   const [serverMemoItems, setServerMemoItems] = useState<BackedUpMemo[]>([]);
@@ -139,6 +221,8 @@ export function WebApp() {
 
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
+  const restoreLockRef = useRef<string | null>(null);
+  const restoreSnapshotInFlightRef = useRef(false);
   const syncServicesRef = useRef<SyncServices | null>(null);
   const jsonImportInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -177,17 +261,161 @@ export function WebApp() {
   }, [firebaseClientEnv, hasFirebaseConfigSet]);
 
   const reloadMemos = useCallback(async () => {
-    const all = await repository.listMemos();
-    setMemos(sortMemos(all));
-  }, [repository]);
+    const readAndApply = async () => {
+      const all = await repository.listMemos();
+      setMemos(sortMemos(all));
+      return all;
+    };
+    if (!supportsSafeMutations) {
+      return readAndApply();
+    }
+    return mutationBarrier.runReconciliation(readAndApply);
+  }, [mutationBarrier, repository, supportsSafeMutations]);
+
+  useEffect(() => {
+    let remoteReleaseGeneration = 0;
+    let remoteReleasePromise: Promise<void> | null = null;
+    let revisionReloadPromise: Promise<void> | null = null;
+    const reconcileObservedEpoch = (durableEpoch: number) => {
+      if (
+        !supportsSafeMutations ||
+        restoreLockRef.current ||
+        revisionReloadPromise
+      ) {
+        return;
+      }
+      try {
+        if (mutationBarrier.getObservedEpoch() === durableEpoch) {
+          return;
+        }
+      } catch {
+        // The first successful repository read establishes the observed epoch.
+      }
+      const releaseToken = `remote:revision:${durableEpoch}:${++remoteReleaseGeneration}`;
+      restoreLockRef.current = releaseToken;
+      setIsRestoreLocked(true);
+      revisionReloadPromise = reloadMemos()
+        .then(() => {
+          if (restoreLockRef.current !== releaseToken) {
+            return;
+          }
+          const currentLease = mutationBarrier.getRemoteLease();
+          if (currentLease) {
+            restoreLockRef.current = `remote:${currentLease.token}`;
+            return;
+          }
+          restoreLockRef.current = null;
+          setIsRestoreLocked(false);
+        })
+        .catch((error) => {
+          setBackupStatus(`메모 저장소 리비전 적용 실패: ${getErrorMessage(error)}`);
+        })
+        .finally(() => {
+          revisionReloadPromise = null;
+        });
+    };
+
+    return mutationBarrier.subscribe((lease, durableEpoch) => {
+      const currentToken = restoreLockRef.current;
+      if (lease) {
+        if (currentToken && !currentToken.startsWith("remote:")) {
+          return;
+        }
+        restoreLockRef.current = `remote:${lease.token}`;
+        setIsRestoreLocked(true);
+        return;
+      }
+      if (!currentToken?.startsWith("remote:")) {
+        reconcileObservedEpoch(durableEpoch);
+        return;
+      }
+      if (remoteReleasePromise) {
+        return;
+      }
+
+      const releaseToken = currentToken;
+      const generation = ++remoteReleaseGeneration;
+      remoteReleasePromise = reloadMemos()
+        .then(() => {
+          if (
+            generation !== remoteReleaseGeneration ||
+            restoreLockRef.current !== releaseToken ||
+            mutationBarrier.getRemoteLease()
+          ) {
+            return;
+          }
+          restoreLockRef.current = null;
+          setIsRestoreLocked(false);
+        })
+        .catch((error) => {
+          setBackupStatus(`다른 탭 복원 상태 적용 실패: ${getErrorMessage(error)}`);
+        })
+        .finally(() => {
+          remoteReleasePromise = null;
+        });
+    });
+  }, [mutationBarrier, reloadMemos, supportsSafeMutations]);
+
+  useEffect(() => {
+    const reloadWhenUnlocked = () => {
+      if (!restoreLockRef.current) {
+        void reloadMemos().catch((error) => {
+          setBackupStatus(`메모 저장소 새로고침 실패: ${getErrorMessage(error)}`);
+        });
+      }
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === WEB_MEMO_STORAGE_KEY) {
+        reloadWhenUnlocked();
+      }
+    };
+    window.addEventListener(WEB_MEMO_STORAGE_CHANGED_EVENT, reloadWhenUnlocked);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener(
+        WEB_MEMO_STORAGE_CHANGED_EVENT,
+        reloadWhenUnlocked
+      );
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [reloadMemos]);
 
   useEffect(() => {
     setBackupStatus(
-      hasFirebaseConfigSet ? BROWSER_BACKUP_READY_MESSAGE : FIREBASE_UNAVAILABLE_MESSAGE
+      !supportsSafeMutations
+        ? WEB_LOCKS_REQUIRED_MESSAGE
+        : hasFirebaseConfigSet
+          ? BROWSER_BACKUP_READY_MESSAGE
+          : FIREBASE_UNAVAILABLE_MESSAGE
     );
     setServicesAvailableState(hasFirebaseConfigSet);
-    void reloadMemos();
-  }, [hasFirebaseConfigSet, reloadMemos]);
+    void reloadMemos().catch((error) => {
+      setBackupStatus(`메모 저장소 읽기 실패: ${getErrorMessage(error)}`);
+    });
+  }, [hasFirebaseConfigSet, reloadMemos, supportsSafeMutations]);
+
+  useEffect(() => {
+    if (!restoreSafetyStorage) {
+      return;
+    }
+
+    const reload = () => {
+      setRestoreSafetyPoint(loadRestoreSafetyPoint(restoreSafetyStorage));
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.storageArea === restoreSafetyStorage && event.key === RESTORE_SAFETY_STORAGE_KEY) {
+        reload();
+      }
+    };
+    const pollId = window.setInterval(reload, RESTORE_SAFETY_POLL_INTERVAL_MS);
+    window.addEventListener(RESTORE_SAFETY_CHANGED_EVENT, reload);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.clearInterval(pollId);
+      window.removeEventListener(RESTORE_SAFETY_CHANGED_EVENT, reload);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [restoreSafetyStorage]);
 
   const ensureSyncServices = useCallback((): SyncServices | null => {
     if (!hasFirebaseConfigSet) {
@@ -317,8 +545,20 @@ export function WebApp() {
     });
   };
 
-  const enqueuePersist = (operation: () => Promise<void>) => {
-    const queued = persistQueueRef.current.then(operation);
+  const enqueuePersist = <T,>(operation: () => Promise<T>) => {
+    if (restoreLockRef.current) {
+      return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
+    }
+    let expectedEpoch: number;
+    try {
+      mutationBarrier.assertSupported();
+      expectedEpoch = mutationBarrier.getObservedEpoch();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const queued = persistQueueRef.current.then(() =>
+      mutationBarrier.runMutation(expectedEpoch, operation)
+    );
     persistQueueRef.current = queued
       .then(() => {
         persistErrorRef.current = null;
@@ -337,34 +577,101 @@ export function WebApp() {
   };
 
   const persistMemo = (nextMemo: Memo, options?: { skipStateUpdate: boolean }) => {
+    if (restoreLockRef.current) {
+      return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
+    }
     return enqueuePersist(async () => {
       const saved = await repository.saveMemo(nextMemo);
       if (!options?.skipStateUpdate) {
         upsertMemo(saved);
       }
+      return saved;
     });
   };
 
-  const rollbackRestoreAttempt = async (currentMemos: Memo[], nextMemos: Memo[]) => {
+  const runWithWebRestoreLock = async <T,>(operation: () => Promise<T>) => {
+    if (restoreLockRef.current) {
+      throw new Error("다른 복원 작업이 이미 진행 중입니다.");
+    }
+
+    const token = `restore-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    restoreLockRef.current = token;
+    setIsRestoreLocked(true);
+    try {
+      await waitForPendingPersists();
+      return await mutationBarrier.runRestore(async () => {
+        let result!: T;
+        let operationError: unknown;
+        try {
+          result = await operation();
+        } catch (error) {
+          operationError = error;
+        }
+
+        let applyError: unknown;
+        try {
+          await reloadMemos();
+        } catch (error) {
+          applyError = error;
+        }
+
+        if (operationError !== undefined && applyError !== undefined) {
+          throw new AggregateError(
+            [operationError, applyError],
+            `복원 작업과 최종 메모 상태 적용에 함께 실패했습니다: ${getErrorMessage(
+              operationError
+            )} / ${getErrorMessage(applyError)}`
+          );
+        }
+        if (operationError !== undefined) {
+          throw operationError;
+        }
+        if (applyError !== undefined) {
+          throw new AggregateError(
+            [applyError],
+            `복원 후 최종 메모 상태 적용에 실패했습니다: ${getErrorMessage(applyError)}`
+          );
+        }
+        return result;
+      });
+    } finally {
+      if (restoreLockRef.current === token) {
+        restoreLockRef.current = null;
+        setIsRestoreLocked(false);
+      }
+    }
+  };
+
+  const rollbackRestoreAttempt = async (
+    currentMemos: Memo[],
+    writtenMemos: Memo[]
+  ): Promise<unknown[]> => {
     const currentIds = new Set(currentMemos.map((memo) => memo.id));
     const rollbackAt = new Date().toISOString();
 
-    await Promise.allSettled(
-      nextMemos
+    const deleteResults = await Promise.allSettled(
+      writtenMemos
         .filter((memo) => !currentIds.has(memo.id))
         .map((memo) => repository.softDeleteMemo(memo.id, rollbackAt))
     );
-    await Promise.allSettled(currentMemos.map((memo) => repository.saveMemo(memo)));
+    const saveResults = await Promise.allSettled(
+      currentMemos.map((memo) => repository.saveMemo(memo))
+    );
+    return [...deleteResults, ...saveResults]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
   };
 
-  const replaceMemosFromBackup = async (nextMemos: Memo[]) => {
-    const currentMemos = await repository.listMemos();
+  const replaceMemosFromBackup = async (nextMemos: Memo[], previousMemos?: Memo[]) => {
+    const currentMemos = previousMemos ?? (await repository.listMemos());
     const keptIds = new Set(nextMemos.map((memo) => memo.id));
     const removedAt = new Date().toISOString();
+    const writtenMemos: Memo[] = [];
 
     try {
       for (const memo of nextMemos) {
         await repository.saveMemo(memo);
+        writtenMemos.push(memo);
       }
       for (const memo of currentMemos) {
         if (!keptIds.has(memo.id)) {
@@ -372,14 +679,47 @@ export function WebApp() {
         }
       }
     } catch (error) {
-      await rollbackRestoreAttempt(currentMemos, nextMemos);
+      const rollbackErrors = await rollbackRestoreAttempt(currentMemos, writtenMemos);
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          `복원 실패 후 원상 복구에도 실패했습니다: ${[
+            error,
+            ...rollbackErrors,
+          ]
+            .map(getErrorMessage)
+            .join(" / ")}`
+        );
+      }
       throw error;
     }
 
     setMemos(sortMemos(nextMemos));
   };
 
+  const replaceMemosWithSafety = async (
+    source: RestoreSafetyPoint["source"],
+    userId: string,
+    nextMemos: Memo[] | ((currentMemos: Memo[]) => Memo[])
+  ) => {
+    if (!restoreSafetyStorage) {
+      throw new Error("복원 안전 지점을 저장할 저장 공간을 사용할 수 없습니다.");
+    }
+
+    const currentMemos = await repository.listMemos();
+    const safetyPoint = createRestoreSafetyPoint(source, userId, currentMemos);
+    saveRestoreSafetyPoint(restoreSafetyStorage, safetyPoint);
+    const replacementMemos =
+      typeof nextMemos === "function" ? nextMemos(currentMemos) : nextMemos;
+    await replaceMemosFromBackup(replacementMemos, currentMemos);
+    setRestoreSafetyPoint(safetyPoint);
+    broadcastRestoreSafetyChanged();
+  };
+
   const handleCreateMemo = async () => {
+    if (restoreLockRef.current) {
+      return;
+    }
     const now = new Date().toISOString();
     const nextMemo = createMemo({
       id: createMemoId(),
@@ -395,6 +735,15 @@ export function WebApp() {
   };
 
   const handleMemoChange = (nextMemo: Memo) => {
+    if (restoreLockRef.current) {
+      return;
+    }
+    try {
+      mutationBarrier.assertSupported();
+    } catch (error) {
+      setBackupStatus(`메모 저장 실패: ${getErrorMessage(error)}`);
+      return;
+    }
     upsertMemo(nextMemo);
     void persistMemo(nextMemo, { skipStateUpdate: true }).catch((error) => {
       setBackupStatus(`메모 저장 실패: ${getErrorMessage(error)}`);
@@ -402,6 +751,9 @@ export function WebApp() {
   };
 
   const handleDeleteMemo = async (memoId: string) => {
+    if (restoreLockRef.current) {
+      return;
+    }
     const target = memos.find((memo) => memo.id === memoId);
     if (!target) {
       return;
@@ -409,7 +761,7 @@ export function WebApp() {
 
     try {
       const deletedAt = new Date().toISOString();
-      const deleted = await repository.softDeleteMemo(memoId, deletedAt);
+      const deleted = await enqueuePersist(() => repository.softDeleteMemo(memoId, deletedAt));
       upsertMemo(deleted);
     } catch (error) {
       setBackupStatus(`메모 삭제 실패: ${getErrorMessage(error)}`);
@@ -417,6 +769,9 @@ export function WebApp() {
   };
 
   const handleCloseMemo = async (memoId: string) => {
+    if (restoreLockRef.current) {
+      return;
+    }
     const target = memos.find((memo) => memo.id === memoId);
     if (!target) {
       return;
@@ -441,6 +796,9 @@ export function WebApp() {
   };
 
   const handleOpenMemo = async (memoId: string) => {
+    if (restoreLockRef.current) {
+      return;
+    }
     const target = memos.find((memo) => memo.id === memoId);
     if (!target) {
       return;
@@ -517,8 +875,40 @@ export function WebApp() {
       return;
     }
 
-    await replaceMemosFromBackup(parsed.payload.memos);
+    await runWithWebRestoreLock(() =>
+      replaceMemosWithSafety("json", user?.uid ?? "local", parsed.payload.memos)
+    );
     setBackupStatus(`JSON 복원 완료: ${parsed.payload.memos.length}개 메모`);
+  };
+
+  const handleUndoRestore = async () => {
+    if (isBusy) {
+      return;
+    }
+    if (!restoreSafetyStorage) {
+      setBackupStatus("복원 되돌리기 실패: 안전 지점 저장 공간을 사용할 수 없습니다.");
+      return;
+    }
+
+    setIsBusy(true);
+    setBackupStatus("마지막 복원을 되돌리는 중입니다.");
+    try {
+      await runWithWebRestoreLock(async () => {
+        const safetyPoint = loadRestoreSafetyPoint(restoreSafetyStorage);
+        if (!safetyPoint) {
+          throw new Error("되돌릴 복원 안전 지점이 없습니다.");
+        }
+        await replaceMemosFromBackup(safetyPoint.payload.memos);
+        clearRestoreSafetyPoint(restoreSafetyStorage);
+        setRestoreSafetyPoint(null);
+        broadcastRestoreSafetyChanged();
+      });
+      setBackupStatus("마지막 복원을 되돌렸습니다.");
+    } catch (error) {
+      setBackupStatus(`복원 되돌리기 실패: ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
   };
 
   const handleExportJsonBackup = async () => {
@@ -664,6 +1054,41 @@ export function WebApp() {
     }
   };
 
+  const backupCurrentMemos = async (services: SyncServices, userId: string) => {
+    const persistedMemos = await repository.listMemos();
+    return backupMemos(services.gateway, userId, persistedMemos);
+  };
+
+  const deleteServerMemoLocked = async (
+    session: { user: WebPreviewUser; services: SyncServices },
+    memoId: string
+  ): Promise<{ count: number; state: ServerMemoDeleteState }> => {
+    const deletedServerRecordCount = await deleteBackedUpMemo(
+      session.services.gateway,
+      session.user.uid,
+      memoId
+    );
+    if (deletedServerRecordCount > 0) {
+      setServerMemoItems((previous) => previous.filter((item) => item.memo.id !== memoId));
+      return { count: deletedServerRecordCount, state: "deleted" };
+    }
+
+    try {
+      const reconciledItems = await listBackedUpMemos(
+        session.services.gateway,
+        session.user.uid
+      );
+      setServerMemoItems(reconciledItems);
+      return {
+        count: 0,
+        state: reconciledItems.some((item) => item.memo.id === memoId) ? "present" : "absent",
+      };
+    } catch {
+      // The delete result remains stale even if the reconciliation read fails.
+      return { count: 0, state: "unknown" };
+    }
+  };
+
   const handleBackup = async () => {
     const services = ensureSyncServices();
     if (!user || !services) {
@@ -683,10 +1108,10 @@ export function WebApp() {
     setIsBusy(true);
     setBackupStatus("백업을 시작합니다.");
     try {
-      await waitForPendingPersists();
-      const persistedMemos = await repository.listMemos();
-      const result = await backupMemos(services.gateway, user.uid, persistedMemos);
-      setBackupStatus(`백업 완료: ${result.path}`);
+      const result = await runWithWebRestoreLock(() =>
+        backupCurrentMemos(services, user.uid)
+      );
+      setBackupStatus(formatBackupSaveStatus(result));
     } catch (error) {
       setBackupStatus(`${BACKUP_FAILED_PREFIX} ${getErrorMessage(error)}`);
     } finally {
@@ -714,7 +1139,7 @@ export function WebApp() {
     setBackupStatus("백업 기록을 불러옵니다.");
     try {
       await waitForPendingPersists();
-      const snapshots = await listBackupSnapshots(services.gateway, user.uid);
+      const snapshots = await listBackupSnapshotSummaries(services.gateway, user.uid);
       if (snapshots.length === 0) {
         setBackupStatus(NO_BACKUP_MESSAGE);
         return;
@@ -736,23 +1161,51 @@ export function WebApp() {
     setBackupHistoryDialog((previous) => ({ ...previous, isOpen: false }));
   };
 
-  const handleRestoreBackupSnapshot = async (snapshotIndex: number) => {
-    const snapshot = backupHistoryDialog.snapshots[snapshotIndex];
-    if (!snapshot || isBusy) {
+  const handleRestoreBackupSnapshot = async (snapshotId: string) => {
+    if (restoreSnapshotInFlightRef.current || isBusy) {
       return;
     }
 
+    const currentUser = user;
+    const services = ensureSyncServices();
+    if (!currentUser || !services) {
+      setBackupStatus(LOGIN_REQUIRED_MESSAGE);
+      return;
+    }
+
+    restoreSnapshotInFlightRef.current = true;
     setIsBusy(true);
     setBackupStatus("선택한 백업을 복원합니다.");
     try {
-      await waitForPendingPersists();
-      await replaceMemosFromBackup(snapshot.payload.memos);
+      const selection = await restoreWebBackupSelection({
+        gateway: services.gateway,
+        userId: currentUser.uid,
+        snapshotId,
+        summaries: backupHistoryDialog.snapshots,
+        confirm: (message) => window.confirm(message),
+        loadSnapshot: loadBackupSnapshot,
+        restore: (payload) =>
+          runWithWebRestoreLock(() =>
+            replaceMemosWithSafety("server", currentUser.uid, payload.memos)
+          ),
+      });
+      if (!selection) {
+        throw new Error("선택한 백업 기록을 찾지 못했습니다.");
+      }
+      if (selection.kind === "cancelled") {
+        setBackupStatus("복원을 취소했습니다.");
+        return;
+      }
+      if (selection.kind === "unavailable") {
+        throw new Error("선택한 백업을 불러오지 못했습니다.");
+      }
       setBackupHistoryDialog({ isOpen: false, snapshots: [] });
-      setBackupStatus(`복원 완료: ${snapshot.payload.memos.length}개 메모`);
+      setBackupStatus(`복원 완료: ${selection.payload.memos.length}개 메모`);
     } catch (error) {
       setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
     } finally {
       setIsBusy(false);
+      restoreSnapshotInFlightRef.current = false;
     }
   };
 
@@ -826,8 +1279,16 @@ export function WebApp() {
       },
     };
     try {
-      const savedMemo = await repository.saveMemo(restoredMemo);
-      upsertMemo(savedMemo);
+      await runWithWebRestoreLock(() =>
+        replaceMemosWithSafety("server", user?.uid ?? "local", (currentMemos) => {
+          const hasTarget = currentMemos.some((memo) => memo.id === restoredMemo.id);
+          return hasTarget
+            ? currentMemos.map((memo) =>
+                memo.id === restoredMemo.id ? restoredMemo : memo
+              )
+            : [...currentMemos, restoredMemo];
+        })
+      );
       setBackupStatus("서버 메모 복원 완료");
       setServerMemoStatus("서버 메모 복원 완료");
     } catch (error) {
@@ -840,19 +1301,34 @@ export function WebApp() {
 
   const handleDeleteServerMemo = async (memoId: string) => {
     const session = requireServerMemoSession();
-    if (!session || isBusy) {
+    if (!session || isBusy || restoreLockRef.current) {
+      return;
+    }
+
+    if (!window.confirm(SERVER_DELETE_CONFIRM_MESSAGE)) {
+      setBackupStatus("서버 메모 삭제를 취소했습니다.");
+      setServerMemoStatus("서버 메모 삭제를 취소했습니다.");
+      return;
+    }
+
+    const confirmedSession = requireServerMemoSession();
+    if (!confirmedSession || restoreLockRef.current) {
       return;
     }
 
     setIsBusy(true);
     try {
-      const deletedServerRecordCount = await deleteBackedUpMemo(
-        session.services.gateway,
-        session.user.uid,
-        memoId
+      const target = serverMemoItems.find((item) => item.memo.id === memoId);
+      const targetLabel = target ? getMemoLabel(target.memo) : "메모";
+      const deleteOutcome = await runWithWebRestoreLock(() =>
+        deleteServerMemoLocked(confirmedSession, memoId)
       );
-      void deletedServerRecordCount;
-      setServerMemoItems((previous) => previous.filter((item) => item.memo.id !== memoId));
+      if (deleteOutcome.count === 0) {
+        const message = SERVER_MEMO_STALE_DELETE_MESSAGE(targetLabel, deleteOutcome.state);
+        setBackupStatus(message);
+        setServerMemoStatus(message);
+        return;
+      }
       setBackupStatus("서버 메모를 삭제했습니다.");
       setServerMemoStatus("서버 메모를 삭제했습니다.");
     } catch (error) {
@@ -868,9 +1344,16 @@ export function WebApp() {
     setStartupEnabled(enabled);
   };
 
-  const isBackupDisabled = !isServerReady || user === null || isBusy;
-  const isRestoreDisabled = !isServerReady || user === null || isBusy;
-  const isAuthDisabled = !isServerReady || isBusy;
+  const isBackupDisabled =
+    !supportsSafeMutations || !isServerReady || user === null || isBusy || isRestoreLocked;
+  const isRestoreDisabled =
+    !supportsSafeMutations || !isServerReady || user === null || isBusy || isRestoreLocked;
+  const isAuthDisabled = !isServerReady || isBusy || isRestoreLocked;
+  const visibleBackupStatus = supportsSafeMutations
+    ? backupStatus
+    : backupStatus === WEB_LOCKS_REQUIRED_MESSAGE
+      ? backupStatus
+      : `${WEB_LOCKS_REQUIRED_MESSAGE} ${backupStatus}`;
 
   return (
     <>
@@ -884,10 +1367,11 @@ export function WebApp() {
         onMemoChange={handleMemoChange}
         onDeleteMemo={handleDeleteMemo}
         onCloseMemo={handleCloseMemo}
+        isMemoEditingDisabled={isRestoreLocked || !supportsSafeMutations}
         actions={
           <button
             type="button"
-            disabled={isBusy}
+            disabled={!supportsSafeMutations || isBusy || isRestoreLocked}
             onClick={handleOpenServerMemoManager}
           >
             서버 메모 관리
@@ -895,7 +1379,7 @@ export function WebApp() {
         }
         settingsProps={{
           userName: user ? user.displayName || user.email || "구글 계정" : null,
-          backupStatus,
+          backupStatus: visibleBackupStatus,
           startupEnabled,
           firebaseConfig: allowFirebaseConfigOverride ? firebaseConfigFormValue : undefined,
           onBackup: handleBackup,
@@ -909,9 +1393,12 @@ export function WebApp() {
           onSaveFirebaseConfig: allowFirebaseConfigOverride ? handleSaveFirebaseConfig : undefined,
           onClearFirebaseConfig: allowFirebaseConfigOverride ? handleClearFirebaseConfig : undefined,
           isServerAvailable: isServerReady,
-          isServerBusy: isBusy,
+          isServerBusy: isBusy || isRestoreLocked,
+          isLocalRestoreDisabled: !supportsSafeMutations,
           isBackupDisabled,
           isRestoreDisabled,
+          canUndoRestore: restoreSafetyPoint !== null,
+          onUndoRestore: handleUndoRestore,
           isAuthDisabled,
           isStartupAvailable: false,
           showStartupSection: false,
@@ -923,11 +1410,12 @@ export function WebApp() {
         className="visually-hidden"
         type="file"
         accept="application/json,.json"
+        disabled={!supportsSafeMutations}
         onChange={handleJsonImportFileChange}
       />
       <ServerMemoManagerDialog
         isOpen={serverMemoManagerOpen}
-        isBusy={isBusy}
+        isBusy={isBusy || isRestoreLocked}
         items={serverMemoItems}
         status={serverMemoStatus}
         onClose={() => setServerMemoManagerOpen(false)}
@@ -935,58 +1423,13 @@ export function WebApp() {
         onRestore={handleRestoreServerMemo}
         onDelete={handleDeleteServerMemo}
       />
-      {backupHistoryDialog.isOpen ? (
-        <div className="backup-history-dialog-backdrop">
-          <section
-            className="backup-history-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="backup-history-dialog-title"
-          >
-            <header className="backup-history-dialog__header">
-              <h2 id="backup-history-dialog-title">백업 기록 선택</h2>
-              <button type="button" onClick={handleCloseBackupHistoryDialog}>
-                닫기
-              </button>
-            </header>
-            <p className="backup-history-dialog__description">
-              복원할 백업 시간대를 선택해 주세요. 선택한 백업에 포함된 메모로 현재
-              로컬 메모가 교체됩니다.
-            </p>
-            <ul className="backup-history-list">
-              {backupHistoryDialog.snapshots.map((snapshot, index) => {
-                const preview =
-                  snapshot.payload.memos
-                    .slice(0, 3)
-                    .map(getMemoLabel)
-                    .join(", ") || "메모 없음";
-
-                return (
-                  <li
-                    key={`${snapshot.createdAt}-${index}`}
-                    className="backup-history-list__item"
-                  >
-                    <div className="backup-history-list__content">
-                      <strong>{snapshot.createdAt}</strong>
-                      <span>{snapshot.memoCount}개 메모</span>
-                      <span title={preview}>미리보기: {preview}</span>
-                    </div>
-                    <div className="backup-history-list__actions">
-                      <button
-                        type="button"
-                        onClick={() => handleRestoreBackupSnapshot(index)}
-                        disabled={isBusy}
-                      >
-                        복원
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        </div>
-      ) : null}
+      <BackupHistoryDialog
+        isOpen={backupHistoryDialog.isOpen}
+        isBusy={isBusy || isRestoreLocked}
+        items={backupHistoryDialog.snapshots}
+        onClose={handleCloseBackupHistoryDialog}
+        onRestore={handleRestoreBackupSnapshot}
+      />
     </>
   );
 }

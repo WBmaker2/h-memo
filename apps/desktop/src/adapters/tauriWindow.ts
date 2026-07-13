@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   currentMonitor,
   getCurrentWindow,
@@ -17,6 +18,26 @@ export type WindowBounds = {
   height: number;
 };
 
+export type MemoWindowClaim = {
+  claimed: boolean;
+  shouldCreate: boolean;
+  windowLabel: string;
+  claimToken: string | null;
+};
+
+export const MEMO_WINDOW_CREATION_TIMEOUT_MS = 10_000;
+
+export function getCurrentWindowLabel() {
+  return getCurrentWindow().label;
+}
+
+export async function listLiveMemoWindowLabels() {
+  const windows = await WebviewWindow.getAll();
+  return windows
+    .map((window) => window.label)
+    .filter((label) => label === "main" || label.startsWith("memo_"));
+}
+
 export function startWindowDrag() {
   return getCurrentWindow().startDragging();
 }
@@ -30,12 +51,60 @@ export function closeWindow() {
   return currentWindow.label === "main" ? currentWindow.hide() : currentWindow.close();
 }
 
-export function getMemoWindowLabel(memoId: string) {
-  return `memo_${memoId.replace(/[^a-zA-Z0-9-/:_]/g, "_")}`;
+function toBase64Url(bytes: Uint8Array) {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+export async function getMemoWindowLabel(memoId: string) {
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(memoId)
+  );
+  return `memo_${toBase64Url(new Uint8Array(digest))}`;
 }
 
 function getMemoWindowUrl(memoId: string) {
   return `index.html?memoId=${encodeURIComponent(memoId)}`;
+}
+
+async function focusMemoWindow(window: WebviewWindow) {
+  await window.unminimize();
+  await window.show();
+  await window.setFocus();
+}
+
+async function claimMemoWindow(memoId: string, windowLabel: string) {
+  return invoke<MemoWindowClaim>("claim_memo_window", { memoId, windowLabel });
+}
+
+async function completeMemoWindow(memoId: string, windowLabel: string, claimToken: string) {
+  await invoke("complete_memo_window", { memoId, windowLabel, claimToken });
+}
+
+async function releaseMemoWindow(memoId: string, windowLabel: string, claimToken: string) {
+  await invoke("release_memo_window", { memoId, windowLabel, claimToken });
+}
+
+export async function claimCurrentMemoWindow(memoId: string) {
+  const windowLabel = getCurrentWindow().label;
+  const claim = await claimMemoWindow(memoId, windowLabel);
+  if (!claim.claimed || !claim.shouldCreate || !claim.claimToken) {
+    return claim;
+  }
+
+  await completeMemoWindow(memoId, windowLabel, claim.claimToken);
+  return {
+    ...claim,
+    shouldCreate: false,
+  };
+}
+
+export function releaseCurrentMemoWindow(memoId: string, claimToken: string) {
+  return releaseMemoWindow(memoId, getCurrentWindow().label, claimToken);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -87,15 +156,22 @@ async function resolveVisibleWindowBounds(bounds: WindowBounds): Promise<WindowB
 }
 
 export async function openMemoWindow(memo: Memo) {
-  const label = getMemoWindowLabel(memo.id);
-  const existingWindow = await WebviewWindow.getByLabel(label);
-  if (existingWindow) {
-    await existingWindow.unminimize();
-    await existingWindow.show();
-    await existingWindow.setFocus();
+  const label = await getMemoWindowLabel(memo.id);
+
+  const claim = await claimMemoWindow(memo.id, label);
+  if (!claim.shouldCreate) {
+    const owner = await WebviewWindow.getByLabel(claim.windowLabel);
+    if (owner) {
+      await focusMemoWindow(owner);
+    }
     return;
   }
 
+  if (!claim.claimToken) {
+    throw new Error("Memo window reservation did not include a claim token.");
+  }
+
+  const claimToken = claim.claimToken;
   const safeBounds =
     memo.windowState.x !== null && memo.windowState.y !== null
       ? await resolveVisibleWindowBounds({
@@ -106,27 +182,61 @@ export async function openMemoWindow(memo: Memo) {
         })
       : null;
 
-  const memoWindow = new WebviewWindow(label, {
-    url: getMemoWindowUrl(memo.id),
-    title: "H Memo",
-    width: memo.windowState.width,
-    height: memo.windowState.height,
-    x: safeBounds?.x ?? undefined,
-    y: safeBounds?.y ?? undefined,
-    resizable: true,
-    decorations: false,
-    visible: true,
-    focus: true,
-  });
+  try {
+    const memoWindow = new WebviewWindow(label, {
+      url: getMemoWindowUrl(memo.id),
+      title: "H Memo",
+      width: memo.windowState.width,
+      height: memo.windowState.height,
+      x: safeBounds?.x ?? undefined,
+      y: safeBounds?.y ?? undefined,
+      resizable: true,
+      decorations: false,
+      visible: true,
+      focus: true,
+    });
 
-  await new Promise<void>((resolve, reject) => {
-    void memoWindow.once("tauri://created", () => resolve());
-    void memoWindow.once("tauri://error", (event) => reject(event.payload));
-  });
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timeoutId = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(new Error("메모 창 생성 시간이 초과되었습니다."));
+      }, MEMO_WINDOW_CREATION_TIMEOUT_MS);
+      const finish = (callback: () => void) => {
+        if (settled) {
+          return false;
+        }
+        settled = true;
+        clearTimeout(timeoutId);
+        callback();
+        return true;
+      };
+
+      void memoWindow.once("tauri://created", () => {
+        if (!finish(() => undefined)) {
+          return;
+        }
+        void completeMemoWindow(memo.id, label, claimToken).then(resolve, reject);
+      });
+      void memoWindow.once("tauri://error", (event) => {
+        finish(() => reject(event?.payload ?? new Error("메모 창을 생성하지 못했습니다.")));
+      });
+    });
+  } catch (error) {
+    try {
+      await releaseMemoWindow(memo.id, label, claimToken);
+    } catch {
+      // Preserve the window-construction failure as the actionable error.
+    }
+    throw error;
+  }
 }
 
 export async function closeMemoWindow(memoId: string) {
-  const memoWindow = await WebviewWindow.getByLabel(getMemoWindowLabel(memoId));
+  const memoWindow = await WebviewWindow.getByLabel(await getMemoWindowLabel(memoId));
   if (!memoWindow) {
     return;
   }

@@ -7,11 +7,14 @@ body {
   font-family: "Malgun Gothic", "Segoe UI", sans-serif;
   background: transparent;
   color: #111827;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 #root {
   min-height: 100vh;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .visually-hidden {
@@ -30,6 +33,7 @@ body {
   position: relative;
   width: 100%;
   min-height: 100vh;
+  min-width: 0;
   padding: 0;
 }
 
@@ -48,8 +52,10 @@ body {
 .memo-menu summary {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
+  min-width: 24px;
+  min-height: 24px;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -76,8 +82,8 @@ body {
   z-index: 20;
   display: grid;
   gap: 10px;
-  width: min(300px, calc(100vw - 24px));
-  max-width: min(300px, calc(100vw - 24px));
+  width: min(320px, calc(100vw - 16px));
+  max-width: min(320px, calc(100vw - 16px));
   min-width: 0;
   max-height: calc(100vh - 44px);
   overflow-y: auto;
@@ -98,8 +104,26 @@ body {
 }
 
 .workspace-menu__panel button,
-.settings-panel button {
-  min-height: 34px;
+.memo-menu__panel button,
+.settings-panel button,
+.server-memo-dialog button,
+.backup-history-dialog button {
+  min-width: 0;
+  min-height: 40px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.workspace-menu__panel > *,
+.memo-menu__panel > *,
+.memo-menu__panel-content > *,
+.memo-menu__group > *,
+.memo-menu__section > *,
+.settings-panel,
+.settings-panel__section-content,
+.memo-toolbar,
+.memo-toolbar__section {
+  min-width: 0;
 }
 
 .desktop-app__memos {
@@ -167,8 +191,12 @@ body {
   margin: 0 -10px 8px;
   padding: 0 6px 0 8px;
   background: rgba(255, 255, 255, 0.28);
-  cursor: move;
+  cursor: default;
   user-select: none;
+}
+
+.sticky-memo__titlebar--draggable {
+  cursor: move;
 }
 
 .sticky-memo__titlebar-drag {
@@ -181,6 +209,17 @@ body {
   font-size: 12px;
   font-weight: 700;
   cursor: move;
+}
+
+.sticky-memo__titlebar-title {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(31, 41, 55, 0.72);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .sticky-memo__app-title {
@@ -272,7 +311,9 @@ body {
   display: grid;
   place-items: center;
   width: 32px;
-  height: 30px;
+  height: 32px;
+  min-width: 24px;
+  min-height: 24px;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -287,8 +328,8 @@ body {
 
 .sticky-memo__window-controls .sticky-memo__sync-button {
   position: relative;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border: 1px solid rgba(15, 23, 42, 0.14);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.3);
@@ -317,6 +358,11 @@ body {
   font: inherit;
 }
 
+.sticky-memo > textarea:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
 .sticky-memo > textarea {
   min-height: 0;
   resize: none;
@@ -342,8 +388,8 @@ body {
   gap: 8px;
 }
 
-.settings-panel header,
-.settings-panel div,
+.settings-panel__section-content > div,
+.firebase-config-form > div,
 .memo-toolbar__row {
   display: flex;
   flex-wrap: wrap;
@@ -361,14 +407,19 @@ body {
   gap: 8px;
 }
 
-.memo-toolbar__section-title,
-.settings-panel__section-title,
 .memo-menu__section-title,
-.memo-menu__group-title {
+.memo-menu__group-title,
+.memo-toolbar__section-title,
+.settings-panel__section-title {
   margin: 0;
   font-size: 12px;
   font-weight: 700;
   color: #334155;
+}
+
+.memo-menu__section-title,
+.memo-menu__group-title {
+  font-size: 13px;
 }
 
 .memo-toolbar label,
@@ -387,6 +438,41 @@ body {
   display: grid;
   gap: 8px;
   min-width: 0;
+}
+
+.memo-menu__updates-button {
+  font-size: 0.78rem;
+  color: #475569;
+}
+
+.memo-menu__updates {
+  display: grid;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(71, 85, 105, 0.18);
+}
+
+.memo-menu__updates-title {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.memo-menu__updates-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  font-size: 0.75rem;
+}
+
+.memo-menu__updates-list li {
+  display: grid;
+  gap: 2px;
+}
+
+.memo-menu__updates-list time {
+  color: #64748b;
 }
 
 .memo-list {
@@ -434,11 +520,37 @@ body {
   min-width: 0;
 }
 
+.settings-panel__section summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 40px;
+  cursor: pointer;
+}
+
+.settings-panel__section-content {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
 .settings-panel label.settings-panel__switch-row {
   display: flex;
   flex-direction: row;
+  min-height: 40px;
+  width: 100%;
   justify-content: space-between;
   align-items: center;
+}
+
+.settings-panel__switch-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  flex: 0 0 auto;
+  margin: 0;
 }
 
 .firebase-config-form {
@@ -453,7 +565,7 @@ body {
 
 .firebase-config-form input {
   min-width: 0;
-  min-height: 32px;
+  min-height: 40px;
   width: 100%;
   border: 1px solid #cbd5e1;
   border-radius: 4px;
@@ -463,11 +575,33 @@ body {
 }
 
 .memo-toolbar select,
-.memo-toolbar input {
+.memo-toolbar input:not([type="checkbox"]) {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  min-height: 32px;
+  min-height: 40px;
+}
+
+.memo-toolbar__color-button {
+  min-width: 40px;
+  min-height: 40px;
+}
+
+.destructive-action {
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  background: #fff1f2;
+}
+
+.destructive-action:hover:not(:disabled) {
+  border-color: #dc2626;
+  color: #ffffff;
+  background: #dc2626;
+}
+
+:where(button, input, select, textarea, summary):focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
 .memo-toolbar,

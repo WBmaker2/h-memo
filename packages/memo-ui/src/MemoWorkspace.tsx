@@ -1,7 +1,32 @@
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { type Memo } from "@h-memo/memo-core";
 import { StickyMemo } from "./StickyMemo";
 import { SettingsPanel, type SettingsPanelProps } from "./SettingsPanel";
+
+const UPDATE_HISTORY = [
+  {
+    date: "2026-05-13",
+    title: "개발 시작",
+    detail: "메모 작성, 로컬 저장, 데스크톱 창 작업을 시작했습니다.",
+  },
+  {
+    date: "2026-07-11",
+    title: "데이터 안전성 하드닝",
+    detail: "서버 백업 세대, 복원 안전 잠금, 메뉴 접근성을 보강했습니다.",
+  },
+  {
+    date: "2026-07-13",
+    title: "최종 호환성 보강",
+    detail:
+      "legacy 백업, memo ID codec, 창 예약 복구, 삭제 재조정을 보강했습니다. Node/환경이 달라도 한국어 오전·오후 표기가 일관되게 보이도록 보강했습니다.",
+  },
+  {
+    date: "2026-07-13",
+    title: "KST 일별 백업 보존",
+    detail:
+      "대한민국 날짜별 최신 백업 1개를 최근 365일 동안 보관하고, 선택한 날짜의 메모만 불러오도록 개선했습니다.",
+  },
+] as const;
 
 type MemoWorkspaceShellProps = {
   appClassName: string;
@@ -27,6 +52,7 @@ type MemoWorkspaceShellProps = {
   onRequestSync?: () => void;
   isSyncDisabled?: boolean;
   isSyncBusy?: boolean;
+  isMemoEditingDisabled?: boolean;
   settingsProps: SettingsPanelProps;
 };
 
@@ -48,10 +74,12 @@ export function MemoWorkspace({
   onRequestSync,
   isSyncDisabled,
   isSyncBusy,
+  isMemoEditingDisabled = false,
   settingsProps,
   actions,
   authStatus,
 }: MemoWorkspaceShellProps) {
+  const [isUpdateHistoryOpen, setIsUpdateHistoryOpen] = useState(false);
   const hasMemos = memos.length > 0;
   const menuMemos = managedMemos ?? memos;
   const hasManagedMemos = menuMemos.length > 0;
@@ -62,14 +90,14 @@ export function MemoWorkspace({
   const appMenuContent = (
     <div className="memo-menu__panel-content">
       <section className="memo-menu__group" aria-label="메모 기능">
-        <h3 className="memo-menu__group-title">메모 기능</h3>
-        <button type="button" onClick={onCreateMemo}>
+        <h2 className="memo-menu__group-title">메모 기능</h2>
+        <button type="button" onClick={onCreateMemo} disabled={isMemoEditingDisabled}>
           새 메모
         </button>
         {actions}
       </section>
       <section className="memo-menu__group" aria-label="메모 관리">
-        <h3 className="memo-menu__group-title">메모 관리</h3>
+        <h2 className="memo-menu__group-title">메모 관리</h2>
         {hasManagedMemos ? (
           <ul className="memo-list">
             {menuMemos.map((memo, index) => (
@@ -77,9 +105,10 @@ export function MemoWorkspace({
                 <span title={memo.plainText}>{getMemoLabel(memo, index)}</span>
                 {onOpenMemo ? (
                   <button
-                    type="button"
-                    aria-label={`${getMemoLabel(memo, index)} 열기`}
-                    onClick={() => onOpenMemo(memo.id)}
+                  type="button"
+                  aria-label={`${getMemoLabel(memo, index)} 열기`}
+                  onClick={() => onOpenMemo(memo.id)}
+                  disabled={isMemoEditingDisabled}
                   >
                     열기
                   </button>
@@ -87,7 +116,9 @@ export function MemoWorkspace({
                 <button
                   type="button"
                   aria-label={`${getMemoLabel(memo, index)} 삭제`}
+                  className="memo-menu__action--destructive destructive-action"
                   onClick={() => onDeleteMemo(memo.id)}
+                  disabled={isMemoEditingDisabled}
                 >
                   삭제
                 </button>
@@ -98,6 +129,28 @@ export function MemoWorkspace({
           <p className="memo-list__empty">관리할 메모가 없습니다.</p>
         )}
       </section>
+      <button
+        type="button"
+        className="memo-menu__updates-button"
+        aria-expanded={isUpdateHistoryOpen}
+        onClick={() => setIsUpdateHistoryOpen((isOpen) => !isOpen)}
+      >
+        {isUpdateHistoryOpen ? "업데이트 내역 닫기" : "업데이트 내역"}
+      </button>
+      {isUpdateHistoryOpen ? (
+        <section className="memo-menu__updates" aria-label="업데이트 내역">
+          <h2 className="memo-menu__updates-title">업데이트 내역</h2>
+          <ul className="memo-menu__updates-list">
+            {UPDATE_HISTORY.map((entry) => (
+              <li key={`${entry.date}-${entry.title}`}>
+                <time dateTime={entry.date}>{entry.date}</time>
+                <strong>{entry.title}</strong>
+                <span>{entry.detail}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <SettingsPanel
         userName={settingsProps.userName}
         backupStatus={settingsProps.backupStatus}
@@ -105,8 +158,11 @@ export function MemoWorkspace({
         isStartupAvailable={settingsProps.isStartupAvailable}
         isServerAvailable={settingsProps.isServerAvailable}
         isServerBusy={settingsProps.isServerBusy}
+        isLocalRestoreDisabled={settingsProps.isLocalRestoreDisabled}
         isBackupDisabled={settingsProps.isBackupDisabled}
         isRestoreDisabled={settingsProps.isRestoreDisabled}
+        canUndoRestore={settingsProps.canUndoRestore}
+        onUndoRestore={settingsProps.onUndoRestore}
         isAuthDisabled={settingsProps.isAuthDisabled}
         showStartupSection={settingsProps.showStartupSection}
         firebaseConfig={settingsProps.firebaseConfig}
@@ -160,6 +216,7 @@ export function MemoWorkspace({
               onRequestSync={onRequestSync}
               isSyncDisabled={isSyncDisabled}
               isSyncBusy={isSyncBusy}
+              isEditingDisabled={isMemoEditingDisabled}
             />
           ))
         ) : (

@@ -11,24 +11,37 @@ import {
 } from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
-const rootDir = process.cwd();
-const TAURI_CONFIG_PATH = path.resolve(
-  rootDir,
-  "apps",
-  "desktop",
-  "src-tauri",
-  "tauri.conf.json"
-);
-const desktopBundleRoot = path.resolve(
-  rootDir,
-  "apps",
-  "desktop",
-  "src-tauri",
-  "target",
-  "release",
-  "bundle"
-);
+const DEFAULT_FILE_SYSTEM = {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+};
+
+function resolveBuildPaths(rootDir) {
+  const TAURI_CONFIG_PATH = path.resolve(
+    rootDir,
+    "apps",
+    "desktop",
+    "src-tauri",
+    "tauri.conf.json"
+  );
+  const desktopBundleRoot = path.resolve(
+    rootDir,
+    "apps",
+    "desktop",
+    "src-tauri",
+    "target",
+    "release",
+    "bundle"
+  );
+
+  return { TAURI_CONFIG_PATH, desktopBundleRoot };
+}
 
 function ensureMacosOnly() {
   if (process.platform !== "darwin") {
@@ -37,18 +50,18 @@ function ensureMacosOnly() {
   }
 }
 
-function readProductName() {
-  const config = JSON.parse(readFileSync(TAURI_CONFIG_PATH, "utf8"));
+function readProductName(tauriConfigPath, readFile) {
+  const config = JSON.parse(readFile(tauriConfigPath, "utf8"));
   const productName = config.productName;
 
   if (typeof productName !== "string" || productName.length === 0) {
-    throw new Error(`productName is missing in ${TAURI_CONFIG_PATH}`);
+    throw new Error(`productName is missing in ${tauriConfigPath}`);
   }
 
   return productName;
 }
 
-function run(command, args) {
+function run(command, args, rootDir) {
   const result = spawnSync(command, args, {
     cwd: rootDir,
     stdio: "inherit",
@@ -59,13 +72,13 @@ function run(command, args) {
   }
 
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    throw new Error(`${command} exited with status ${result.status ?? 1}`);
   }
 }
 
-function readVersion() {
+function readVersion(rootDir, readFile) {
   const packageJsonPath = path.resolve(rootDir, "package.json");
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  const packageJson = JSON.parse(readFile(packageJsonPath, "utf8"));
   return String(packageJson.version);
 }
 
@@ -85,11 +98,25 @@ function resolveMacArch() {
   return process.arch;
 }
 
-function createInternalDmg() {
-  const version = readVersion();
-  const productName = readProductName();
+export function createInternalDmg({
+  rootDir = process.cwd(),
+  fileSystem = DEFAULT_FILE_SYSTEM,
+  runCommand = (command, args) => run(command, args, rootDir),
+  log = console.log,
+} = {}) {
+  const { TAURI_CONFIG_PATH, desktopBundleRoot } = resolveBuildPaths(rootDir);
+  const {
+    cpSync: copy,
+    existsSync: exists,
+    mkdirSync: makeDirectory,
+    readFileSync: readFile,
+    rmSync: remove,
+    symlinkSync: symlink,
+  } = fileSystem;
+  const version = readVersion(rootDir, readFile);
+  const productName = readProductName(TAURI_CONFIG_PATH, readFile);
   const appPath = path.join(desktopBundleRoot, "macos", `${productName}.app`);
-  if (!existsSync(appPath)) {
+  if (!exists(appPath)) {
     throw new Error(`macOS app bundle was not found: ${appPath}`);
   }
 
@@ -101,27 +128,38 @@ function createInternalDmg() {
     `${productName}_${version}_${resolveMacArch()}_internal.dmg`
   );
 
-  rmSync(stagingDir, { recursive: true, force: true });
-  mkdirSync(stagingDir, { recursive: true });
-  cpSync(appPath, stagedAppPath, { recursive: true });
-  symlinkSync("/Applications", path.join(stagingDir, "Applications"));
+  try {
+    remove(stagingDir, { recursive: true, force: true });
+    makeDirectory(stagingDir, { recursive: true });
+    copy(appPath, stagedAppPath, { recursive: true });
+    symlink("/Applications", path.join(stagingDir, "Applications"));
 
-  run("hdiutil", [
-    "create",
-    "-volname",
-    productName,
-    "-srcfolder",
-    stagingDir,
-    "-ov",
-    "-format",
-    "UDZO",
-    dmgPath,
-  ]);
+    runCommand("hdiutil", [
+      "create",
+      "-volname",
+      productName,
+      "-srcfolder",
+      stagingDir,
+      "-ov",
+      "-format",
+      "UDZO",
+      dmgPath,
+    ]);
+  } finally {
+    remove(stagingDir, { recursive: true, force: true });
+  }
 
-  rmSync(stagingDir, { recursive: true, force: true });
-  console.log(`Created internal macOS DMG: ${dmgPath}`);
+  log(`Created internal macOS DMG: ${dmgPath}`);
 }
 
-ensureMacosOnly();
-run("npm", ["run", "tauri:build:macos", "-w", "apps/desktop"]);
-createInternalDmg();
+function isCliEntryPoint() {
+  const entryPath = process.argv[1];
+  return entryPath && path.resolve(entryPath) === fileURLToPath(import.meta.url);
+}
+
+if (isCliEntryPoint()) {
+  const rootDir = process.cwd();
+  ensureMacosOnly();
+  run("npm", ["run", "tauri:build:macos", "-w", "apps/desktop"], rootDir);
+  createInternalDmg({ rootDir });
+}

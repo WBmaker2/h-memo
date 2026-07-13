@@ -1,5 +1,6 @@
 import {
   type ChangeEvent,
+  type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
@@ -37,6 +38,7 @@ type StickyMemoProps = {
   onRequestSync?: () => void;
   isSyncDisabled?: boolean;
   isSyncBusy?: boolean;
+  isEditingDisabled?: boolean;
 };
 
 export function StickyMemo({
@@ -54,10 +56,14 @@ export function StickyMemo({
   onRequestSync,
   isSyncDisabled = false,
   isSyncBusy = false,
+  isEditingDisabled = false,
 }: StickyMemoProps) {
   const [editingMemo, setEditingMemo] = useState<Memo>(memo);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const memoMenuRef = useRef<HTMLDetailsElement | null>(null);
+  const memoMenuSummaryRef = useRef<HTMLElement | null>(null);
+  const hasNativeWindowDrag = Boolean(onRequestWindowDrag);
+  const hasNativeWindowResize = Boolean(onRequestWindowResize);
   const shouldShowSyncAction = Boolean(onRequestSync);
   const shouldShowWindowControls = Boolean(
     authStatus || onCloseMemo || onRequestWindowClose || shouldShowSyncAction
@@ -89,6 +95,9 @@ export function StickyMemo({
   }, [memo.id]);
 
   const commitMemo = (nextMemo: Memo) => {
+    if (isEditingDisabled) {
+      return;
+    }
     setEditingMemo(nextMemo);
     onChange(nextMemo);
   };
@@ -157,6 +166,17 @@ export function StickyMemo({
     window.dispatchEvent(new CustomEvent(MEMO_MENU_OPENED_EVENT, { detail: editingMemo.id }));
   };
 
+  const handleMemoMenuKeyDown = (event: KeyboardEvent<HTMLDetailsElement>) => {
+    if (event.key !== "Escape" || !event.currentTarget.open) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.open = false;
+    memoMenuSummaryRef.current?.focus();
+  };
+
   return (
     <article
       className={isCollapsed ? "sticky-memo sticky-memo--collapsed" : "sticky-memo"}
@@ -168,34 +188,41 @@ export function StickyMemo({
       }}
     >
       <div
-        className="sticky-memo__titlebar"
-        data-tauri-drag-region
+        className={
+          hasNativeWindowDrag
+            ? "sticky-memo__titlebar sticky-memo__titlebar--draggable"
+            : "sticky-memo__titlebar"
+        }
+        data-tauri-drag-region={hasNativeWindowDrag ? "" : undefined}
         aria-label="상단 메뉴바"
-        title="드래그해서 이동, 더블클릭해서 접기/펼치기"
-        onMouseDown={handleWindowDrag}
-        onDoubleClick={handleTitlebarDoubleClick}
+        title={hasNativeWindowDrag ? "드래그해서 이동, 더블클릭해서 접기/펼치기" : undefined}
+        onMouseDown={hasNativeWindowDrag ? handleWindowDrag : undefined}
+        onDoubleClick={onRequestCollapseChange ? handleTitlebarDoubleClick : undefined}
       >
         <details
           ref={memoMenuRef}
           className="memo-menu"
-          data-no-window-drag="true"
+          data-no-window-drag={hasNativeWindowDrag ? "true" : undefined}
+          onKeyDown={handleMemoMenuKeyDown}
           onToggle={handleMemoMenuToggle}
         >
           <summary
+            ref={memoMenuSummaryRef}
             aria-label="메모 메뉴"
             title="메모 메뉴"
-            data-no-window-drag="true"
+            data-no-window-drag={hasNativeWindowDrag ? "true" : undefined}
           >
             ...
           </summary>
           <div className="memo-menu__panel">
             <section className="memo-menu__section">
-              <h3 className="memo-menu__section-title">메모 스타일</h3>
+              <h2 className="memo-menu__section-title">메모 스타일</h2>
               <MemoToolbar
                 style={editingMemo.style}
                 onStyleChange={handleStyleChange}
                 onDelete={() => onDelete(editingMemo.id)}
                 showDeleteAction={!appMenuContent}
+                isDisabled={isEditingDisabled}
               />
             </section>
             {appMenuContent ? (
@@ -205,7 +232,14 @@ export function StickyMemo({
             ) : null}
           </div>
         </details>
-        <div className="sticky-memo__titlebar-drag" data-tauri-drag-region>
+        <div
+          className={
+            hasNativeWindowDrag
+              ? "sticky-memo__titlebar-drag"
+              : "sticky-memo__titlebar-title"
+          }
+          data-tauri-drag-region={hasNativeWindowDrag ? "" : undefined}
+        >
           <span className="sticky-memo__app-title">H Memo</span>
           {appVersion ? <span className="sticky-memo__app-version">{appVersion}</span> : null}
         </div>
@@ -259,6 +293,7 @@ export function StickyMemo({
                 type="button"
                 aria-label={memoCloseLabel}
                 title="메모창 닫기"
+                disabled={isEditingDisabled}
                 onClick={() => onCloseMemo(editingMemo.id)}
               >
                 ×
@@ -269,6 +304,7 @@ export function StickyMemo({
                 type="button"
                 aria-label="종료"
                 title="종료"
+                disabled={isEditingDisabled}
                 onClick={onRequestWindowClose}
               >
                 ×
@@ -283,13 +319,16 @@ export function StickyMemo({
             aria-label="메모 내용"
             value={editingMemo.plainText}
             onChange={handleContentChange}
+            readOnly={isEditingDisabled}
           />
-          <div
-            className="sticky-memo__resize-handle"
-            aria-label="창 크기 조절"
-            title="드래그해서 크기 조절"
-            onPointerDown={handleWindowResize}
-          />
+          {hasNativeWindowResize ? (
+            <div
+              className="sticky-memo__resize-handle"
+              aria-label="창 크기 조절"
+              title="드래그해서 크기 조절"
+              onPointerDown={handleWindowResize}
+            />
+          ) : null}
         </>
       )}
     </article>

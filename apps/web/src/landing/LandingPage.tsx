@@ -10,7 +10,43 @@ const LATEST_RELEASE_VERSION = "v1.0.0";
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
 const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
-const RELEASE_HISTORY = [
+type ReleaseHistoryEntry = {
+  date?: string;
+  version?: string;
+  title: string;
+  items: string[];
+};
+
+const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
+  {
+    date: "2026-07-13",
+    title: "접근성 검토 보완",
+    items: [
+      "데스크톱 서버 메모의 백업 시각과 삭제 동작 표시를 일관되게 정리했습니다.",
+      "좁은 메뉴의 세로 배치와 시작프로그램 스위치 클릭 영역을 보완했습니다.",
+      "Node와 실행 환경이 달라도 한국어 오전·오후 표기가 한결같이 보이도록 보완했습니다.",
+    ],
+  },
+  {
+    date: "2026-07-13",
+    title: "KST 일별 백업 보존",
+    items: [
+      "대한민국 날짜별 최신 백업 1개를 최근 365일 동안 보관하고, 선택한 날짜의 메모만 불러오도록 개선했습니다.",
+    ],
+  },
+  {
+    date: "2026-07-12",
+    title: "데이터 안전성, 복원 안전성, 접근성, 메뉴 개선",
+    items: [
+      "복원 전 안전 지점과 멀티윈도우 잠금으로 로컬 데이터와 복원 과정을 보호합니다.",
+      "키보드로 사용할 수 있는 메뉴와 플랫폼별 메모창 표현을 적용했습니다.",
+    ],
+  },
+  {
+    date: "2026-05-13",
+    title: "H Memo 초기 개발",
+    items: ["Windows 데스크톱과 웹에서 메모를 기록하고 백업하는 개발을 시작했습니다."],
+  },
   {
     version: "v1.0.0",
     title: "백업 기록 선택 복원",
@@ -191,9 +227,17 @@ export function LandingPage() {
             </div>
             <div className="landing-page__release-list">
               {RELEASE_HISTORY.map((release) => (
-                <article className="landing-page__release-card" key={release.version}>
+                <article
+                  className="landing-page__release-card"
+                  key={`${release.date ?? release.version}-${release.title}`}
+                >
                   <h3>
-                    <span>{release.version}</span>
+                    {release.date ? (
+                      <time className="landing-page__release-date" dateTime={release.date}>
+                        {release.date}
+                      </time>
+                    ) : null}
+                    {release.version ? <span>{release.version}</span> : null}
                     {release.title}
                   </h3>
                   <ul>

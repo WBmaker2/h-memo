@@ -9,11 +9,26 @@ const WEBSTORAGE_FLAGS = new Set([
   "--no-experimental-webstorage",
 ]);
 
+function isWebStorageFlag(option) {
+  return WEBSTORAGE_FLAGS.has(option) || option === "--localstorage-file" || option.startsWith("--localstorage-file=");
+}
+
 export function buildNodeOptions(existingNodeOptions = process.env.NODE_OPTIONS ?? "") {
-  const existingOptions = existingNodeOptions
+  const rawOptions = existingNodeOptions
     .split(/\s+/)
     .map((option) => option.trim())
-    .filter((option) => option !== "" && !WEBSTORAGE_FLAGS.has(option));
+    .filter((option) => option !== "");
+  const existingOptions = [];
+  for (let index = 0; index < rawOptions.length; index += 1) {
+    const option = rawOptions[index];
+    if (isWebStorageFlag(option)) {
+      if (option === "--localstorage-file") {
+        index += 1;
+      }
+      continue;
+    }
+    existingOptions.push(option);
+  }
 
   if (process.allowedNodeEnvironmentFlags.has("--no-experimental-webstorage")) {
     existingOptions.push("--no-experimental-webstorage");

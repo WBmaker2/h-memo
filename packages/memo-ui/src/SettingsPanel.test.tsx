@@ -39,7 +39,7 @@ describe("SettingsPanel", () => {
 
     expect(screen.getByText("홍길동")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "계정" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "백업/복원" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "백업 및 복원" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "시작프로그램" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("마지막 백업: 2026-05-13 18:00");
     expect(onBackup).toHaveBeenCalled();
@@ -48,6 +48,65 @@ describe("SettingsPanel", () => {
     expect(onExportJsonBackup).toHaveBeenCalled();
     expect(onImportJsonBackup).toHaveBeenCalled();
     expect(onToggleStartup).toHaveBeenCalledWith(true);
+  });
+
+  it("organizes account, backup, and startup controls into keyboard-accessible disclosures", async () => {
+    const user = userEvent.setup();
+    const onBackup = vi.fn();
+
+    render(
+      <SettingsPanel
+        userName="홍길동"
+        backupStatus="백업 상태"
+        startupEnabled={false}
+        onBackup={onBackup}
+        onRestore={vi.fn()}
+        onExportText={vi.fn()}
+        onToggleStartup={vi.fn()}
+        onSignIn={vi.fn()}
+        onSignOut={vi.fn()}
+      />
+    );
+
+    for (const name of ["계정", "백업 및 복원", "시작프로그램"]) {
+      const label = screen.getByText(name);
+      const summary = label.closest("summary");
+      const disclosure = label.closest("details");
+
+      expect(summary).not.toBeNull();
+      expect(disclosure).toHaveAttribute("open");
+    }
+
+    const backupButton = screen.getByRole("button", { name: "서버 백업" });
+    backupButton.focus();
+    await user.keyboard("{Enter}");
+    expect(backupButton).toHaveFocus();
+    expect(onBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows and calls the one-step restore undo action when available", async () => {
+    const user = userEvent.setup();
+    const onUndoRestore = vi.fn();
+
+    render(
+      <SettingsPanel
+        userName="홍길동"
+        backupStatus="복원 완료"
+        startupEnabled={false}
+        canUndoRestore
+        onUndoRestore={onUndoRestore}
+        onBackup={vi.fn()}
+        onRestore={vi.fn()}
+        onExportText={vi.fn()}
+        onToggleStartup={vi.fn()}
+        onSignIn={vi.fn()}
+        onSignOut={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "마지막 복원 되돌리기" }));
+
+    expect(onUndoRestore).toHaveBeenCalledTimes(1);
   });
 
   it("renders fallback and calls sign-in for null userName", async () => {

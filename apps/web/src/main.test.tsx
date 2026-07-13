@@ -27,4 +27,15 @@ describe("main entry", () => {
     expect(indexHtml).toMatch(/<script\b[^>]*src="\/src\/main\.tsx"[^>]*>/);
     expect(indexHtml).not.toMatch(/%BASE_URL%src\/main\.tsx/);
   });
+
+  it("keeps mobile viewport zoom available", () => {
+    const indexHtml = readFileSync(getIndexHtmlPath(), "utf8");
+    const viewportContent = indexHtml.match(
+      /<meta\s+name="viewport"\s+content="([^"]+)"\s*\/>/
+    )?.[1];
+
+    expect(viewportContent).toContain("width=device-width");
+    expect(viewportContent).not.toMatch(/maximum-scale\s*=\s*1/i);
+    expect(viewportContent).not.toMatch(/user-scalable\s*=\s*no/i);
+  });
 });

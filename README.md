@@ -45,7 +45,7 @@ npm run dev
 - 로컬 실행/빌드:
   - `npm ci`
   - `npm run build -w apps/web`
-  - `npm run dev -w apps/web`
+  - `npm run dev -w apps/web` (Vite 개발 서버는 `127.0.0.1`에서 실행)
 - 공유 DB 경로: `users/{uid}/backupSnapshots/{snapshotId}`, `users/{uid}/serverMemoDeletes/{memoId}`
 - 첫 공유 웹 릴리스는 명시적으로 서버 백업/복원과 서버 메모 관리를 사용하며, 실시간 per-memo sync는 이후 `users/{uid}/memos/{memoId}` 모델로 이전할 예정입니다.
 
