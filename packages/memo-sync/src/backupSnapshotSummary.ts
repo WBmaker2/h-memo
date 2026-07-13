@@ -23,6 +23,10 @@ function normalizedSavedAt(value: unknown): string | null {
   return normalizeFirestoreTimestamp(value);
 }
 
+export function effectiveSchemaV2Time(data: Record<string, unknown>): string | null {
+  return normalizedSavedAt(data.savedAt) ?? normalizedSavedAt(data.createdAt);
+}
+
 function summary(
   id: string,
   schemaVersion: BackupSchemaVersion,
@@ -80,8 +84,8 @@ function parseV2(id: string, data: UnknownRecord): BackupSnapshotSummary | null 
     return null;
   }
 
-  const savedAt = normalizedSavedAt(data.savedAt);
-  return summary(id, 2, savedAt, data.memoCount, "", null, false);
+  const savedAt = effectiveSchemaV2Time(data);
+  return summary(id, 2, savedAt, data.memoCount, "", null, savedAt === null);
 }
 
 function parseV1(id: string, data: UnknownRecord): BackupSnapshotSummary | null {

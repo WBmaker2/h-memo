@@ -45,6 +45,21 @@ describe("backup retention planning", () => {
     ).toEqual([]);
   });
 
+  it("protects undated v2-compatible summaries from cleanup", () => {
+    const undatedV2 = summary("v2-undated", null, {
+      schemaVersion: 2,
+      legacyUndated: true,
+    });
+
+    expect(
+      planBackupCleanupCandidates([undatedV2], {
+        activeSnapshotId: null,
+        pendingSnapshotId: null,
+        now: "2026-07-13T12:30:00.000Z",
+      })
+    ).toEqual([]);
+  });
+
   it("prioritizes duplicates before expired snapshots and protects active and pending IDs", () => {
     const candidates = planBackupCleanupCandidates(
       [

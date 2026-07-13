@@ -1,6 +1,9 @@
 import { validateBackupPayload, type Memo } from "@h-memo/memo-core";
 import { validateLegacyFirestoreV1Payload } from "./legacyBackupPayload";
-import { parseBackupSnapshotSummary } from "./backupSnapshotSummary";
+import {
+  effectiveSchemaV2Time,
+  parseBackupSnapshotSummary,
+} from "./backupSnapshotSummary";
 import type { BackupSnapshotSummary, StoredBackupSnapshot } from "./backupTypes";
 import type { DriverDocumentSnapshot } from "./firestoreBackupDriver";
 import {
@@ -75,7 +78,9 @@ async function loadCompleteSchemaSnapshot(
 ): Promise<StoredBackupSnapshot | null> {
   if (!snapshot.exists()) return null;
   const data = snapshot.data();
-  const savedAt = normalizeFirestoreTimestamp(data.savedAt);
+  const savedAt = schemaVersion === 2
+    ? effectiveSchemaV2Time(data)
+    : normalizeFirestoreTimestamp(data.savedAt);
   const createdAt = schemaVersion === 3 ? data.clientCreatedAt : data.createdAt;
   if (
     data.schemaVersion !== schemaVersion ||
@@ -134,7 +139,11 @@ async function loadCompleteSchemaSnapshot(
   );
   if (!parsed.ok) return null;
 
-  return { id: snapshot.id, payload: parsed.payload, savedAt };
+  return {
+    id: snapshot.id,
+    payload: schemaVersion === 2 ? { ...parsed.payload, createdAt: savedAt } : parsed.payload,
+    savedAt,
+  };
 }
 
 async function loadStoredSnapshot(

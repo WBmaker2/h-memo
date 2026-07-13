@@ -70,6 +70,31 @@ describe("FirestoreBackupGateway compatibility contract", () => {
     );
   });
 
+  it("lists a v2 snapshot by its createdAt when server savedAt is missing", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    driver.seed("users/user-1/backupSnapshots/v2-created-at", {
+      schemaVersion: 2,
+      userId: "user-1",
+      createdAt: "2026-05-12T09:00:00.000Z",
+      memoCount: 1,
+      state: "complete",
+    });
+
+    const summaries = await listBackupSnapshotSummaries(
+      gateway,
+      "user-1",
+      "2026-05-13T10:00:00.000Z"
+    );
+
+    expect(summaries).toMatchObject([{
+      id: "v2-created-at",
+      savedAt: "2026-05-12T09:00:00.000Z",
+      kstDate: "2026-05-12",
+      legacyUndated: false,
+    }]);
+  });
+
   it("loads and validates only the selected snapshot payload", async () => {
     const driver = new FakeFirestoreDriver();
     const gateway = createGateway(driver);
@@ -107,6 +132,54 @@ describe("FirestoreBackupGateway compatibility contract", () => {
     expect(driver.readCollectionPaths).not.toContain(
       "users/user-1/backupSnapshots/other/memosV3"
     );
+  });
+
+  it("restores a selected v2 snapshot without server savedAt", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({
+      id: "legacy-v2-memo",
+      plainText: "서버 시각 없는 v2",
+      now: "2026-05-12T08:59:00.000Z",
+    });
+    driver.seed("users/user-1/backupSnapshots/v2-created-at", {
+      schemaVersion: 2,
+      userId: "user-1",
+      createdAt: "2026-05-12T09:00:00+09:00",
+      memoCount: 1,
+      state: "complete",
+    });
+    driver.seed("users/user-1/backupSnapshots/v2-created-at/memos/legacy-v2-memo", {
+      userId: "user-1",
+      memoId: memo.id,
+      memo,
+    });
+
+    const payload = await loadBackupSnapshot(gateway, "user-1", "v2-created-at");
+
+    expect(payload?.memos.map((item) => item.id)).toEqual([memo.id]);
+    expect(payload?.createdAt).toBe("2026-05-12T00:00:00.000Z");
+  });
+
+  it("rejects a selected v2 snapshot with an invalid createdAt", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "malformed-v2-memo", now: "2026-05-12T09:00:00.000Z" });
+    driver.seed("users/user-1/backupSnapshots/malformed-v2", {
+      schemaVersion: 2,
+      userId: "user-1",
+      createdAt: "not-a-date",
+      memoCount: 1,
+      state: "complete",
+      savedAt: new FakeTimestamp("2026-05-12T09:01:00.000Z"),
+    });
+    driver.seed("users/user-1/backupSnapshots/malformed-v2/memos/malformed-v2-memo", {
+      userId: "user-1",
+      memoId: memo.id,
+      memo,
+    });
+
+    await expect(loadBackupSnapshot(gateway, "user-1", "malformed-v2")).resolves.toBeNull();
   });
 
   it("uses Timestamp server savedAt to order canonical memos instead of skewed memo clocks", async () => {

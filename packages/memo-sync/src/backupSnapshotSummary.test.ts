@@ -80,6 +80,41 @@ describe("backup snapshot summaries", () => {
     });
   });
 
+  it("uses a valid v2 createdAt when server savedAt is missing", () => {
+    expect(
+      parseBackupSnapshotSummary("v2-created-at", {
+        schemaVersion: 2,
+        userId: "user-1",
+        state: "complete",
+        memoCount: 4,
+        createdAt: "2026-07-12T15:00:00+09:00",
+      })
+    ).toMatchObject({
+      id: "v2-created-at",
+      savedAt: "2026-07-12T06:00:00.000Z",
+      kstDate: "2026-07-12",
+      legacyUndated: false,
+    });
+  });
+
+  it("keeps a v2 snapshot with no valid time as an undated legacy item", () => {
+    expect(
+      parseBackupSnapshotSummary("v2-undated", {
+        schemaVersion: 2,
+        userId: "user-1",
+        state: "complete",
+        memoCount: 4,
+        savedAt: "not-a-date",
+        createdAt: "",
+      })
+    ).toMatchObject({
+      id: "v2-undated",
+      savedAt: null,
+      kstDate: null,
+      legacyUndated: true,
+    });
+  });
+
   it("derives v1 count and preview, while exposing malformed legacy dates separately", () => {
     expect(parseBackupSnapshotSummary("v1", { ...payload(), savedAt: "" })).toMatchObject({
       id: "v1",
