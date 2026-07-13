@@ -8,6 +8,27 @@ const formatter = new Intl.DateTimeFormat("en-US", {
   day: "2-digit",
 });
 
+function parseKstDateKey(key: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(year, month - 1, day);
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
 export function toKstDateKey(value: string | Date): string | null {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
@@ -19,12 +40,8 @@ export function toKstDateKey(value: string | Date): string | null {
 }
 
 export function shiftKstDateKey(key: string, days: number): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
-  if (!match) throw new Error(`Invalid KST date key: ${key}`);
-
-  const date = new Date(
-    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
-  );
+  const date = parseKstDateKey(key);
+  if (!date) throw new Error(`Invalid KST date key: ${key}`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
@@ -40,6 +57,6 @@ export function getKstRetentionStartKey(
 
 export function isKstDateInRetention(key: string, now: string | Date): boolean {
   const today = toKstDateKey(now);
-  if (!today) return false;
+  if (!today || !parseKstDateKey(key)) return false;
   return key >= getKstRetentionStartKey(now) && key <= today;
 }

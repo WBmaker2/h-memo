@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getKstRetentionStartKey,
   isKstDateInRetention,
+  shiftKstDateKey,
   toKstDateKey,
 } from "./backupKstDate";
 
@@ -19,5 +20,11 @@ describe("KST backup dates", () => {
 
   it("handles leap-year February by calendar date", () => {
     expect(getKstRetentionStartKey("2024-03-01T03:00:00.000Z", 2)).toBe("2024-02-29");
+  });
+
+  it("rejects impossible calendar date keys", () => {
+    expect(() => shiftKstDateKey("2026-02-31", 0)).toThrow("Invalid KST date key");
+    expect(() => shiftKstDateKey("2026-02-31", -1)).toThrow("Invalid KST date key");
+    expect(isKstDateInRetention("2026-02-31", "2026-07-13T03:00:00.000Z")).toBe(false);
   });
 });

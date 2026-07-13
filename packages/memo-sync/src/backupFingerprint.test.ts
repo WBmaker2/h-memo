@@ -35,6 +35,40 @@ describe("backup content fingerprints", () => {
     expect(await createBackupContentHash(first)).toBe(await createBackupContentHash(second));
   });
 
+  it("uses UTF-16 code-unit ordering for non-ASCII IDs and object keys", async () => {
+    const firstMemos = [
+      createMemo({
+        id: "ä",
+        now: "2026-07-13T00:00:00.000Z",
+        plainText: "ä",
+        richContent: { "ä": "umlaut", a: "latin a", b: "latin b" },
+      }),
+      createMemo({
+        id: "a",
+        now: "2026-07-13T00:00:00.000Z",
+        plainText: "a",
+        richContent: { b: "latin b", "ä": "umlaut", a: "latin a" },
+      }),
+      createMemo({
+        id: "b",
+        now: "2026-07-13T00:00:00.000Z",
+        plainText: "b",
+        richContent: { a: "latin a", b: "latin b", "ä": "umlaut" },
+      }),
+    ];
+    const secondMemos = firstMemos.map((memo) => ({
+      ...memo,
+      richContent: { b: "latin b", "ä": "umlaut", a: "latin a" },
+    }));
+    const first = payloadWith({ memos: firstMemos, order: ["ä", "a", "b"] });
+    const second = payloadWith({ memos: secondMemos, order: ["b", "ä", "a"] });
+
+    expect(await createBackupContentHash(first)).toBe(
+      "95d79b125e454882242c76bfaaa12734ded4a1901ad93e83cd1b43030c01d1e1"
+    );
+    expect(await createBackupContentHash(first)).toBe(await createBackupContentHash(second));
+  });
+
   it("ignores deleted memos because only stored memos are restored", async () => {
     const deletedMemo = createMemo({ id: "deleted", now: "2026-07-13T00:00:00.000Z", plainText: "삭제됨" });
     deletedMemo.deletedAt = "2026-07-13T01:00:00.000Z";
