@@ -14,7 +14,12 @@ import {
   type MemoRepository,
   type RestoreSafetyPoint,
 } from "@h-memo/memo-core";
-import { formatDateTime, MemoWorkspace, ServerMemoManagerDialog } from "@h-memo/memo-ui";
+import {
+  BackupHistoryDialog,
+  MemoWorkspace,
+  ServerMemoManagerDialog,
+  formatBackupSaveStatus,
+} from "@h-memo/memo-ui";
 import {
   FirestoreBackupGateway,
   backupMemos,
@@ -24,13 +29,14 @@ import {
   getFirebaseAuth,
   hasFirebaseConfig,
   listBackedUpMemos,
-  listBackupSnapshots,
+  listBackupSnapshotSummaries,
+  loadBackupSnapshot,
   signInWithGoogle,
   signOutUser,
   subscribeAuthUser,
   waitForSignedInUser,
   type BackedUpMemo,
-  type BackedUpSnapshot,
+  type BackupSnapshotSummary,
   type HMemoUser,
 } from "@h-memo/memo-sync";
 import {
@@ -52,6 +58,7 @@ import {
   WEB_LOCKS_REQUIRED_MESSAGE,
   WebMutationBarrier,
 } from "./adapters/webMutationBarrier";
+import { restoreWebBackupSelection } from "./webBackupHistory";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
@@ -179,10 +186,6 @@ function createRestoreSafetyPoint(
   };
 }
 
-function getServerRestoreConfirmMessage(snapshot: BackedUpSnapshot): string {
-  return `${formatDateTime(snapshot.createdAt)} 백업의 ${snapshot.memoCount}개 메모로 현재 로컬 메모를 대체합니다. 계속할까요?`;
-}
-
 function broadcastRestoreSafetyChanged() {
   window.dispatchEvent(new Event(RESTORE_SAFETY_CHANGED_EVENT));
 }
@@ -204,7 +207,7 @@ export function WebApp() {
   const [user, setUser] = useState<WebPreviewUser | null>(null);
   const [backupHistoryDialog, setBackupHistoryDialog] = useState<{
     isOpen: boolean;
-    snapshots: BackedUpSnapshot[];
+    snapshots: BackupSnapshotSummary[];
   }>({
     isOpen: false,
     snapshots: [],
@@ -219,6 +222,7 @@ export function WebApp() {
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
   const restoreLockRef = useRef<string | null>(null);
+  const restoreSnapshotInFlightRef = useRef(false);
   const syncServicesRef = useRef<SyncServices | null>(null);
   const jsonImportInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1107,7 +1111,7 @@ export function WebApp() {
       const result = await runWithWebRestoreLock(() =>
         backupCurrentMemos(services, user.uid)
       );
-      setBackupStatus(`백업 완료: ${result.path}`);
+      setBackupStatus(formatBackupSaveStatus(result));
     } catch (error) {
       setBackupStatus(`${BACKUP_FAILED_PREFIX} ${getErrorMessage(error)}`);
     } finally {
@@ -1135,7 +1139,7 @@ export function WebApp() {
     setBackupStatus("백업 기록을 불러옵니다.");
     try {
       await waitForPendingPersists();
-      const snapshots = await listBackupSnapshots(services.gateway, user.uid);
+      const snapshots = await listBackupSnapshotSummaries(services.gateway, user.uid);
       if (snapshots.length === 0) {
         setBackupStatus(NO_BACKUP_MESSAGE);
         return;
@@ -1157,28 +1161,51 @@ export function WebApp() {
     setBackupHistoryDialog((previous) => ({ ...previous, isOpen: false }));
   };
 
-  const handleRestoreBackupSnapshot = async (snapshotIndex: number) => {
-    const snapshot = backupHistoryDialog.snapshots[snapshotIndex];
-    if (!snapshot || isBusy) {
+  const handleRestoreBackupSnapshot = async (snapshotId: string) => {
+    if (restoreSnapshotInFlightRef.current || isBusy) {
       return;
     }
 
+    const currentUser = user;
+    const services = ensureSyncServices();
+    if (!currentUser || !services) {
+      setBackupStatus(LOGIN_REQUIRED_MESSAGE);
+      return;
+    }
+
+    restoreSnapshotInFlightRef.current = true;
     setIsBusy(true);
     setBackupStatus("선택한 백업을 복원합니다.");
     try {
-      if (!window.confirm(getServerRestoreConfirmMessage(snapshot))) {
+      const selection = await restoreWebBackupSelection({
+        gateway: services.gateway,
+        userId: currentUser.uid,
+        snapshotId,
+        summaries: backupHistoryDialog.snapshots,
+        confirm: (message) => window.confirm(message),
+        loadSnapshot: loadBackupSnapshot,
+        restore: (payload) =>
+          runWithWebRestoreLock(() =>
+            replaceMemosWithSafety("server", currentUser.uid, payload.memos)
+          ),
+      });
+      if (!selection) {
+        throw new Error("선택한 백업 기록을 찾지 못했습니다.");
+      }
+      if (selection.kind === "cancelled") {
         setBackupStatus("복원을 취소했습니다.");
         return;
       }
-      await runWithWebRestoreLock(() =>
-        replaceMemosWithSafety("server", user?.uid ?? "local", snapshot.payload.memos)
-      );
+      if (selection.kind === "unavailable") {
+        throw new Error("선택한 백업을 불러오지 못했습니다.");
+      }
       setBackupHistoryDialog({ isOpen: false, snapshots: [] });
-      setBackupStatus(`복원 완료: ${snapshot.payload.memos.length}개 메모`);
+      setBackupStatus(`복원 완료: ${selection.payload.memos.length}개 메모`);
     } catch (error) {
       setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
     } finally {
       setIsBusy(false);
+      restoreSnapshotInFlightRef.current = false;
     }
   };
 
@@ -1396,58 +1423,13 @@ export function WebApp() {
         onRestore={handleRestoreServerMemo}
         onDelete={handleDeleteServerMemo}
       />
-      {backupHistoryDialog.isOpen ? (
-        <div className="backup-history-dialog-backdrop">
-          <section
-            className="backup-history-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="backup-history-dialog-title"
-          >
-            <header className="backup-history-dialog__header">
-              <h2 id="backup-history-dialog-title">백업 기록 선택</h2>
-              <button type="button" onClick={handleCloseBackupHistoryDialog}>
-                닫기
-              </button>
-            </header>
-            <p className="backup-history-dialog__description">
-              복원할 백업 시간대를 선택해 주세요. 선택한 백업에 포함된 메모로 현재
-              로컬 메모가 교체됩니다.
-            </p>
-            <ul className="backup-history-list">
-              {backupHistoryDialog.snapshots.map((snapshot, index) => {
-                const preview =
-                  snapshot.payload.memos
-                    .slice(0, 3)
-                    .map(getMemoLabel)
-                    .join(", ") || "메모 없음";
-
-                return (
-                  <li
-                    key={`${snapshot.createdAt}-${index}`}
-                    className="backup-history-list__item"
-                  >
-                    <div className="backup-history-list__content">
-                      <strong>{formatDateTime(snapshot.createdAt)}</strong>
-                      <span>{snapshot.memoCount}개 메모</span>
-                      <span title={preview}>미리보기: {preview}</span>
-                    </div>
-                    <div className="backup-history-list__actions">
-                      <button
-                        type="button"
-                        onClick={() => handleRestoreBackupSnapshot(index)}
-                        disabled={isBusy}
-                      >
-                        복원
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        </div>
-      ) : null}
+      <BackupHistoryDialog
+        isOpen={backupHistoryDialog.isOpen}
+        isBusy={isBusy || isRestoreLocked}
+        items={backupHistoryDialog.snapshots}
+        onClose={handleCloseBackupHistoryDialog}
+        onRestore={handleRestoreBackupSnapshot}
+      />
     </>
   );
 }

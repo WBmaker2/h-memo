@@ -8,10 +8,11 @@ import {
   createFirebaseApp,
   getFirebaseAuth,
   type BackedUpMemo,
+  type BackupSnapshotSummary,
   deleteBackedUpMemo,
   listBackedUpMemos,
-  listBackupSnapshots,
-  restoreLatestBackup,
+  listBackupSnapshotSummaries,
+  loadBackupSnapshot,
   signInWithGoogle,
   signOutUser,
   subscribeAuthUser,
@@ -25,7 +26,7 @@ import { WebApp } from "./WebApp";
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
 const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
-const SUCCESS_BACKUP_MESSAGE = "백업 완료:";
+const SUCCESS_BACKUP_MESSAGE = "새 백업을 저장했습니다.";
 
 const VALID_FIREBASE_ENV = {
   apiKey: "api-key",
@@ -88,8 +89,8 @@ vi.mock("@h-memo/memo-sync", async () => {
     getFirebaseAuth: vi.fn(),
     backupMemos: vi.fn(),
     completeGoogleRedirectSignIn: vi.fn(),
-    listBackupSnapshots: vi.fn(),
-    restoreLatestBackup: vi.fn(),
+    listBackupSnapshotSummaries: vi.fn(),
+    loadBackupSnapshot: vi.fn(),
     listBackedUpMemos: vi.fn(),
     deleteBackedUpMemo: vi.fn(),
     signInWithGoogle: vi.fn(),
@@ -230,16 +231,21 @@ beforeEach(() => {
   vi.mocked(completeGoogleRedirectSignIn).mockResolvedValue(null);
   vi.mocked(waitForSignedInUser).mockResolvedValue(null);
   vi.mocked(signOutUser).mockResolvedValue(undefined);
-  vi.mocked(backupMemos).mockResolvedValue({ path: "users/user-1/backupSnapshots/1", payload: {
-    version: 1,
-    userId: "user-1",
-    createdAt: new Date().toISOString(),
-    memos: [],
-  } });
-  vi.mocked(restoreLatestBackup).mockResolvedValue(null);
+  vi.mocked(backupMemos).mockResolvedValue({
+    path: "users/user-1/backupSnapshots/1",
+    snapshotId: "snapshot-1",
+    outcome: "created",
+    cleanupPending: false,
+    payload: {
+      version: 1,
+      userId: "user-1",
+      createdAt: new Date().toISOString(),
+      memos: [],
+    },
+  });
   vi.mocked(listBackedUpMemos).mockResolvedValue([]);
   vi.mocked(deleteBackedUpMemo).mockResolvedValue(1);
-  vi.mocked(listBackupSnapshots).mockResolvedValue([]);
+  vi.mocked(listBackupSnapshotSummaries).mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -1408,6 +1414,9 @@ describe("WebApp", () => {
 
     vi.mocked(backupMemos).mockResolvedValue({
       path: "users/user-1/backupSnapshots/restore-1",
+      snapshotId: "restore-1",
+      outcome: "created",
+      cleanupPending: false,
       payload: {
         version: 1,
         userId: "user-1",
@@ -1480,6 +1489,9 @@ describe("WebApp", () => {
 
     pendingBackup.resolve({
       path: "users/user-1/backupSnapshots/barrier",
+      snapshotId: "barrier",
+      outcome: "created",
+      cleanupPending: false,
       payload: {
         version: 1,
         userId: LOGGED_IN_USER.uid,
@@ -1664,13 +1676,19 @@ describe("WebApp", () => {
         },
       ],
     };
-    vi.mocked(listBackupSnapshots).mockResolvedValue([
-      {
-        createdAt: "2026-05-13T10:05:00.000Z",
-        memoCount: restoredPayload.memos.length,
-        payload: restoredPayload,
-      },
-    ]);
+    const summary: BackupSnapshotSummary = {
+      id: "selected-snapshot",
+      savedAt: "2026-05-13T10:05:00.000Z",
+      kstDate: "2026-05-13",
+      memoCount: restoredPayload.memos.length,
+      previewText: "복원된 본문",
+      contentHash: null,
+      schemaVersion: 1,
+      state: "complete",
+      legacyUndated: false,
+    };
+    vi.mocked(listBackupSnapshotSummaries).mockResolvedValue([summary]);
+    vi.mocked(loadBackupSnapshot).mockResolvedValue(restoredPayload);
 
     installLocalStorageStub({
       initialEntries: [
@@ -1749,15 +1767,22 @@ describe("WebApp", () => {
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
 
     const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
-    expect(within(dialog).getByText("2026. 5. 13. 오후 7:05:00")).toBeInTheDocument();
+    expect(listBackupSnapshotSummaries).toHaveBeenCalledOnce();
+    expect(loadBackupSnapshot).not.toHaveBeenCalled();
+    expect(within(dialog).getByText(/백업 시각: 2026\. 5\. 13\. 오후 7:05:00/)).toBeInTheDocument();
     expect(within(dialog).queryByText("2030-05-13T10:05:00.000Z")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("삭제되어야 할 로컬 데이터")).toBeInTheDocument();
 
-    await user.click(within(dialog).getByRole("button", { name: "복원" }));
+    await user.click(
+      within(dialog).getByRole("button", { name: "2026-05-13 백업 복원" })
+    );
 
     await waitFor(() => {
-      expect(listBackupSnapshots).toHaveBeenCalledTimes(1);
-      expect(restoreLatestBackup).not.toHaveBeenCalled();
+      expect(loadBackupSnapshot).toHaveBeenCalledWith(
+        expect.anything(),
+        "user-1",
+        summary.id
+      );
       expect(screen.queryByDisplayValue("삭제되어야 할 로컬 데이터")).not.toBeInTheDocument();
       expect(screen.getByDisplayValue("복원된 본문")).toBeInTheDocument();
     });
