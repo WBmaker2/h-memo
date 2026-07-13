@@ -26,7 +26,7 @@ export type {
   BackedUpSnapshot,
   BackupGateway,
   MemoBackupPayload,
-  FirestoreBackupDriver,
   StoredCurrentMemo,
   StoredBackupSnapshot,
-} from "./backup";
+} from "./backupTypes";
+export type { FirestoreBackupDriver } from "./firestoreBackupDriver";
