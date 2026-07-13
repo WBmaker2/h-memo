@@ -3575,7 +3575,7 @@ describe("desktop App", () => {
     });
 
     expect(window.confirm).toHaveBeenCalledWith(
-      expect.stringContaining(new Date("2026-01-01T00:00:00.000Z").toLocaleString("ko-KR"))
+      expect.stringContaining("2026. 1. 1. 오전 9:00:00")
     );
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("1개 메모"));
     const safetyPoint = JSON.parse(

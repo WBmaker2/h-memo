@@ -1762,7 +1762,7 @@ describe("WebApp", () => {
       expect(screen.getByDisplayValue("복원된 본문")).toBeInTheDocument();
     });
     expect(window.confirm).toHaveBeenCalledWith(
-      expect.stringContaining(new Date("2026-05-13T10:05:00.000Z").toLocaleString("ko-KR"))
+      expect.stringContaining("2026. 5. 13. 오후 7:05:00")
     );
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("1개 메모"));
     const safetyPoint = JSON.parse(
