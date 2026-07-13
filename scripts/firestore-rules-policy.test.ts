@@ -143,8 +143,20 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain('request.resource.data.activeSchemaVersion == 3');
     expect(rules).toContain("function hasValidV3PendingSnapshotAfter(uid, snapshotId)");
     expect(rules).toContain("function hasValidV2PendingSnapshotAfter(uid, snapshotId)");
-    expect(rules).toContain("existsAfter(snapshotPath)");
-    expect(rules).toContain("getAfter(snapshotPath).data.state == \"writing\"");
+    const v3PendingRules = rules.slice(
+      rules.indexOf("function hasValidV3PendingSnapshotAfter(uid, snapshotId)"),
+      rules.indexOf("function hasValidV2PendingSnapshotAfter(uid, snapshotId)")
+    );
+    const v2PendingRules = rules.slice(
+      rules.indexOf("function hasValidV2PendingSnapshotAfter(uid, snapshotId)"),
+      rules.indexOf("function isInactiveSnapshot(uid, snapshotId)")
+    );
+    expect(v3PendingRules).toContain("!exists(snapshotPath)");
+    expect(v3PendingRules).toContain("existsAfter(snapshotPath)");
+    expect(v3PendingRules).toContain("getAfter(snapshotPath).data.state == \"writing\"");
+    expect(v2PendingRules).toContain("!exists(snapshotPath)");
+    expect(v2PendingRules).toContain("existsAfter(snapshotPath)");
+    expect(v2PendingRules).toContain("getAfter(snapshotPath).data.state == \"writing\"");
     expect(rules).toContain("request.resource.data.activeSchemaVersion == resource.data.activeSchemaVersion");
   });
 

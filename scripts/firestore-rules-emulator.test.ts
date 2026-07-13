@@ -104,6 +104,14 @@ describeWithEmulator("Firestore security rules emulator", () => {
     const saved = await getDoc(snapshot);
     expect(saved.data()).toMatchObject({ schemaVersion: 3, state: "complete" });
     expect(saved.data()?.savedAt).toBeTruthy();
+
+    const nextLease = writeBatch(owner);
+    nextLease.set(snapshotRef(owner, ownerId, "v3-next"), validWritingV3(ownerId));
+    nextLease.update(stateRef(owner, ownerId), {
+      pendingSnapshotId: "v3-next",
+      pendingSchemaVersion: 3,
+    });
+    await assertSucceeds(nextLease.commit());
   });
 
   it("rejects malformed schema-v3 metadata", async () => {
@@ -247,6 +255,39 @@ describeWithEmulator("Firestore security rules emulator", () => {
     }));
   });
 
+  it("denies v3 initial and update leases that only target a pre-existing snapshot", async () => {
+    const owner = testEnv.authenticatedContext(ownerId).firestore();
+    const preexistingSnapshot = snapshotRef(owner, ownerId, "preexisting-v3");
+
+    await seed(async (db) => {
+      await setDoc(snapshotRef(db, ownerId, "preexisting-v3"), validWritingV3(ownerId));
+    });
+    await assertFails(setDoc(stateRef(owner, ownerId), {
+      userId: ownerId,
+      activeSnapshotId: null,
+      activeSchemaVersion: null,
+      pendingSnapshotId: "preexisting-v3",
+      pendingSchemaVersion: 3,
+      activatedAt: null,
+    }));
+
+    await seed(async (db) => {
+      await setDoc(stateRef(db, ownerId), {
+        userId: ownerId,
+        activeSnapshotId: null,
+        activeSchemaVersion: null,
+        pendingSnapshotId: null,
+        pendingSchemaVersion: null,
+        activatedAt: null,
+      });
+    });
+    await assertFails(updateDoc(stateRef(owner, ownerId), {
+      pendingSnapshotId: "preexisting-v3",
+      pendingSchemaVersion: 3,
+    }));
+    await assertSucceeds(getDoc(preexistingSnapshot));
+  });
+
   it("preserves version-field-free v2 lease and activation compatibility", async () => {
     const owner = testEnv.authenticatedContext(ownerId).firestore();
     const snapshot = snapshotRef(owner, ownerId, "legacy-v2");
@@ -287,6 +328,41 @@ describeWithEmulator("Firestore security rules emulator", () => {
       pendingSnapshotId: null,
       activatedAt: serverTimestamp(),
     }));
+  });
+
+  it("denies versionless v2 initial and update leases that only target a pre-existing snapshot", async () => {
+    const owner = testEnv.authenticatedContext(ownerId).firestore();
+    const preexistingSnapshot = snapshotRef(owner, ownerId, "preexisting-v2");
+    const snapshot = {
+      schemaVersion: 2,
+      userId: ownerId,
+      createdAt: "2026-07-13T12:00:00.000Z",
+      memoCount: 0,
+      state: "writing",
+    };
+
+    await seed(async (db) => {
+      await setDoc(snapshotRef(db, ownerId, "preexisting-v2"), snapshot);
+    });
+    await assertFails(setDoc(stateRef(owner, ownerId), {
+      userId: ownerId,
+      activeSnapshotId: null,
+      pendingSnapshotId: "preexisting-v2",
+      activatedAt: null,
+    }));
+
+    await seed(async (db) => {
+      await setDoc(stateRef(db, ownerId), {
+        userId: ownerId,
+        activeSnapshotId: null,
+        pendingSnapshotId: null,
+        activatedAt: null,
+      });
+    });
+    await assertFails(updateDoc(stateRef(owner, ownerId), {
+      pendingSnapshotId: "preexisting-v2",
+    }));
+    await assertSucceeds(getDoc(preexistingSnapshot));
   });
 
   it("preserves schema-v2 completion, reads, and immutability", async () => {

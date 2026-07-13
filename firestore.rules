@@ -305,7 +305,8 @@ service cloud.firestore {
 
     function hasValidV3PendingSnapshotAfter(uid, snapshotId) {
       let snapshotPath = /databases/$(database)/documents/users/$(uid)/backupSnapshots/$(snapshotId);
-      return existsAfter(snapshotPath)
+      return !exists(snapshotPath)
+        && existsAfter(snapshotPath)
         && getAfter(snapshotPath).data.userId == uid
         && getAfter(snapshotPath).data.schemaVersion == 3
         && getAfter(snapshotPath).data.state == "writing";
@@ -313,7 +314,8 @@ service cloud.firestore {
 
     function hasValidV2PendingSnapshotAfter(uid, snapshotId) {
       let snapshotPath = /databases/$(database)/documents/users/$(uid)/backupSnapshots/$(snapshotId);
-      return existsAfter(snapshotPath)
+      return !exists(snapshotPath)
+        && existsAfter(snapshotPath)
         && getAfter(snapshotPath).data.userId == uid
         && getAfter(snapshotPath).data.schemaVersion == 2
         && getAfter(snapshotPath).data.state == "writing";
