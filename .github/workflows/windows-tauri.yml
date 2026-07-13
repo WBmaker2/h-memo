@@ -5,8 +5,6 @@ permissions:
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
   pull_request:
@@ -184,13 +182,12 @@ jobs:
           artifacts=("${msi_files[@]}" "${nsis_files[@]}")
           echo "Found ${#msi_files[@]} MSI and ${#nsis_files[@]} NSIS files."
 
-          tag_ref="tags/$RELEASE_TAG"
-          existing_tag_sha=""
-          if tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/${tag_ref}" --jq '.object.sha' 2>/dev/null)"; then
-            existing_tag_sha="$tag_sha"
+          existing_tag_commit=""
+          if tag_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq '.sha' 2>/dev/null)"; then
+            existing_tag_commit="$tag_commit"
           fi
-          if [ -n "$existing_tag_sha" ] && [ "$existing_tag_sha" != "$RELEASE_TARGET" ]; then
-            echo "Release tag $RELEASE_TAG already points to $existing_tag_sha, but this workflow built $RELEASE_TARGET." >&2
+          if [ -n "$existing_tag_commit" ] && [ "$existing_tag_commit" != "$RELEASE_TARGET" ]; then
+            echo "Release tag $RELEASE_TAG resolves to $existing_tag_commit, but this workflow built $RELEASE_TARGET." >&2
             echo "Run the workflow from the matching tag/ref or use a new release tag." >&2
             exit 1
           fi
@@ -200,5 +197,5 @@ jobs:
             gh release upload "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           else
             echo "Creating new release $RELEASE_TAG at $RELEASE_TARGET..."
-            gh release create "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --notes "Release $RELEASE_TAG" --target "$RELEASE_TARGET"
+            gh release create "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --generate-notes --target "$RELEASE_TARGET"
           fi

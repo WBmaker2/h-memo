@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppRouter } from "../AppRouter";
 import { LandingPage } from "./LandingPage";
 import { resolveWindowsDownloadUrls } from "./releaseDownload";
+import webPackageJson from "../../package.json";
 
 vi.mock("../WebApp", () => ({
   WebApp: () => <h1>H Memo (웹 미리보기)</h1>,
@@ -49,6 +50,9 @@ const RESOLVED_DOWNLOAD_STATES = {
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
 const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
+const LATEST_RELEASE_NOTICE = new RegExp(
+  `v${webPackageJson.version.replaceAll(".", "\\.")} 탑재 완료: 백업 기록 선택 복원과 보안 의존성 정리`
+);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -79,7 +83,7 @@ describe("LandingPage", () => {
     render(<LandingPage />);
 
     expect(
-      screen.getByText(/v1\.0\.0 탑재 완료: 백업 기록 선택 복원과 보안 의존성 정리/),
+      screen.getByText(LATEST_RELEASE_NOTICE),
     ).toBeInTheDocument();
     const msiDownloadButton = screen.getByRole("button", { name: "Windows MSI 다운로드" });
     const exeDownloadButton = screen.getByRole("button", { name: "Windows EXE 다운로드" });
@@ -155,8 +159,9 @@ describe("LandingPage", () => {
       screen.getByText("서버 복원 시 최신본을 바로 덮어쓰지 않고 시간대별 백업 기록 중 선택해 복원합니다."),
     ).toBeInTheDocument();
     expect(screen.getByText("2026-07-12")).toBeInTheDocument();
-    expect(screen.getAllByText("2026-07-13")).toHaveLength(3);
+    expect(screen.getAllByText("2026-07-13")).toHaveLength(4);
     expect(screen.getByText("2026-05-13")).toBeInTheDocument();
+    expect(screen.getByText("자동 버전 및 릴리스")).toBeInTheDocument();
     expect(screen.getByText("KST 날짜 표시 안정화")).toBeInTheDocument();
     expect(screen.getByText("접근성 검토 보완")).toBeInTheDocument();
     expect(screen.getByText("KST 일별 백업 보존")).toBeInTheDocument();
@@ -172,6 +177,11 @@ describe("LandingPage", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText("Node와 실행 환경이 달라도 한국어 오전·오후 표기가 한결같이 보이도록 보완했습니다."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "검증을 통과한 main 변경은 앱 패키지와 데스크톱 배포 버전을 patch 단위로 함께 올려 다음 릴리스를 준비하도록 개선했습니다.",
+      ),
     ).toBeInTheDocument();
     expect(
       screen.getByText("데이터 안전성, 복원 안전성, 접근성, 메뉴 개선"),

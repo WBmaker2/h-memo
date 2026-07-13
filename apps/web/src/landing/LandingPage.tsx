@@ -4,9 +4,10 @@ import {
   type WindowsInstallerDownloadStates,
   type WindowsInstallerKind,
 } from "./releaseDownload";
+import webPackageJson from "../../package.json";
 
 const LOADING_DOWNLOAD_LABEL = "다운로드 파일을 확인하는 중입니다.";
-const LATEST_RELEASE_VERSION = "v1.0.0";
+const LATEST_RELEASE_VERSION = `v${webPackageJson.version}`;
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
 const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
@@ -18,6 +19,13 @@ type ReleaseHistoryEntry = {
 };
 
 const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
+  {
+    date: "2026-07-13",
+    title: "자동 버전 및 릴리스",
+    items: [
+      "검증을 통과한 main 변경은 앱 패키지와 데스크톱 배포 버전을 patch 단위로 함께 올려 다음 릴리스를 준비하도록 개선했습니다.",
+    ],
+  },
   {
     date: "2026-07-13",
     title: "KST 날짜 표시 안정화",

@@ -4,12 +4,16 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("macOS Tauri workflow", () => {
-  it("builds internal macOS app and DMG artifacts without release publishing", () => {
+  it("validates pull requests and version tags without release publishing", () => {
     const workflow = readFileSync(
       path.resolve(".github", "workflows", "macos-tauri.yml"),
       "utf8"
     );
 
+    expect(workflow).toMatch(/push:\s*\n\s*tags:\s*\n\s*- "v\*"/);
+    expect(workflow).not.toMatch(/branches:\s*\n\s*- main/);
+    expect(workflow).toContain("pull_request:");
+    expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("runs-on: macos-latest");
     expect(workflow).toContain("npm run tauri:build:macos");
     expect(workflow).toContain('APPLE_SIGNING_IDENTITY: "-"');

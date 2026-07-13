@@ -1,0 +1,125 @@
+name: Auto Version and Tag
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-version-and-tag-main
+  cancel-in-progress: false
+
+jobs:
+  version-and-tag:
+    if: >
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == 'main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Confirm source commit is eligible
+        id: eligibility
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+
+          current_main="$(git rev-parse origin/main)"
+          if [ "$SOURCE_COMMIT" != "$current_main" ]; then
+            echo "Skipping stale successful CI $SOURCE_COMMIT because main now points to $current_main."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          source_subject="$(git log -1 --format=%s "$SOURCE_COMMIT")"
+          if [[ "$source_subject" == chore\(release\):\ bump\ version\ to\ v* ]]; then
+            echo "Skipping automatic release commit $SOURCE_COMMIT."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git log origin/main --format=%B | grep -Fqx "Source-Commit: $SOURCE_COMMIT"; then
+            echo "Skipping already processed source commit $SOURCE_COMMIT."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version and verify consistency
+        id: version
+        if: ${{ steps.eligibility.outputs.eligible == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(npm run --silent version:bump)"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version:bump returned an invalid version: $version" >&2
+            exit 1
+          fi
+
+          npm ci --ignore-scripts
+          npm run check:versions -- --release-tag "v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Commit, tag, and push release
+        id: release
+        if: ${{ steps.version.outputs.version != '' }}
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_tag="v$VERSION"
+
+          if git rev-parse -q --verify "refs/tags/$release_tag" > /dev/null; then
+            echo "Tag $release_tag already exists." >&2
+            exit 1
+          fi
+
+          if git diff --quiet; then
+            echo "version:bump did not change any files." >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          git commit -m "chore(release): bump version to $release_tag" -m "Source-Commit: $SOURCE_COMMIT"
+          git tag -a "$release_tag" -m "H Memo $release_tag"
+          git push --atomic origin HEAD:main "refs/tags/$release_tag"
+
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch release workflows
+        if: ${{ steps.release.outputs.release_tag != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run windows-tauri.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG" -f "release_tag=$RELEASE_TAG"
+          gh workflow run macos-tauri.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG"
+          gh workflow run web-pages.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG"
