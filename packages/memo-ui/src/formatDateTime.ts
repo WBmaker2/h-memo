@@ -7,5 +7,26 @@ export function formatDateTime(value: string, locale = "ko-KR"): string {
   }
 
   const date = new Date(trimmedValue);
-  return Number.isNaN(date.getTime()) ? INVALID_DATE_LABEL : date.toLocaleString(locale);
+  if (Number.isNaN(date.getTime())) {
+    return INVALID_DATE_LABEL;
+  }
+
+  const isKoreanLocale = locale.toLowerCase().startsWith("ko");
+  return new Intl.DateTimeFormat(locale, {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+  })
+    .formatToParts(date)
+    .map((part) => {
+      if (!isKoreanLocale || part.type !== "dayPeriod") {
+        return part.value;
+      }
+
+      return part.value === "AM" ? "오전" : part.value === "PM" ? "오후" : part.value;
+    })
+    .join("");
 }
