@@ -26,6 +26,28 @@ export type BackedUpSnapshot = {
   payload: MemoBackupPayload;
 };
 
+export type BackupSchemaVersion = 1 | 2 | 3;
+
+export type BackupSnapshotSummary = {
+  id: string;
+  savedAt: string | null;
+  kstDate: string | null;
+  memoCount: number;
+  previewText: string;
+  contentHash: string | null;
+  schemaVersion: BackupSchemaVersion;
+  state: "complete";
+  legacyUndated: boolean;
+};
+
+export type BackupCleanupCandidate = {
+  id: string;
+  schemaVersion: BackupSchemaVersion;
+  savedAt: string;
+  kstDate: string;
+  reason: "same-day-duplicate" | "expired";
+};
+
 export interface BackupGateway {
   saveBackup(userId: string, payload: MemoBackupPayload): Promise<string>;
   loadLatestBackup(userId: string): Promise<unknown | null>;
