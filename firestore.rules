@@ -267,6 +267,7 @@ service cloud.firestore {
           || (
             request.resource.data.activeSchemaVersion == null
             && request.resource.data.pendingSchemaVersion == 3
+            && hasValidV3PendingSnapshotAfter(uid, request.resource.data.pendingSnapshotId)
           )
         );
     }
@@ -277,17 +278,33 @@ service cloud.firestore {
         && request.resource.data.activeSnapshotId == resource.data.activeSnapshotId
         && request.resource.data.activatedAt == resource.data.activatedAt
         && (
-          !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+          (
+            !resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+            && !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+          )
           || (
             request.resource.data.pendingSchemaVersion == 3
             && (
-              request.resource.data.activeSchemaVersion == null
-              || request.resource.data.activeSchemaVersion == 1
-              || request.resource.data.activeSchemaVersion == 2
-              || request.resource.data.activeSchemaVersion == 3
+              (
+                !resource.data.keys().hasAny(["activeSchemaVersion"])
+                && request.resource.data.activeSchemaVersion == null
+              )
+              || (
+                resource.data.keys().hasAny(["activeSchemaVersion"])
+                && request.resource.data.activeSchemaVersion == resource.data.activeSchemaVersion
+              )
             )
+            && hasValidV3PendingSnapshotAfter(uid, request.resource.data.pendingSnapshotId)
           )
         );
+    }
+
+    function hasValidV3PendingSnapshotAfter(uid, snapshotId) {
+      let snapshotPath = /databases/$(database)/documents/users/$(uid)/backupSnapshots/$(snapshotId);
+      return existsAfter(snapshotPath)
+        && getAfter(snapshotPath).data.userId == uid
+        && getAfter(snapshotPath).data.schemaVersion == 3
+        && getAfter(snapshotPath).data.state == "writing";
     }
 
     function isInactiveSnapshot(uid, snapshotId) {
@@ -331,7 +348,10 @@ service cloud.firestore {
           || (
             getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.schemaVersion == 2
             && (
-              !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+              (
+                !resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+                && !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+              )
               || (
                 request.resource.data.activeSchemaVersion == 2
                 && request.resource.data.pendingSchemaVersion == null

@@ -14,6 +14,7 @@ import {
   setDoc,
   updateDoc,
   serverTimestamp,
+  writeBatch,
   type Firestore,
 } from "firebase/firestore";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -79,15 +80,17 @@ describeWithEmulator("Firestore security rules emulator", () => {
     const owner = testEnv.authenticatedContext(ownerId).firestore();
     const snapshot = snapshotRef(owner, ownerId, "v3");
 
-    await assertSucceeds(setDoc(snapshot, validWritingV3(ownerId)));
-    await assertSucceeds(setDoc(stateRef(owner, ownerId), {
+    const initialLease = writeBatch(owner);
+    initialLease.set(snapshot, validWritingV3(ownerId));
+    initialLease.set(stateRef(owner, ownerId), {
       userId: ownerId,
       activeSnapshotId: null,
       activeSchemaVersion: null,
       pendingSnapshotId: "v3",
       pendingSchemaVersion: 3,
       activatedAt: null,
-    }));
+    });
+    await assertSucceeds(initialLease.commit());
     await assertSucceeds(setDoc(memoRef(owner, ownerId, "v3"), validMemo(ownerId)));
     await assertSucceeds(updateDoc(snapshot, { state: "complete", savedAt: serverTimestamp() }));
     await assertSucceeds(updateDoc(stateRef(owner, ownerId), {
@@ -194,6 +197,79 @@ describeWithEmulator("Firestore security rules emulator", () => {
 
     const owner = testEnv.authenticatedContext(ownerId).firestore();
     await assertFails(setDoc(memoRef(owner, ownerId, "complete"), validMemo(ownerId)));
+  });
+
+  it("denies spoofing a v3 pending lease or changing its prior active version", async () => {
+    await seed(async (db) => {
+      await setDoc(snapshotRef(db, ownerId, "active"), {
+        ...validWritingV3(ownerId),
+        state: "complete",
+        savedAt: new Date("2026-07-13T12:00:00.000Z"),
+      });
+      await setDoc(snapshotRef(db, ownerId, "pending"), validWritingV3(ownerId));
+      await setDoc(stateRef(db, ownerId), {
+        userId: ownerId,
+        activeSnapshotId: "active",
+        activeSchemaVersion: 3,
+        pendingSnapshotId: "pending",
+        pendingSchemaVersion: 3,
+        activatedAt: new Date("2026-07-13T12:00:00.000Z"),
+      });
+    });
+
+    const owner = testEnv.authenticatedContext(ownerId).firestore();
+    await assertFails(updateDoc(stateRef(owner, ownerId), {
+      activeSnapshotId: "active",
+      activeSchemaVersion: 1,
+      pendingSnapshotId: "bogus",
+      pendingSchemaVersion: 3,
+      activatedAt: new Date("2026-07-13T12:00:00.000Z"),
+    }));
+    await assertFails(updateDoc(stateRef(owner, ownerId), {
+      activeSnapshotId: "active",
+      activeSchemaVersion: 3,
+      pendingSnapshotId: "bogus",
+      pendingSchemaVersion: 3,
+      activatedAt: new Date("2026-07-13T12:00:00.000Z"),
+    }));
+    await assertFails(deleteDoc(snapshotRef(owner, ownerId, "pending")));
+  });
+
+  it("denies an initial v3 lease whose pending snapshot is missing", async () => {
+    const owner = testEnv.authenticatedContext(ownerId).firestore();
+    await assertFails(setDoc(stateRef(owner, ownerId), {
+      userId: ownerId,
+      activeSnapshotId: null,
+      activeSchemaVersion: null,
+      pendingSnapshotId: "missing",
+      pendingSchemaVersion: 3,
+      activatedAt: null,
+    }));
+  });
+
+  it("preserves version-field-free v2 lease and activation compatibility", async () => {
+    const owner = testEnv.authenticatedContext(ownerId).firestore();
+    const snapshot = snapshotRef(owner, ownerId, "legacy-v2");
+
+    await assertSucceeds(setDoc(snapshot, {
+      schemaVersion: 2,
+      userId: ownerId,
+      createdAt: "2026-07-13T12:00:00.000Z",
+      memoCount: 0,
+      state: "writing",
+    }));
+    await assertSucceeds(setDoc(stateRef(owner, ownerId), {
+      userId: ownerId,
+      activeSnapshotId: null,
+      pendingSnapshotId: "legacy-v2",
+      activatedAt: null,
+    }));
+    await assertSucceeds(updateDoc(snapshot, { state: "complete", savedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(stateRef(owner, ownerId), {
+      activeSnapshotId: "legacy-v2",
+      pendingSnapshotId: null,
+      activatedAt: serverTimestamp(),
+    }));
   });
 
   it("preserves schema-v2 completion, reads, and immutability", async () => {
