@@ -85,11 +85,15 @@ class FakeFirestoreDriver {
   readonly docs = new Map<string, Record<string, unknown>>();
   readonly batchOperationCounts: number[] = [];
   readonly transactionOperationCounts: number[] = [];
+  readonly transactionReadCounts: number[] = [];
+  readonly transactionWriteCounts: number[] = [];
   private readonly versions = new Map<string, number>();
   private nextDocument = 1;
   private nextTimestamp = 1;
   private batchCommits = 0;
   transactionCommitCount = 0;
+  maxTransactionReads = 500;
+  maxTransactionWrites = 500;
   failBatchCommit: number | null = null;
   failTransactionCommit: number | null = null;
   beforeBatchCommit: ((operations: DriverOperation[]) => Promise<void>) | null = null;
@@ -200,6 +204,13 @@ class FakeFirestoreDriver {
         continue;
       }
       this.transactionCommitCount += 1;
+      this.transactionReadCounts.push(reads.size);
+      this.transactionWriteCounts.push(operations.length);
+      if (reads.size > this.maxTransactionReads || operations.length > this.maxTransactionWrites) {
+        throw new Error(
+          `transaction limit exceeded: ${reads.size} reads, ${operations.length} writes`
+        );
+      }
       this.transactionOperationCounts.push(operations.length);
       if (this.failTransactionCommit === this.transactionCommitCount) {
         throw new Error(`forced transaction failure ${this.transactionCommitCount}`);
@@ -825,7 +836,7 @@ describe("FirestoreBackupGateway driver contract", () => {
     expect((await listBackedUpMemos(gateway, "user-1")).map(({ memo }) => memo.id)).toContain("a#b");
   });
 
-  it("removes a v2 tombstone when a same-ID backup activates and restores the memo", async () => {
+  it("supersedes a v2 tombstone when a same-ID backup activates and restores the memo", async () => {
     const driver = new FakeFirestoreDriver();
     const gateway = createGateway(driver);
     const memo = createMemo({ id: "memo-rebackup", now: "2026-05-13T09:00:00.000Z" });
@@ -847,10 +858,53 @@ describe("FirestoreBackupGateway driver contract", () => {
       memos: [{ ...memo, plainText: "backed up again" }],
     });
 
-    expect(driver.read(tombstonePath)).toBeUndefined();
+    expect(driver.read(tombstonePath)).toMatchObject({
+      memoId: memo.id,
+      snapshotId: "1",
+    });
+    expect(await gateway.loadDeletedMemoIds("user-1")).toEqual([]);
     expect((await restoreLatestBackup(gateway, "user-1"))?.memos.map((item) => item.id)).toEqual([
       memo.id,
     ]);
+  });
+
+  it("re-backs up 500-plus memos with tombstones in bounded transactions", async () => {
+    const driver = new FakeFirestoreDriver();
+    driver.maxTransactionReads = 1000;
+    const gateway = createGateway(driver);
+    const memos = Array.from({ length: 501 }, (_, index) =>
+      createMemo({ id: `memo-bounded-${index}`, now: "2026-05-13T09:00:00.000Z" })
+    );
+
+    await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memos,
+    });
+    for (const memo of memos) {
+      expect(await gateway.deleteCurrentMemo("user-1", memo.id)).toBe(1);
+    }
+
+    const rebackedMemos = memos.map((memo) => ({ ...memo, plainText: `rebacked ${memo.id}` }));
+    await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:05:00.000Z",
+      memos: rebackedMemos,
+    });
+
+    expect(Math.max(...driver.transactionReadCounts)).toBe(401);
+    expect(Math.max(...driver.transactionWriteCounts)).toBe(400);
+    expect((await gateway.loadCurrentMemos("user-1")).map((entry) => entry.memo.id)).toHaveLength(501);
+    expect((await restoreLatestBackup(gateway, "user-1"))?.memos.map((memo) => memo.id).sort()).toEqual(
+      rebackedMemos.map((memo) => memo.id).sort()
+    );
+    expect((await listBackedUpMemos(gateway, "user-1")).map((entry) => entry.memo.id)).toHaveLength(501);
+    expect(driver.read("users/user-1/serverMemoDeletesV2/memo-bounded-0")).toMatchObject({
+      memoId: "memo-bounded-0",
+      snapshotId: "1",
+    });
   });
 
   it("isolates a new encoded memo from a reserved-prefix legacy raw document", async () => {
@@ -1098,7 +1152,12 @@ describe("FirestoreBackupGateway driver contract", () => {
     expect(driver.read("users/user-1/backupState/current")).toMatchObject({
       activeSnapshotId: snapshotId(firstPath),
     });
-    expect(driver.read(tombstonePath)).toMatchObject({ memoId: memo.id });
+    expect(driver.read(tombstonePath)).toMatchObject({
+      memoId: memo.id,
+      snapshotId: snapshotId(firstPath),
+    });
+    expect(await gateway.loadDeletedMemoIds("user-1")).toEqual([memo.id]);
+    expect((await restoreLatestBackup(gateway, "user-1"))?.memos).toEqual([]);
   });
 
   it("reactivates only through final generation activation when deletion wins before activation", async () => {
@@ -1342,7 +1401,7 @@ describe("FirestoreBackupGateway driver contract", () => {
 
     expect((await listBackupSnapshots(gateway, "user-1")).flatMap((snapshot) =>
       snapshot.payload.memos.map((item) => item.id)
-    )).not.toContain(memo.id);
+    )).toContain(memo.id);
     expect((await listBackupSnapshots(gateway, "user-1")).flatMap((snapshot) =>
       snapshot.payload.memos.map((item) => item.id)
     )).not.toContain(legacyMemo.id);

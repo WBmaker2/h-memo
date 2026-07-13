@@ -158,7 +158,7 @@
 
 - [ ] **Step 1: Write failing gateway contract, ordering, compatibility, and rules tests**
 
-  Extend the fake gateway to expose canonical current memos and stored snapshots with independent `savedAt`. Test that server history sorts by `savedAt` even when client `createdAt` is skewed, canonical memo listing does not scan every historical snapshot, deleting a server memo clears the matching canonical active/pending references and writes a tombstone without rewriting snapshots, re-backup clears the tombstone, and legacy inline version 1 snapshots still restore.
+  Extend the fake gateway to expose canonical current memos and stored snapshots with independent `savedAt`. Test that server history sorts by `savedAt` even when client `createdAt` is skewed, canonical memo listing does not scan every historical snapshot, deleting a server memo clears the matching canonical active/pending references and writes a tombstone without rewriting snapshots, a successful backup that activates a newer generation logically supersedes the tombstone, and legacy inline version 1 snapshots still restore.
 
   Add policy assertions for owner-only canonical memo documents, owner-only schema-v2 metadata, immutable snapshot memo documents, and continued read support for version-1 snapshots.
 
@@ -170,13 +170,13 @@
 
 - [ ] **Step 3: Implement per-memo snapshot writes**
 
-  Generate a snapshot document reference before writing. Create metadata with `state: "writing"`, then write active memo documents in batches of at most 200 memos so each batch stays below Firestore's 500-operation limit while updating both canonical and snapshot memo paths. Finish by setting `state: "complete"` and `savedAt: serverTimestamp()`. Delete tombstones for successfully backed-up active memos.
+  Generate a snapshot document reference before writing. Create metadata with `state: "writing"`, then write active memo documents in batches of at most 200 memos so each batch stays below Firestore's 500-operation limit while updating both canonical and snapshot memo paths. Finish by setting `state: "complete"` and `savedAt: serverTimestamp()`. The final activation transaction stays bounded and does not enumerate tombstones; a v2 tombstone is logically superseded when a later successful backup activates a different snapshot generation.
 
   Read only complete schema-v2 snapshots, load their `memos` subcollection, and normalize Firestore timestamps through a helper that accepts a Firebase `Timestamp` (`toDate()`) or ISO string. Continue parsing legacy inline version-1 documents. Use server `savedAt` for list order and user-visible history time.
 
 - [ ] **Step 4: Implement canonical server memo management and immutable deletion**
 
-  `listBackedUpMemos` must read `users/{uid}/memos` and filter tombstones. `deleteBackedUpMemo` must set the tombstone and clear references to the deleted snapshot from the canonical memo document; it must not delete the canonical ownership record or update any snapshot document. Historical restore remains possible only for memo IDs not tombstoned until a later successful backup clears that tombstone.
+  `listBackedUpMemos` must read `users/{uid}/memos` and filter tombstones. `deleteBackedUpMemo` must set the tombstone and clear references to the deleted snapshot from the canonical memo document; it must not delete the canonical ownership record or update any snapshot document. A v2 tombstone applies only while its `snapshotId` is the active generation; a later successful backup supersedes it logically without requiring physical deletion. Legacy tombstones retain their compatibility behavior, including yielding to an existing active canonical memo.
 
 - [ ] **Step 5: Update security rules and Firebase documentation**
 

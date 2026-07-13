@@ -583,10 +583,6 @@ export class FirestoreBackupGateway implements BackupGateway {
         throw new Error(`Backup ${snapshotId} is no longer writable`);
       }
 
-      const tombstones = await Promise.all(
-        activeMemos.map((memo) => transaction.get(this.deletedMemoDoc(userId, memo.id)))
-      );
-
       transaction.update(snapshotRef, {
         state: "complete",
         savedAt: this.driver.serverTimestamp(),
@@ -597,11 +593,6 @@ export class FirestoreBackupGateway implements BackupGateway {
         pendingSnapshotId: null,
         activatedAt: this.driver.serverTimestamp(),
       });
-      for (const [index, tombstone] of tombstones.entries()) {
-        if (tombstone.exists()) {
-          transaction.delete(this.deletedMemoDoc(userId, activeMemos[index]!.id));
-        }
-      }
     });
 
     return `${(snapshotRef as { path?: string }).path ?? `users/${userId}/${backupSnapshotsCollection}/${snapshotId}`}`;
@@ -775,11 +766,13 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   async loadDeletedMemoIds(userId: string): Promise<string[]> {
-    const [currentMemos, querySnapshot, legacyQuerySnapshot] = await Promise.all([
+    const [currentMemos, activeState, querySnapshot, legacyQuerySnapshot] = await Promise.all([
       this.loadCurrentMemos(userId),
+      this.driver.getDoc(this.activationDoc(userId)),
       this.driver.getDocs(this.deletedMemoCollection(userId)),
       this.driver.getDocs(this.legacyDeletedMemoDocs(userId)),
     ]);
+    const activeSnapshotId = activeSnapshotIdFromState(activeState);
     const activeMemoIds = new Set(currentMemos.map((entry) => entry.memo.id));
     const seenMemoIds = new Set<string>();
     return [
@@ -792,6 +785,7 @@ export class FirestoreBackupGateway implements BackupGateway {
           data.userId !== userId ||
           typeof memoId !== "string" ||
           !isMemoDocumentForPath(snapshot.id, memoId, isLegacy) ||
+          (!isLegacy && data.snapshotId !== activeSnapshotId) ||
           snapshot.id.trim() === "" ||
           activeMemoIds.has(memoId) ||
           seenMemoIds.has(memoId)
