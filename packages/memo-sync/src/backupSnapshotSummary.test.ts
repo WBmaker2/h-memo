@@ -131,4 +131,22 @@ describe("backup snapshot summaries", () => {
       })
     ).toBeNull();
   });
+
+  it("rejects corrupted v1 memo entries without throwing", () => {
+    const original = payload();
+    expect(() =>
+      parseBackupSnapshotSummary("null-memo", { ...original, memos: [null] })
+    ).not.toThrow();
+    expect(
+      parseBackupSnapshotSummary("null-memo", { ...original, memos: [null] })
+    ).toBeNull();
+
+    const { title: _title, ...missingTitleMemo } = original.memos[0]!;
+    expect(
+      parseBackupSnapshotSummary("missing-field", {
+        ...original,
+        memos: [missingTitleMemo],
+      })
+    ).toBeNull();
+  });
 });

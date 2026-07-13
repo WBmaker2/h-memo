@@ -1,10 +1,10 @@
 import { createBackupPreviewText } from "./backupFingerprint";
 import { toKstDateKey } from "./backupKstDate";
 import { isRecord, normalizeFirestoreTimestamp } from "./firestoreBackupShared";
+import { validateLegacyFirestoreV1Payload } from "./legacyBackupPayload";
 import type {
   BackupSchemaVersion,
   BackupSnapshotSummary,
-  MemoBackupPayload,
 } from "./backupTypes";
 
 export type { BackupSchemaVersion, BackupSnapshotSummary } from "./backupTypes";
@@ -17,10 +17,6 @@ function asRecord(value: unknown): UnknownRecord | null {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
-}
-
-function isMemoList(value: unknown): value is MemoBackupPayload["memos"] {
-  return Array.isArray(value);
 }
 
 function normalizedSavedAt(value: unknown): string | null {
@@ -92,18 +88,22 @@ function parseV1(id: string, data: UnknownRecord): BackupSnapshotSummary | null 
   if (
     data.version !== 1 ||
     !isNonEmptyString(data.userId) ||
-    !isMemoList(data.memos)
+    !Array.isArray(data.memos)
   ) {
     return null;
   }
 
+  const parsed = validateLegacyFirestoreV1Payload(
+    {
+      ...data,
+      createdAt: typeof data.createdAt === "string" ? data.createdAt : "",
+    },
+    data.userId
+  );
+  if (!parsed.ok) return null;
+
   const savedAt = normalizedSavedAt(data.savedAt) ?? normalizedSavedAt(data.createdAt);
-  const previewText = createBackupPreviewText({
-    version: 1,
-    userId: data.userId,
-    createdAt: typeof data.createdAt === "string" ? data.createdAt : "",
-    memos: data.memos,
-  });
+  const previewText = createBackupPreviewText(parsed.payload);
 
   return summary(
     id,
