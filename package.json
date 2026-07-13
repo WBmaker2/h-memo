@@ -13,6 +13,7 @@
     "test:watch": "node scripts/run-vitest.mjs --passWithNoTests",
     "check:firebase-env": "node scripts/check-firebase-env.mjs",
     "check:versions": "node scripts/check-version-consistency.mjs",
+    "test:firestore-rules": "firebase emulators:exec --only firestore \"node scripts/run-vitest.mjs run scripts/firestore-rules-emulator.test.ts --pool=forks\"",
     "typecheck": "node scripts/run-workspace-script.mjs typecheck",
     "build": "node scripts/run-workspace-script.mjs build",
     "tauri:dev": "npm run tauri:dev -w apps/desktop",
@@ -22,6 +23,7 @@
     "verify:windows-artifacts": "node scripts/verify-windows-artifacts.mjs"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.2",
@@ -29,6 +31,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.3",
+    "firebase-tools": "^15.23.0",
     "jsdom": "^29.1.1",
     "typescript": "^5.7.2",
     "vite": "^8.1.0",

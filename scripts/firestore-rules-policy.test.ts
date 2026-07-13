@@ -12,11 +12,28 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain('request.resource.data.state == "writing"');
     expect(rules).toContain('request.resource.data.state == "complete"');
     expect(rules).toContain("allow read: if isOwner(uid);");
-    expect(rules).toContain("allow create: if isOwner(uid) && isWritingSchemaV2Snapshot(uid);");
+    expect(rules).toContain("isWritingSchemaV2Snapshot(uid)");
     expect(rules).not.toContain("hasValidLegacyBackupSnapshotShape");
     expect(rules).toContain("allow delete: if false;");
     expect(rules).toContain("resource.data.state == \"writing\"");
     expect(rules).toContain("affectedKeys().hasOnly([\"state\", \"savedAt\"])");
+  });
+
+  it("validates exact schema-v3 metadata and only permits the writing-to-complete transition", () => {
+    const rules = readFileSync(path.resolve("firestore.rules"), "utf8");
+    const snapshotRules = rules.slice(
+      rules.indexOf("match /users/{uid}/backupSnapshots/{snapshotId}"),
+      rules.indexOf("match /users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId}")
+    );
+
+    expect(rules).toContain("function hasValidSchemaV3SnapshotShape(uid)");
+    expect(rules).toContain("request.resource.data.clientCreatedAt is string");
+    expect(rules).toContain('request.resource.data.contentHash.matches("^[0-9a-f]{64}$")');
+    expect(rules).toContain("request.resource.data.previewText.size() <= 240");
+    expect(rules).toContain("request.resource.data.savedAt == null");
+    expect(snapshotRules).toContain("isWritingSchemaV3Snapshot(uid)");
+    expect(snapshotRules).toContain("isCompletingSchemaV3Snapshot(uid)");
+    expect(snapshotRules).toContain("allow delete: if isOwner(uid) && isInactiveSnapshot(uid, snapshotId);");
   });
 
   it("allows owners to maintain canonical current memos with an owner-safe shape", () => {
@@ -74,7 +91,8 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain("allow create: if isOwner(uid)");
     expect(rules).toContain("&& hasValidSnapshotMemoShape(uid, memoId)");
     expect(rules).toContain("request.resource.data.memo.id == request.resource.data.memoId");
-    expect(rules).toContain("allow update, delete: if false;");
+    expect(rules).toContain("allow update: if false;");
+    expect(rules).toContain("allow delete: if isOwner(uid) && isInactiveSnapshot(uid, snapshotId);");
     const nestedMemoRules = rules.slice(
       rules.indexOf("match /users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId}"),
       rules.indexOf("match /users/{uid}/serverMemoDeletes/{memoId}")
@@ -121,5 +139,21 @@ describe("Firestore backup rules", () => {
     expect(rules).toContain("resource.data.pendingSnapshotId is string");
     expect(rules).toContain("request.resource.data.activeSnapshotId == resource.data.pendingSnapshotId");
     expect(rules).toContain("request.resource.data.pendingSnapshotId == null");
+    expect(rules).toContain('request.resource.data.pendingSchemaVersion == 3');
+    expect(rules).toContain('request.resource.data.activeSchemaVersion == 3');
+  });
+
+  it("limits v3 memo creation to the current pending writing snapshot", () => {
+    const rules = readFileSync(path.resolve("firestore.rules"), "utf8");
+    const v3MemoRules = rules.slice(
+      rules.indexOf("match /users/{uid}/backupSnapshots/{snapshotId}/memosV3/{memoId}"),
+      rules.indexOf("match /users/{uid}/serverMemoDeletesV2/{memoId}")
+    );
+
+    expect(rules).toContain("function isInactiveSnapshot(uid, snapshotId)");
+    expect(rules).toContain("function isPendingWritingV3Snapshot(uid, snapshotId)");
+    expect(v3MemoRules).toContain("isPendingWritingV3Snapshot(uid, snapshotId)");
+    expect(v3MemoRules).toContain("allow update: if false;");
+    expect(v3MemoRules).toContain("allow delete: if isOwner(uid) && isInactiveSnapshot(uid, snapshotId);");
   });
 });

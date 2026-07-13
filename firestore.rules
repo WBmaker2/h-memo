@@ -55,6 +55,56 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "savedAt"]);
     }
 
+    function hasValidSchemaV3SnapshotShape(uid) {
+      return request.resource.data.keys().hasOnly([
+          "schemaVersion",
+          "userId",
+          "clientCreatedAt",
+          "memoCount",
+          "contentHash",
+          "previewText",
+          "state",
+          "savedAt"
+        ])
+        && request.resource.data.keys().hasAll([
+          "schemaVersion",
+          "userId",
+          "clientCreatedAt",
+          "memoCount",
+          "contentHash",
+          "previewText",
+          "state",
+          "savedAt"
+        ])
+        && request.resource.data.schemaVersion == 3
+        && request.resource.data.userId == uid
+        && request.resource.data.clientCreatedAt is string
+        && request.resource.data.memoCount is int
+        && request.resource.data.memoCount >= 0
+        && request.resource.data.contentHash is string
+        && request.resource.data.contentHash.matches("^[0-9a-f]{64}$")
+        && request.resource.data.previewText is string
+        && request.resource.data.previewText.size() <= 240
+        && (request.resource.data.state == "writing" || request.resource.data.state == "complete")
+        && (request.resource.data.savedAt == null || request.resource.data.savedAt is timestamp);
+    }
+
+    function isWritingSchemaV3Snapshot(uid) {
+      return hasValidSchemaV3SnapshotShape(uid)
+        && request.resource.data.state == "writing"
+        && request.resource.data.savedAt == null;
+    }
+
+    function isCompletingSchemaV3Snapshot(uid) {
+      return hasValidSchemaV3SnapshotShape(uid)
+        && resource.data.schemaVersion == 3
+        && resource.data.state == "writing"
+        && resource.data.savedAt == null
+        && request.resource.data.state == "complete"
+        && request.resource.data.savedAt is timestamp
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "savedAt"]);
+    }
+
     function hasValidCanonicalReference(reference) {
       return reference == null || (
         reference is map
@@ -168,7 +218,9 @@ service cloud.firestore {
           "userId",
           "activeSnapshotId",
           "pendingSnapshotId",
-          "activatedAt"
+          "activatedAt",
+          "activeSchemaVersion",
+          "pendingSchemaVersion"
         ])
         && request.resource.data.keys().hasAll([
           "userId",
@@ -188,6 +240,20 @@ service cloud.firestore {
         && (
           request.resource.data.activatedAt == null
           || request.resource.data.activatedAt is timestamp
+        )
+        && (
+          !request.resource.data.keys().hasAny(["activeSchemaVersion"])
+          || request.resource.data.activeSchemaVersion == null
+          || request.resource.data.activeSchemaVersion == 1
+          || request.resource.data.activeSchemaVersion == 2
+          || request.resource.data.activeSchemaVersion == 3
+        )
+        && (
+          !request.resource.data.keys().hasAny(["pendingSchemaVersion"])
+          || request.resource.data.pendingSchemaVersion == null
+          || request.resource.data.pendingSchemaVersion == 1
+          || request.resource.data.pendingSchemaVersion == 2
+          || request.resource.data.pendingSchemaVersion == 3
         );
     }
 
@@ -195,14 +261,53 @@ service cloud.firestore {
       return hasValidBackupStateShape(uid)
         && request.resource.data.activeSnapshotId == null
         && request.resource.data.pendingSnapshotId is string
-        && request.resource.data.activatedAt == null;
+        && request.resource.data.activatedAt == null
+        && (
+          !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+          || (
+            request.resource.data.activeSchemaVersion == null
+            && request.resource.data.pendingSchemaVersion == 3
+          )
+        );
     }
 
     function hasValidPendingBackupLease(uid) {
       return hasValidBackupStateShape(uid)
         && request.resource.data.pendingSnapshotId is string
         && request.resource.data.activeSnapshotId == resource.data.activeSnapshotId
-        && request.resource.data.activatedAt == resource.data.activatedAt;
+        && request.resource.data.activatedAt == resource.data.activatedAt
+        && (
+          !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+          || (
+            request.resource.data.pendingSchemaVersion == 3
+            && (
+              request.resource.data.activeSchemaVersion == null
+              || request.resource.data.activeSchemaVersion == 1
+              || request.resource.data.activeSchemaVersion == 2
+              || request.resource.data.activeSchemaVersion == 3
+            )
+          )
+        );
+    }
+
+    function isInactiveSnapshot(uid, snapshotId) {
+      let statePath = /databases/$(database)/documents/users/$(uid)/backupState/current;
+      return !exists(statePath) || (
+        get(statePath).data.activeSnapshotId != snapshotId
+        && get(statePath).data.pendingSnapshotId != snapshotId
+      );
+    }
+
+    function isPendingWritingV3Snapshot(uid, snapshotId) {
+      let statePath = /databases/$(database)/documents/users/$(uid)/backupState/current;
+      let snapshotPath = /databases/$(database)/documents/users/$(uid)/backupSnapshots/$(snapshotId);
+      return exists(statePath)
+        && exists(snapshotPath)
+        && get(statePath).data.pendingSnapshotId == snapshotId
+        && get(statePath).data.pendingSchemaVersion == 3
+        && get(snapshotPath).data.schemaVersion == 3
+        && get(snapshotPath).data.userId == uid
+        && get(snapshotPath).data.state == "writing";
     }
 
     function hasValidBackupActivationShape(uid) {
@@ -211,9 +316,29 @@ service cloud.firestore {
         && request.resource.data.activeSnapshotId == resource.data.pendingSnapshotId
         && request.resource.data.pendingSnapshotId == null
         && request.resource.data.activatedAt is timestamp
-        && getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.schemaVersion == 2
+        && (
+          getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.schemaVersion == 2
+          || getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.schemaVersion == 3
+        )
         && getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.userId == uid
-        && getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.state == "complete";
+        && getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.state == "complete"
+        && (
+          (
+            getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.schemaVersion == 3
+            && request.resource.data.activeSchemaVersion == 3
+            && request.resource.data.pendingSchemaVersion == null
+          )
+          || (
+            getAfter(/databases/$(database)/documents/users/$(uid)/backupSnapshots/$(request.resource.data.activeSnapshotId)).data.schemaVersion == 2
+            && (
+              !request.resource.data.keys().hasAny(["activeSchemaVersion", "pendingSchemaVersion"])
+              || (
+                request.resource.data.activeSchemaVersion == 2
+                && request.resource.data.pendingSchemaVersion == null
+              )
+            )
+          )
+        );
     }
 
     match /users/{uid}/memos/{memoId} {
@@ -224,15 +349,22 @@ service cloud.firestore {
 
     match /users/{uid}/backupSnapshots/{snapshotId} {
       allow read: if isOwner(uid);
-      allow create: if isOwner(uid) && isWritingSchemaV2Snapshot(uid);
-      allow update: if isOwner(uid) && isCompletingSchemaV2Snapshot(uid);
-      allow delete: if false;
+      allow create: if isOwner(uid) && (
+        isWritingSchemaV2Snapshot(uid)
+        || isWritingSchemaV3Snapshot(uid)
+      );
+      allow update: if isOwner(uid) && (
+        isCompletingSchemaV2Snapshot(uid)
+        || isCompletingSchemaV3Snapshot(uid)
+      );
+      allow delete: if isOwner(uid) && isInactiveSnapshot(uid, snapshotId);
     }
 
     match /users/{uid}/backupSnapshots/{snapshotId}/memos/{memoId} {
       allow read: if isOwner(uid);
       allow create: if false;
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isOwner(uid) && isInactiveSnapshot(uid, snapshotId);
     }
 
     match /users/{uid}/backupState/current {
@@ -260,7 +392,17 @@ service cloud.firestore {
     match /users/{uid}/backupSnapshots/{snapshotId}/memosV2/{memoId} {
       allow read: if isOwner(uid);
       allow create: if isOwner(uid) && hasValidSnapshotMemoShape(uid, memoId);
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isOwner(uid) && isInactiveSnapshot(uid, snapshotId);
+    }
+
+    match /users/{uid}/backupSnapshots/{snapshotId}/memosV3/{memoId} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid)
+        && isPendingWritingV3Snapshot(uid, snapshotId)
+        && hasValidSnapshotMemoShape(uid, memoId);
+      allow update: if false;
+      allow delete: if isOwner(uid) && isInactiveSnapshot(uid, snapshotId);
     }
 
     match /users/{uid}/serverMemoDeletesV2/{memoId} {
