@@ -8,7 +8,7 @@ describe("GitHub Pages web workflow", () => {
     const workflow = readFileSync(
       path.resolve(".github", "workflows", "web-pages.yml"),
       "utf8"
-    );
+    ).replace(/\r\n?/g, "\n");
 
     expect(workflow).toContain("name: Web Pages Deploy");
     expect(workflow).toMatch(/push:\s*\n\s*tags:\s*\n\s*- "v\*"/);
