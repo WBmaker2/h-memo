@@ -164,6 +164,7 @@ class FakeFirestoreDriver {
       get(ref: DriverRef): Promise<ReturnType<FakeFirestoreDriver["snapshot"]>>;
       set(ref: DriverRef, data: Record<string, unknown>, options?: { merge?: boolean }): void;
       update(ref: DriverRef, data: Record<string, unknown>): void;
+      delete(ref: DriverRef): void;
     }) => Promise<T>
   ): Promise<T> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -179,6 +180,9 @@ class FakeFirestoreDriver {
         },
         update: (ref: DriverRef, data: Record<string, unknown>) => {
           operations.push({ kind: "update", ref, data });
+        },
+        delete: (ref: DriverRef) => {
+          operations.push({ kind: "delete", ref });
         },
       };
       const result = await updater(transaction);
@@ -821,6 +825,34 @@ describe("FirestoreBackupGateway driver contract", () => {
     expect((await listBackedUpMemos(gateway, "user-1")).map(({ memo }) => memo.id)).toContain("a#b");
   });
 
+  it("removes a v2 tombstone when a same-ID backup activates and restores the memo", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "memo-rebackup", now: "2026-05-13T09:00:00.000Z" });
+    const tombstonePath = `users/user-1/serverMemoDeletesV2/${encodeMemoDocumentId(memo.id)}`;
+
+    await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:01:00.000Z",
+      memos: [memo],
+    });
+    await gateway.deleteCurrentMemo("user-1", memo.id);
+    expect(driver.read(tombstonePath)).toMatchObject({ memoId: memo.id });
+
+    await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:03:00.000Z",
+      memos: [{ ...memo, plainText: "backed up again" }],
+    });
+
+    expect(driver.read(tombstonePath)).toBeUndefined();
+    expect((await restoreLatestBackup(gateway, "user-1"))?.memos.map((item) => item.id)).toEqual([
+      memo.id,
+    ]);
+  });
+
   it("isolates a new encoded memo from a reserved-prefix legacy raw document", async () => {
     const driver = new FakeFirestoreDriver();
     const gateway = createGateway(driver);
@@ -1038,6 +1070,35 @@ describe("FirestoreBackupGateway driver contract", () => {
       previous.id,
     ]);
     expect(driver.read("users/user-1/backupSnapshots/2")).toMatchObject({ state: "writing" });
+  });
+
+  it("keeps a same-ID tombstone when backup activation fails before it becomes active", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    const memo = createMemo({ id: "memo-failed-rebackup", now: "2026-05-13T09:00:00.000Z" });
+    const firstPath = await gateway.saveBackup("user-1", {
+      version: 1,
+      userId: "user-1",
+      createdAt: "2026-05-13T09:00:00.000Z",
+      memos: [memo],
+    });
+    await gateway.deleteCurrentMemo("user-1", memo.id);
+    const tombstonePath = `users/user-1/serverMemoDeletesV2/${encodeMemoDocumentId(memo.id)}`;
+    driver.failTransactionCommit = driver.transactionCommitCount + 3;
+
+    await expect(
+      gateway.saveBackup("user-1", {
+        version: 1,
+        userId: "user-1",
+        createdAt: "2026-05-13T09:03:00.000Z",
+        memos: [{ ...memo, plainText: "failed rebackup" }],
+      })
+    ).rejects.toThrow("forced transaction failure");
+
+    expect(driver.read("users/user-1/backupState/current")).toMatchObject({
+      activeSnapshotId: snapshotId(firstPath),
+    });
+    expect(driver.read(tombstonePath)).toMatchObject({ memoId: memo.id });
   });
 
   it("reactivates only through final generation activation when deletion wins before activation", async () => {

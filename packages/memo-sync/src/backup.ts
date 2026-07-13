@@ -72,6 +72,7 @@ type DriverTransaction = {
   get(ref: unknown): Promise<DriverDocumentSnapshot>;
   set(ref: unknown, data: Record<string, unknown>, options?: { merge?: boolean }): void;
   update(ref: unknown, data: Record<string, unknown>): void;
+  delete(ref: unknown): void;
 };
 
 export type FirestoreBackupDriver = {
@@ -119,6 +120,7 @@ const firebaseDriver: FirestoreBackupDriver = {
           (await transaction.get(ref as never)) as unknown as DriverDocumentSnapshot,
         set: (ref, data, options) => transaction.set(ref as never, data as never, options as never),
         update: (ref, data) => transaction.update(ref as never, data as never),
+        delete: (ref) => transaction.delete(ref as never),
       })
     ),
   serverTimestamp: () => firestoreServerTimestamp(),
@@ -569,11 +571,8 @@ export class FirestoreBackupGateway implements BackupGateway {
     }
 
     await this.driver.runTransaction(this.firestore, async (transaction) => {
-      assertPendingSnapshotLease(
-        await transaction.get(this.activationDoc(userId)),
-        userId,
-        snapshotId
-      );
+      const activationState = await transaction.get(this.activationDoc(userId));
+      assertPendingSnapshotLease(activationState, userId, snapshotId);
       const snapshot = await transaction.get(snapshotRef);
       if (
         !snapshot.exists() ||
@@ -583,6 +582,10 @@ export class FirestoreBackupGateway implements BackupGateway {
       ) {
         throw new Error(`Backup ${snapshotId} is no longer writable`);
       }
+
+      const tombstones = await Promise.all(
+        activeMemos.map((memo) => transaction.get(this.deletedMemoDoc(userId, memo.id)))
+      );
 
       transaction.update(snapshotRef, {
         state: "complete",
@@ -594,6 +597,11 @@ export class FirestoreBackupGateway implements BackupGateway {
         pendingSnapshotId: null,
         activatedAt: this.driver.serverTimestamp(),
       });
+      for (const [index, tombstone] of tombstones.entries()) {
+        if (tombstone.exists()) {
+          transaction.delete(this.deletedMemoDoc(userId, activeMemos[index]!.id));
+        }
+      }
     });
 
     return `${(snapshotRef as { path?: string }).path ?? `users/${userId}/${backupSnapshotsCollection}/${snapshotId}`}`;
