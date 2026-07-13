@@ -155,13 +155,19 @@ describe("LandingPage", () => {
       screen.getByText("서버 복원 시 최신본을 바로 덮어쓰지 않고 시간대별 백업 기록 중 선택해 복원합니다."),
     ).toBeInTheDocument();
     expect(screen.getByText("2026-07-12")).toBeInTheDocument();
-    expect(screen.getAllByText("2026-07-13")).toHaveLength(2);
+    expect(screen.getAllByText("2026-07-13")).toHaveLength(3);
     expect(screen.getByText("2026-05-13")).toBeInTheDocument();
+    expect(screen.getByText("KST 날짜 표시 안정화")).toBeInTheDocument();
     expect(screen.getByText("접근성 검토 보완")).toBeInTheDocument();
     expect(screen.getByText("KST 일별 백업 보존")).toBeInTheDocument();
     expect(
       screen.getByText(
         "대한민국 날짜별 최신 백업 1개를 최근 365일 동안 보관하고, 선택한 날짜의 메모만 불러오도록 개선했습니다.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "실행 PC와 CI의 시간대가 달라도 날짜와 시각을 대한민국 표준시(Asia/Seoul)로 일관되게 표시하도록 개선했습니다.",
       ),
     ).toBeInTheDocument();
     expect(

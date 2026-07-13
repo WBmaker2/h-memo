@@ -1,4 +1,5 @@
 const INVALID_DATE_LABEL = "날짜 정보 없음";
+const DEFAULT_TIME_ZONE = "Asia/Seoul";
 
 function normalizeKoreanDayPeriod(
   part: Intl.DateTimeFormatPart,
@@ -22,7 +23,7 @@ function normalizeKoreanDayPeriod(
 export function formatDateTime(
   value: string,
   locale = "ko-KR",
-  timeZone?: string
+  timeZone = DEFAULT_TIME_ZONE
 ): string {
   const trimmedValue = value.trim();
   if (!trimmedValue) {
@@ -42,7 +43,7 @@ export function formatDateTime(
     hour: "numeric",
     minute: "numeric",
     second: "numeric",
-    ...(timeZone ? { timeZone } : {}),
+    timeZone,
   })
     .formatToParts(date)
     .map((part) => normalizeKoreanDayPeriod(part, isKoreanLocale))

@@ -16,6 +16,12 @@ const UPDATE_HISTORY = [
   },
   {
     date: "2026-07-13",
+    title: "KST 날짜 표시 안정화",
+    detail:
+      "실행 PC와 CI의 시간대가 달라도 날짜와 시각을 대한민국 표준시(Asia/Seoul)로 일관되게 표시하도록 개선했습니다.",
+  },
+  {
+    date: "2026-07-13",
     title: "최종 호환성 보강",
     detail:
       "legacy 백업, memo ID codec, 창 예약 복구, 삭제 재조정을 보강했습니다. Node/환경이 달라도 한국어 오전·오후 표기가 일관되게 보이도록 보강했습니다.",

@@ -20,6 +20,13 @@ type ReleaseHistoryEntry = {
 const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
   {
     date: "2026-07-13",
+    title: "KST 날짜 표시 안정화",
+    items: [
+      "실행 PC와 CI의 시간대가 달라도 날짜와 시각을 대한민국 표준시(Asia/Seoul)로 일관되게 표시하도록 개선했습니다.",
+    ],
+  },
+  {
+    date: "2026-07-13",
     title: "접근성 검토 보완",
     items: [
       "데스크톱 서버 메모의 백업 시각과 삭제 동작 표시를 일관되게 정리했습니다.",

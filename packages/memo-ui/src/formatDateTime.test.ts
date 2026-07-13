@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatDateTime } from "./formatDateTime";
 
 describe("formatDateTime", () => {
-  it("normalizes Korean AM/PM labels while preserving locale punctuation", () => {
+  it("defaults to Asia/Seoul even when the test process uses UTC", () => {
     expect(formatDateTime("2026-05-17T09:05:00.000Z")).toBe(
       "2026. 5. 17. 오후 6:05:00"
     );
@@ -19,10 +19,10 @@ describe("formatDateTime", () => {
     expect(formatted).not.toContain("오후");
   });
 
-  it("formats an optional timezone without changing the default signature", () => {
+  it("preserves an explicit timezone override", () => {
     expect(
-      formatDateTime("2026-07-12T15:30:00.000Z", "ko-KR", "Asia/Seoul")
-    ).toBe("2026. 7. 13. 오전 12:30:00");
+      formatDateTime("2026-07-12T15:30:00.000Z", "ko-KR", "UTC")
+    ).toBe("2026. 7. 12. 오후 3:30:00");
   });
 
   it.each(["", "   ", "not-a-date"])(
