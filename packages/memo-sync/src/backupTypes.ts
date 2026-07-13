@@ -28,6 +28,15 @@ export type BackedUpSnapshot = {
 
 export type BackupSchemaVersion = 1 | 2 | 3;
 
+export type BackupWriteOutcome = "created" | "replaced" | "unchanged";
+
+export type BackupSaveResult = {
+  path: string;
+  snapshotId: string;
+  outcome: BackupWriteOutcome;
+  cleanupPending: boolean;
+};
+
 export type BackupSnapshotSummary = {
   id: string;
   savedAt: string | null;
@@ -49,7 +58,7 @@ export type BackupCleanupCandidate = {
 };
 
 export interface BackupGateway {
-  saveBackup(userId: string, payload: MemoBackupPayload): Promise<string>;
+  saveBackup(userId: string, payload: MemoBackupPayload): Promise<BackupSaveResult>;
   loadLatestBackup(userId: string): Promise<unknown | null>;
   loadBackups(userId: string): Promise<unknown[]>;
   loadCurrentMemos(userId: string): Promise<StoredCurrentMemo[]>;

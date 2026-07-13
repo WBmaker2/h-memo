@@ -1,7 +1,10 @@
 import { type Memo } from "@h-memo/memo-core";
-import type { MemoBackupPayload } from "./backupTypes";
+import { createBackupContentHash, createBackupPreviewText } from "./backupFingerprint";
+import { toKstDateKey } from "./backupKstDate";
+import type { BackupSaveResult, MemoBackupPayload } from "./backupTypes";
 import { encodeMemoDocumentId } from "./memoDocumentId";
 import {
+  activeSchemaVersionFromState,
   activeSnapshotIdFromState,
   activatedAtFromState,
   activationDoc,
@@ -20,21 +23,82 @@ import {
   type FirestoreBackupContext,
 } from "./firestoreBackupShared";
 import { BACKUP_COLLECTIONS } from "./firestoreBackupShared";
+import {
+  loadActiveSnapshotSummary,
+  loadSnapshotSummaryById,
+} from "./firestoreBackupRead";
+
+function snapshotPath(context: FirestoreBackupContext, userId: string, snapshotId: string) {
+  const ref = context.driver.doc(snapshotCollection(context, userId), snapshotId);
+  return `${(ref as { path?: string }).path ?? `users/${userId}/${BACKUP_COLLECTIONS.snapshots}/${snapshotId}`}`;
+}
 
 export async function saveFirestoreBackup(
   context: FirestoreBackupContext,
   userId: string,
-  payload: MemoBackupPayload
-): Promise<string> {
-  if (isRecord(payload) && Array.isArray(payload.memos)) {
+  payloadInput: MemoBackupPayload
+): Promise<BackupSaveResult> {
+  if (isRecord(payloadInput) && Array.isArray(payloadInput.memos)) {
     assertUniqueActiveMemoIds(
-      payload.memos.filter(
+      payloadInput.memos.filter(
         (memo): memo is Memo => isRecord(memo) && memo.deletedAt === null
       )
     );
   }
-  payload = assertValidNewBackupPayload(payload, userId);
+
+  const payload = assertValidNewBackupPayload(payloadInput, userId);
   const activeMemos = payload.memos.filter((memo) => memo.deletedAt === null);
+  assertUniqueActiveMemoIds(activeMemos);
+  const contentHash = await createBackupContentHash(payload);
+  const previewText = createBackupPreviewText(payload);
+  const prior = await loadActiveSnapshotSummary(context, userId);
+  const requestedDate = toKstDateKey(payload.createdAt);
+
+  if (
+    prior?.schemaVersion === 3 &&
+    prior.kstDate !== null &&
+    prior.kstDate === requestedDate &&
+    prior.contentHash === contentHash
+  ) {
+    return {
+      path: snapshotPath(context, userId, prior.id),
+      snapshotId: prior.id,
+      outcome: "unchanged",
+      cleanupPending: false,
+    };
+  }
+
+  const written = await writeAndActivateSchemaV3Snapshot(context, {
+    userId,
+    payload,
+    activeMemos,
+    contentHash,
+    previewText,
+  });
+  const saved = await loadSnapshotSummaryById(context, userId, written.snapshotId);
+  if (!saved?.kstDate) throw new Error("Completed backup is missing server savedAt");
+
+  return {
+    path: written.path,
+    snapshotId: written.snapshotId,
+    outcome: prior?.kstDate === saved.kstDate ? "replaced" : "created",
+    cleanupPending: false,
+  };
+}
+
+type SchemaV3WriteInput = {
+  userId: string;
+  payload: MemoBackupPayload;
+  activeMemos: Memo[];
+  contentHash: string;
+  previewText: string;
+};
+
+async function writeAndActivateSchemaV3Snapshot(
+  context: FirestoreBackupContext,
+  input: SchemaV3WriteInput
+) {
+  const { userId, payload, activeMemos, contentHash, previewText } = input;
   const snapshotRef = context.driver.doc(snapshotCollection(context, userId));
   const snapshotId = context.driver.id(snapshotRef);
 
@@ -48,16 +112,21 @@ export async function saveFirestoreBackup(
 
       const priorActiveSnapshotId = activeSnapshotIdFromState(activeState);
       transaction.set(snapshotRef, {
-        schemaVersion: 2,
+        schemaVersion: 3,
         userId,
-        createdAt: payload.createdAt,
+        clientCreatedAt: payload.createdAt,
         memoCount: activeMemos.length,
+        contentHash,
+        previewText,
         state: "writing",
+        savedAt: null,
       });
       transaction.set(activationDoc(context, userId), {
         userId,
         activeSnapshotId: priorActiveSnapshotId,
+        activeSchemaVersion: activeSchemaVersionFromState(activeState),
         pendingSnapshotId: snapshotId,
+        pendingSchemaVersion: 3,
         activatedAt: activatedAtFromState(activeState),
       });
       return priorActiveSnapshotId;
@@ -99,13 +168,7 @@ export async function saveFirestoreBackup(
               }
             }
           }
-          return {
-            primary: entries[0]!,
-            existing: entries.filter((entry) =>
-              isStoredCanonicalMemoFor(entry.snapshot, userId, memo.id, entry.isLegacy)
-            ),
-            previousActiveReference,
-          };
+          return { primary: entries[0]!, previousActiveReference };
         })
       );
 
@@ -139,7 +202,11 @@ export async function saveFirestoreBackup(
           });
         }
         transaction.set(
-          context.driver.doc(snapshotRef, BACKUP_COLLECTIONS.snapshotV2, encodeMemoDocumentId(memo.id)),
+          context.driver.doc(
+            snapshotRef,
+            BACKUP_COLLECTIONS.snapshotV3,
+            encodeMemoDocumentId(memo.id)
+          ),
           { userId, memoId: memo.id, memo }
         );
       }
@@ -152,7 +219,7 @@ export async function saveFirestoreBackup(
     const snapshot = await transaction.get(snapshotRef);
     if (
       !snapshot.exists() ||
-      snapshot.data().schemaVersion !== 2 ||
+      snapshot.data().schemaVersion !== 3 ||
       snapshot.data().userId !== userId ||
       snapshot.data().state !== "writing"
     ) {
@@ -166,10 +233,15 @@ export async function saveFirestoreBackup(
     transaction.set(activationDoc(context, userId), {
       userId,
       activeSnapshotId: snapshotId,
+      activeSchemaVersion: 3,
       pendingSnapshotId: null,
+      pendingSchemaVersion: null,
       activatedAt: context.driver.serverTimestamp(),
     });
   });
 
-  return `${(snapshotRef as { path?: string }).path ?? `users/${userId}/${BACKUP_COLLECTIONS.snapshots}/${snapshotId}`}`;
+  return {
+    path: snapshotPath(context, userId, snapshotId),
+    snapshotId,
+  };
 }

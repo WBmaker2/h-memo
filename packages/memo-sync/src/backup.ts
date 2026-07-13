@@ -4,13 +4,11 @@ import {
   type Memo,
 } from "@h-memo/memo-core";
 import { validateLegacyFirestoreV1Payload } from "./legacyBackupPayload";
-import {
-  isRecord,
-  normalizeFirestoreTimestamp,
-} from "./firestoreBackupShared";
+import { isRecord, normalizeFirestoreTimestamp } from "./firestoreBackupShared";
 import type {
   BackedUpMemo,
   BackedUpSnapshot,
+  BackupSaveResult,
   BackupGateway,
   MemoBackupPayload,
   StoredBackupSnapshot,
@@ -29,6 +27,8 @@ export type {
   BackedUpMemo,
   BackedUpSnapshot,
   BackupGateway,
+  BackupSaveResult,
+  BackupWriteOutcome,
   MemoBackupPayload,
   StoredBackupSnapshot,
   StoredCurrentMemo,
@@ -84,12 +84,12 @@ export async function backupMemos(
   userId: string,
   memos: Memo[],
   now = new Date().toISOString()
-): Promise<{ path: string; payload: MemoBackupPayload }> {
+): Promise<BackupSaveResult & { payload: MemoBackupPayload }> {
   const payload = createMemoBackupPayload({ userId, memos, createdAt: now });
   const parsed = validateBackupPayload(payload, userId);
   if (!parsed.ok) throw new Error(parsed.reason);
-  const path = await gateway.saveBackup(userId, payload);
-  return { path, payload };
+  const saved = await gateway.saveBackup(userId, payload);
+  return { ...saved, payload };
 }
 
 export async function restoreLatestBackup(

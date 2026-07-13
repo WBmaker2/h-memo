@@ -25,6 +25,8 @@ export type {
   BackedUpMemo,
   BackedUpSnapshot,
   BackupGateway,
+  BackupSaveResult,
+  BackupWriteOutcome,
   MemoBackupPayload,
   StoredCurrentMemo,
   StoredBackupSnapshot,

@@ -13,6 +13,7 @@ import {
   listBackupSnapshots,
   listBackedUpMemos,
   type BackupGateway,
+  type BackupSaveResult,
   type MemoBackupPayload,
   type StoredCurrentMemo,
   restoreLatestBackup,
@@ -266,15 +267,15 @@ describe("memo-sync backup", () => {
       })
     ).not.toThrow();
     expect(loadRestoreSafetyPoint(storage)?.payload).toEqual(restored);
-    await expect(gateway.saveBackup("user-1", restored!)).resolves.toContain(
-      "backupSnapshots"
-    );
+    await expect(gateway.saveBackup("user-1", restored!)).resolves.toMatchObject({
+      path: expect.stringContaining("backupSnapshots"),
+    });
   });
 
   it("rejects an invalid backup payload", async () => {
     class InvalidPayloadGateway implements BackupGateway {
-      async saveBackup(): Promise<string> {
-        return "";
+      async saveBackup(): Promise<BackupSaveResult> {
+        return { path: "", snapshotId: "", outcome: "created", cleanupPending: false };
       }
 
       async loadLatestBackup(): Promise<unknown | null> {

@@ -1,4 +1,9 @@
-import type { BackupGateway, MemoBackupPayload, StoredCurrentMemo } from "../backupTypes";
+import type {
+  BackupGateway,
+  BackupSaveResult,
+  MemoBackupPayload,
+  StoredCurrentMemo,
+} from "../backupTypes";
 
 const SERVER_TIMESTAMP = Symbol("serverTimestamp");
 const DELETE_FIELD = Symbol("deleteField");
@@ -357,7 +362,7 @@ export class FakeBackupGateway implements BackupGateway {
     return this.snapshots.flatMap((snapshot) => snapshot.memos.map((memo) => memo.id));
   }
 
-  async saveBackup(userId: string, payload: MemoBackupPayload): Promise<string> {
+  async saveBackup(userId: string, payload: MemoBackupPayload): Promise<BackupSaveResult> {
     const id = String(this.counter++);
     const path = `users/${userId}/backupSnapshots/${id}`;
     const savedAt = this.savedAtQueue.shift() ?? payload.createdAt;
@@ -370,7 +375,12 @@ export class FakeBackupGateway implements BackupGateway {
       currentMemos.set(memo.id, { memo, savedAt, snapshotId: id });
     }
     this.currentMemosByUser.set(userId, currentMemos);
-    return path;
+    return {
+      path,
+      snapshotId: id,
+      outcome: "created",
+      cleanupPending: false,
+    };
   }
 
   async loadLatestBackup(userId: string): Promise<unknown | null> {

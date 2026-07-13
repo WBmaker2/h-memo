@@ -19,6 +19,7 @@ export const BACKUP_COLLECTIONS = {
   canonicalV2: "memosV2",
   snapshotLegacy: "memos",
   snapshotV2: "memosV2",
+  snapshotV3: "memosV3",
   deletedLegacy: "serverMemoDeletes",
   deletedV2: "serverMemoDeletesV2",
 } as const;
@@ -151,6 +152,14 @@ export function activeSnapshotIdFromState(snapshot: DriverDocumentSnapshot): str
   return typeof data.activeSnapshotId === "string" && data.activeSnapshotId !== ""
     ? data.activeSnapshotId
     : null;
+}
+
+export function activeSchemaVersionFromState(
+  snapshot: DriverDocumentSnapshot
+): 1 | 2 | 3 | null {
+  if (!snapshot.exists()) return null;
+  const value = snapshot.data().activeSchemaVersion;
+  return value === 1 || value === 2 || value === 3 ? value : null;
 }
 
 export function activatedAtFromState(snapshot: DriverDocumentSnapshot): unknown | null {

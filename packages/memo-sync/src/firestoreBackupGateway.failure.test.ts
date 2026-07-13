@@ -28,8 +28,8 @@ function createGateway(driver: FakeFirestoreDriver) {
   return new FirestoreBackupGateway({} as never, driver as never);
 }
 
-function snapshotId(path: string) {
-  return path.split("/").at(-1)!;
+function snapshotId(path: string | { snapshotId: string }) {
+  return typeof path === "string" ? path.split("/").at(-1)! : path.snapshotId;
 }
 
 describe("FirestoreBackupGateway failure contract", () => {

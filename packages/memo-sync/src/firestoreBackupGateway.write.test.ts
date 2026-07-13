@@ -29,9 +29,75 @@ describe("FirestoreBackupGateway driver contract", () => {
     return new FirestoreBackupGateway({} as never, driver as never);
   }
 
-  function snapshotId(path: string) {
-    return path.split("/").at(-1)!;
+  function snapshotId(path: string | { snapshotId: string }) {
+    return typeof path === "string" ? path.split("/").at(-1)! : path.snapshotId;
   }
+
+  function payloadAt(createdAt: string): MemoBackupPayload {
+    return {
+      version: 1,
+      userId: "user-1",
+      createdAt,
+      memos: [createMemo({ id: "memo-daily", now: "2026-07-13T00:00:00.000Z" })],
+    };
+  }
+
+  function payloadWithText(plainText: string): MemoBackupPayload {
+    return {
+      ...payloadAt("2026-07-13T01:00:00.000Z"),
+      memos: [
+        createMemo({
+          id: "memo-daily",
+          now: "2026-07-13T00:00:00.000Z",
+          plainText,
+        }),
+      ],
+    };
+  }
+
+  it("skips every remote write for identical content on the same KST date", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    driver.setServerClock("2026-07-13T01:00:00.000Z");
+
+    const first = await gateway.saveBackup("user-1", payloadAt("2026-07-13T01:00:00.000Z"));
+    const commits = driver.transactionCommitCount;
+    const second = await gateway.saveBackup("user-1", payloadAt("2026-07-13T10:00:00.000Z"));
+
+    expect(second.outcome).toBe("unchanged");
+    expect(second.snapshotId).toBe(first.snapshotId);
+    expect(driver.transactionCommitCount).toBe(commits);
+  });
+
+  it("writes a new v3 snapshot when the same-day content changes", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    driver.setServerClock("2026-07-13T01:00:00.000Z");
+
+    const first = await gateway.saveBackup("user-1", payloadWithText("첫 내용"));
+    const second = await gateway.saveBackup("user-1", payloadWithText("바뀐 내용"));
+
+    expect(second.outcome).toBe("replaced");
+    expect(second.snapshotId).not.toBe(first.snapshotId);
+    expect(driver.read(`users/user-1/backupSnapshots/${second.snapshotId}`)).toMatchObject({
+      schemaVersion: 3,
+      state: "complete",
+      contentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+  });
+
+  it("writes the same content again on the next KST date", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    driver.setServerClock("2026-07-12T14:59:00.000Z");
+    const first = await gateway.saveBackup("user-1", payloadAt("2026-07-12T14:59:00.000Z"));
+
+    driver.setServerClock("2026-07-12T15:01:00.000Z");
+    const second = await gateway.saveBackup("user-1", payloadAt("2026-07-12T15:01:00.000Z"));
+
+    expect(second.outcome).toBe("created");
+    expect(second.snapshotId).not.toBe(first.snapshotId);
+  });
 
   it("writes more than 200 memos in bounded transactions and activates only after the snapshot is complete", async () => {
     const driver = new FakeFirestoreDriver();
@@ -51,7 +117,7 @@ describe("FirestoreBackupGateway driver contract", () => {
     expect(driver.transactionOperationCounts).toEqual([2, 400, 2, 2]);
     expect(driver.transactionOperationCounts.every((count) => count <= 400)).toBe(true);
     expect(driver.read(`users/user-1/backupSnapshots/${id}`)).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       state: "complete",
       memoCount: 201,
     });
@@ -128,7 +194,7 @@ describe("FirestoreBackupGateway driver contract", () => {
       const documentId = encodeMemoDocumentId(memoId);
       expect(driver.read(`users/user-1/memosV2/${documentId}`)).toMatchObject({ memoId });
       expect(
-        driver.read(`users/user-1/backupSnapshots/1/memosV2/${documentId}`)
+        driver.read(`users/user-1/backupSnapshots/1/memosV3/${documentId}`)
       ).toMatchObject({ memoId, memo: { id: memoId } });
     }
     expect((await listBackedUpMemos(gateway, "user-1")).map(({ memo }) => memo.id).sort()).toEqual(
@@ -253,7 +319,7 @@ describe("FirestoreBackupGateway driver contract", () => {
       memoId: "?",
     });
     expect(
-      driver.read(`users/user-1/backupSnapshots/${id}/memosV2/memo~003f`)
+      driver.read(`users/user-1/backupSnapshots/${id}/memosV3/memo~003f`)
     ).toMatchObject({ memoId: "?", memo: { id: "?" } });
     expect(driver.read(`users/user-1/backupSnapshots/${id}/memos/memo~003f`)).toBeUndefined();
   });

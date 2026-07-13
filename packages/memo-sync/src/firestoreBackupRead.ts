@@ -1,9 +1,12 @@
 import { validateBackupPayload, type Memo } from "@h-memo/memo-core";
 import { validateLegacyFirestoreV1Payload } from "./legacyBackupPayload";
-import type { StoredBackupSnapshot } from "./backupTypes";
+import { parseBackupSnapshotSummary } from "./backupSnapshotSummary";
+import type { BackupSnapshotSummary, StoredBackupSnapshot } from "./backupTypes";
 import type { DriverDocumentSnapshot } from "./firestoreBackupDriver";
 import {
   BACKUP_COLLECTIONS,
+  activationDoc,
+  activeSnapshotIdFromState,
   isMemoDocumentForPath,
   normalizeFirestoreTimestamp,
   snapshotCollection,
@@ -49,14 +52,35 @@ export async function loadCompleteSchemaV2Snapshot(
   snapshot: DriverDocumentSnapshot,
   userId: string
 ): Promise<StoredBackupSnapshot | null> {
+  if (snapshot.exists() && snapshot.data().schemaVersion === 3) {
+    return loadCompleteSchemaV3Snapshot(context, snapshot, userId);
+  }
+  return loadCompleteSchemaSnapshot(context, snapshot, userId, 2);
+}
+
+export async function loadCompleteSchemaV3Snapshot(
+  context: FirestoreBackupContext,
+  snapshot: DriverDocumentSnapshot,
+  userId: string
+): Promise<StoredBackupSnapshot | null> {
+  return loadCompleteSchemaSnapshot(context, snapshot, userId, 3);
+}
+
+async function loadCompleteSchemaSnapshot(
+  context: FirestoreBackupContext,
+  snapshot: DriverDocumentSnapshot,
+  userId: string,
+  schemaVersion: 2 | 3
+): Promise<StoredBackupSnapshot | null> {
   if (!snapshot.exists()) return null;
   const data = snapshot.data();
   const savedAt = normalizeFirestoreTimestamp(data.savedAt);
+  const createdAt = schemaVersion === 3 ? data.clientCreatedAt : data.createdAt;
   if (
-    data.schemaVersion !== 2 ||
+    data.schemaVersion !== schemaVersion ||
     data.state !== "complete" ||
     data.userId !== userId ||
-    typeof data.createdAt !== "string" ||
+    typeof createdAt !== "string" ||
     typeof data.memoCount !== "number" ||
     !Number.isInteger(data.memoCount) ||
     data.memoCount < 0 ||
@@ -65,10 +89,17 @@ export async function loadCompleteSchemaV2Snapshot(
     return null;
   }
 
-  const [currentMemoDocs, legacyMemoDocs] = await Promise.all([
-    context.driver.getDocs(context.driver.collection(snapshot.ref, BACKUP_COLLECTIONS.snapshotV2)),
-    context.driver.getDocs(context.driver.collection(snapshot.ref, BACKUP_COLLECTIONS.snapshotLegacy)),
-  ]);
+  const currentMemoDocs = await context.driver.getDocs(
+    context.driver.collection(
+      snapshot.ref,
+      schemaVersion === 3 ? BACKUP_COLLECTIONS.snapshotV3 : BACKUP_COLLECTIONS.snapshotV2
+    )
+  );
+  const legacyMemoDocs = schemaVersion === 2
+    ? await context.driver.getDocs(
+        context.driver.collection(snapshot.ref, BACKUP_COLLECTIONS.snapshotLegacy)
+      )
+    : { docs: [], empty: true };
   const memoDocs = [
     ...currentMemoDocs.docs.map((memoSnapshot) => ({ memoSnapshot, isLegacy: false })),
     ...legacyMemoDocs.docs.map((memoSnapshot) => ({ memoSnapshot, isLegacy: true })),
@@ -87,6 +118,7 @@ export async function loadCompleteSchemaV2Snapshot(
       !isMemoDocumentForPath(memoSnapshot.id, memoId, isLegacy) ||
       !isValidMemo(memo, userId) ||
       memo.id !== memoId ||
+      (schemaVersion === 3 && memo.deletedAt !== null) ||
       seenMemoIds.has(memoId)
     ) {
       return null;
@@ -96,7 +128,7 @@ export async function loadCompleteSchemaV2Snapshot(
   }
 
   const parsed = validateBackupPayload(
-    { version: 1, userId, createdAt: data.createdAt, memos },
+    { version: 1, userId, createdAt, memos },
     userId
   );
   if (!parsed.ok) return null;
@@ -110,6 +142,9 @@ async function loadStoredSnapshot(
   userId: string
 ): Promise<StoredBackupSnapshot | null> {
   const data = snapshot.data();
+  if (data.schemaVersion === 3) {
+    return loadCompleteSchemaV3Snapshot(context, snapshot, userId);
+  }
   if (data.schemaVersion === 2) {
     return loadCompleteSchemaV2Snapshot(context, snapshot, userId);
   }
@@ -126,4 +161,28 @@ async function loadStoredSnapshot(
 
 export function sortStoredSnapshots(snapshots: StoredBackupSnapshot[]) {
   return [...snapshots].sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+}
+
+export async function loadActiveSnapshotSummary(
+  context: FirestoreBackupContext,
+  userId: string
+): Promise<BackupSnapshotSummary | null> {
+  const state = await context.driver.getDoc(activationDoc(context, userId));
+  if (state.exists() && state.data().userId !== userId) {
+    throw new Error("Backup state belongs to a different user");
+  }
+  const snapshotId = activeSnapshotIdFromState(state);
+  return snapshotId === null ? null : loadSnapshotSummaryById(context, userId, snapshotId);
+}
+
+export async function loadSnapshotSummaryById(
+  context: FirestoreBackupContext,
+  userId: string,
+  snapshotId: string
+): Promise<BackupSnapshotSummary | null> {
+  const snapshot = await context.driver.getDoc(
+    context.driver.doc(snapshotCollection(context, userId), snapshotId)
+  );
+  if (!snapshot.exists() || snapshot.data().userId !== userId) return null;
+  return parseBackupSnapshotSummary(snapshot.id, snapshot.data());
 }

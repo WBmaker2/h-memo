@@ -28,8 +28,8 @@ function createGateway(driver: FakeFirestoreDriver) {
   return new FirestoreBackupGateway({} as never, driver as never);
 }
 
-function snapshotId(path: string) {
-  return path.split("/").at(-1)!;
+function snapshotId(path: string | { snapshotId: string }) {
+  return typeof path === "string" ? path.split("/").at(-1)! : path.snapshotId;
 }
 
 describe("FirestoreBackupGateway concurrency contract", () => {
@@ -50,7 +50,7 @@ describe("FirestoreBackupGateway concurrency contract", () => {
       pendingSnapshotId: null,
     });
     expect(driver.transactionOperationCounts).toEqual([2, 2, 2]);
-    expect(driver.read(`users/user-1/backupSnapshots/${snapshotId(path)}/memosV2/${memo.id}`)).toMatchObject({
+    expect(driver.read(`users/user-1/backupSnapshots/${snapshotId(path)}/memosV3/${memo.id}`)).toMatchObject({
       memoId: memo.id,
     });
   });
@@ -106,8 +106,8 @@ describe("FirestoreBackupGateway concurrency contract", () => {
       activeSnapshotId: snapshotId(priorPath),
       pendingSnapshotId: "3",
     });
-    expect(driver.read("users/user-1/backupSnapshots/2/memosV2/memo-older")).toBeUndefined();
-    expect(driver.read("users/user-1/backupSnapshots/3/memosV2/memo-newer")).toMatchObject({
+    expect(driver.read("users/user-1/backupSnapshots/2/memosV3/memo-older")).toBeUndefined();
+    expect(driver.read("users/user-1/backupSnapshots/3/memosV3/memo-newer")).toMatchObject({
       memoId: "memo-newer",
     });
     expect((await gateway.loadCurrentMemos("user-1")).map((entry) => entry.memo.id)).toEqual([
@@ -129,7 +129,7 @@ describe("FirestoreBackupGateway concurrency contract", () => {
     driver.beforeTransactionCommit = async (operations) => {
       const stagesMemo = operations.some(
         (operation) =>
-          operation.ref.path === "users/user-1/backupSnapshots/2/memosV2/memo-stale-read"
+          operation.ref.path === "users/user-1/backupSnapshots/2/memosV3/memo-stale-read"
       );
       if (!stagesMemo || deletedDuringStaging) {
         return;
