@@ -380,6 +380,10 @@ vi.mock("@h-memo/memo-sync", () => {
       env.appId.trim() !== "",
     listBackupSnapshotSummaries: (gateway: unknown, userId: string) =>
       mockListBackupSnapshotSummaries(gateway, userId),
+    listBackupSnapshotSummaryPage: async (gateway: unknown, userId: string) => ({
+      summaries: await mockListBackupSnapshotSummaries(gateway, userId),
+      nextCursor: null,
+    }),
     loadBackupSnapshot: (gateway: unknown, userId: string, snapshotId: string) =>
       mockLoadBackupSnapshot(gateway, userId, snapshotId),
     listBackedUpMemos: (gateway: unknown, userId: string) =>

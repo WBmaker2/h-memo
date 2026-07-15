@@ -38,6 +38,12 @@ const UPDATE_HISTORY = [
     detail:
       "대한민국 날짜별 최신 백업 1개를 최근 365일 동안 보관하고, 선택한 날짜의 메모만 불러오도록 개선했습니다.",
   },
+  {
+    date: "2026-07-15",
+    title: "백업 기록 서버 페이지 조회",
+    detail:
+      "서버 복원 기록을 최신순 10개씩 Firestore에서 조회하고, 다음 페이지는 커서로 이어 불러오며 이전 페이지는 캐시를 사용하도록 개선했습니다.",
+  },
 ] as const;
 
 type MemoWorkspaceShellProps = {

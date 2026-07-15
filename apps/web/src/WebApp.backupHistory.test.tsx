@@ -10,7 +10,7 @@ import {
 } from "@h-memo/memo-core";
 import {
   type BackupSnapshotSummary,
-  listBackupSnapshotSummaries,
+  listBackupSnapshotSummaryPage,
   loadBackupSnapshot,
   subscribeAuthUser,
   completeGoogleRedirectSignIn,
@@ -61,7 +61,7 @@ vi.mock("@h-memo/memo-sync", async () => {
     createFirebaseApp: vi.fn(),
     getFirebaseAuth: vi.fn(),
     completeGoogleRedirectSignIn: vi.fn(),
-    listBackupSnapshotSummaries: vi.fn(),
+    listBackupSnapshotSummaryPage: vi.fn(),
     loadBackupSnapshot: vi.fn(),
     subscribeAuthUser: vi.fn(),
     waitForSignedInUser: vi.fn(),
@@ -153,7 +153,10 @@ describe("WebApp backup history failures", () => {
     const user = userEvent.setup();
     const localBefore = window.localStorage.getItem(LOCAL_MEMO_KEY);
     const safetyBefore = window.localStorage.getItem(RESTORE_SAFETY_KEY);
-    vi.mocked(listBackupSnapshotSummaries).mockResolvedValue([summary]);
+    vi.mocked(listBackupSnapshotSummaryPage).mockResolvedValue({
+      summaries: [summary],
+      nextCursor: null,
+    });
     vi.mocked(loadBackupSnapshot).mockImplementation(failure);
 
     render(<WebApp />);
@@ -172,5 +175,52 @@ describe("WebApp backup history failures", () => {
     expect(window.localStorage.getItem(RESTORE_SAFETY_KEY)).toBe(safetyBefore);
     expect(screen.getByDisplayValue("복원 전 메모")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "백업 기록 선택" })).toBeInTheDocument();
+  });
+
+  it("loads the next server page once and reuses it when navigating back and forth", async () => {
+    const user = userEvent.setup();
+    const firstPage = Array.from({ length: 10 }, (_, index) => ({
+      ...summary,
+      id: `page-1-${index + 1}`,
+      kstDate: `2026-07-${String(15 - index).padStart(2, "0")}`,
+      previewText: `첫 페이지 ${index + 1}`,
+    }));
+    const secondPage = [{
+      ...summary,
+      id: "page-2-1",
+      kstDate: "2026-07-05",
+      previewText: "두 번째 페이지",
+    }];
+    const cursor = { kind: "firestore" as const, snapshot: { id: "cursor" } };
+    vi.mocked(listBackupSnapshotSummaryPage)
+      .mockResolvedValueOnce({ summaries: firstPage, nextCursor: cursor })
+      .mockResolvedValueOnce({ summaries: secondPage, nextCursor: null });
+
+    render(<WebApp />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "서버 복원" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
+    expect(within(dialog).getByText("2026-07-15")).toBeInTheDocument();
+    expect(within(dialog).getByText("1페이지 · 최대 10개씩 표시")).toBeInTheDocument();
+    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(1);
+
+    await user.click(within(dialog).getByRole("button", { name: "다음 페이지" }));
+    await waitFor(() => {
+      expect(within(dialog).getByText("2026-07-05")).toBeInTheDocument();
+      expect(within(dialog).getByText("2페이지 · 최대 10개씩 표시")).toBeInTheDocument();
+    });
+    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(2);
+    expect(listBackupSnapshotSummaryPage).toHaveBeenLastCalledWith(
+      expect.anything(),
+      "user-1",
+      { limit: 10, cursor },
+    );
+
+    await user.click(within(dialog).getByRole("button", { name: "이전 페이지" }));
+    expect(within(dialog).getByText("2026-07-15")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "다음 페이지" }));
+    expect(within(dialog).getByText("2026-07-05")).toBeInTheDocument();
+    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(2);
   });
 });

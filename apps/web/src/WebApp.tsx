@@ -29,14 +29,14 @@ import {
   getFirebaseAuth,
   hasFirebaseConfig,
   listBackedUpMemos,
-  listBackupSnapshotSummaries,
+  listBackupSnapshotSummaryPage,
   loadBackupSnapshot,
   signInWithGoogle,
   signOutUser,
   subscribeAuthUser,
   waitForSignedInUser,
   type BackedUpMemo,
-  type BackupSnapshotSummary,
+  type BackupSnapshotSummaryPage,
   type HMemoUser,
 } from "@h-memo/memo-sync";
 import {
@@ -64,6 +64,7 @@ const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
 const LOGIN_REQUIRED_MESSAGE = "서버 백업/복원은 구글 로그인 후 사용 가능합니다.";
 const BROWSER_BACKUP_READY_MESSAGE = "백업 정보 없음";
+const BACKUP_HISTORY_PAGE_SIZE = 10;
 const FIREBASE_INIT_FAILED_PREFIX = "서버 백업 초기화 실패:";
 const AUTH_SUBSCRIBE_FAILED_PREFIX = "인증 상태 복구 실패:";
 const AUTH_LOGIN_FAILED_PREFIX = "구글 로그인 실패:";
@@ -207,11 +208,15 @@ export function WebApp() {
   const [user, setUser] = useState<WebPreviewUser | null>(null);
   const [backupHistoryDialog, setBackupHistoryDialog] = useState<{
     isOpen: boolean;
-    snapshots: BackupSnapshotSummary[];
+    pages: BackupSnapshotSummaryPage[];
+    pageIndex: number;
   }>({
     isOpen: false,
-    snapshots: [],
+    pages: [],
+    pageIndex: 0,
   });
+  const currentBackupHistoryPage =
+    backupHistoryDialog.pages[backupHistoryDialog.pageIndex] ?? null;
   const [isBusy, setIsBusy] = useState(false);
   const [isRestoreLocked, setIsRestoreLocked] = useState(false);
   const [syncServicesInitialized, setSyncServicesInitialized] = useState(false);
@@ -1139,17 +1144,20 @@ export function WebApp() {
     setBackupStatus("백업 기록을 불러옵니다.");
     try {
       await waitForPendingPersists();
-      const snapshots = await listBackupSnapshotSummaries(services.gateway, user.uid);
-      if (snapshots.length === 0) {
+      const firstPage = await listBackupSnapshotSummaryPage(services.gateway, user.uid, {
+        limit: BACKUP_HISTORY_PAGE_SIZE,
+      });
+      if (firstPage.summaries.length === 0) {
         setBackupStatus(NO_BACKUP_MESSAGE);
         return;
       }
 
       setBackupHistoryDialog({
         isOpen: true,
-        snapshots,
+        pages: [firstPage],
+        pageIndex: 0,
       });
-      setBackupStatus(`백업 기록 ${snapshots.length}개를 불러왔습니다.`);
+      setBackupStatus(`최신 백업 기록 ${firstPage.summaries.length}개를 불러왔습니다.`);
     } catch (error) {
       setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
     } finally {
@@ -1159,6 +1167,49 @@ export function WebApp() {
 
   const handleCloseBackupHistoryDialog = () => {
     setBackupHistoryDialog((previous) => ({ ...previous, isOpen: false }));
+  };
+
+  const handlePreviousBackupHistoryPage = () => {
+    setBackupHistoryDialog((previous) => ({
+      ...previous,
+      pageIndex: Math.max(0, previous.pageIndex - 1),
+    }));
+  };
+
+  const handleNextBackupHistoryPage = async () => {
+    if (isBusy) return;
+
+    const cachedPageIndex = backupHistoryDialog.pageIndex + 1;
+    if (cachedPageIndex < backupHistoryDialog.pages.length) {
+      setBackupHistoryDialog((previous) => ({
+        ...previous,
+        pageIndex: Math.min(previous.pageIndex + 1, previous.pages.length - 1),
+      }));
+      return;
+    }
+
+    const cursor = currentBackupHistoryPage?.nextCursor ?? null;
+    const services = ensureSyncServices();
+    if (!cursor || !services || !user) return;
+
+    setIsBusy(true);
+    setBackupStatus("다음 백업 기록을 불러옵니다.");
+    try {
+      const nextPage = await listBackupSnapshotSummaryPage(services.gateway, user.uid, {
+        limit: BACKUP_HISTORY_PAGE_SIZE,
+        cursor,
+      });
+      setBackupHistoryDialog((previous) => ({
+        ...previous,
+        pages: [...previous.pages, nextPage],
+        pageIndex: previous.pageIndex + 1,
+      }));
+      setBackupStatus(`백업 기록 ${nextPage.summaries.length}개를 불러왔습니다.`);
+    } catch (error) {
+      setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
   };
 
   const handleRestoreBackupSnapshot = async (snapshotId: string) => {
@@ -1181,7 +1232,7 @@ export function WebApp() {
         gateway: services.gateway,
         userId: currentUser.uid,
         snapshotId,
-        summaries: backupHistoryDialog.snapshots,
+        summaries: backupHistoryDialog.pages.flatMap((page) => page.summaries),
         confirm: (message) => window.confirm(message),
         loadSnapshot: loadBackupSnapshot,
         restore: (payload) =>
@@ -1199,7 +1250,7 @@ export function WebApp() {
       if (selection.kind === "unavailable") {
         throw new Error("선택한 백업을 불러오지 못했습니다.");
       }
-      setBackupHistoryDialog({ isOpen: false, snapshots: [] });
+      setBackupHistoryDialog({ isOpen: false, pages: [], pageIndex: 0 });
       setBackupStatus(`복원 완료: ${selection.payload.memos.length}개 메모`);
     } catch (error) {
       setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
@@ -1426,7 +1477,14 @@ export function WebApp() {
       <BackupHistoryDialog
         isOpen={backupHistoryDialog.isOpen}
         isBusy={isBusy || isRestoreLocked}
-        items={backupHistoryDialog.snapshots}
+        items={currentBackupHistoryPage?.summaries ?? []}
+        pagination={{
+          pageNumber: backupHistoryDialog.pageIndex + 1,
+          hasPreviousPage: backupHistoryDialog.pageIndex > 0,
+          hasNextPage: currentBackupHistoryPage?.nextCursor != null,
+          onPreviousPage: handlePreviousBackupHistoryPage,
+          onNextPage: handleNextBackupHistoryPage,
+        }}
         onClose={handleCloseBackupHistoryDialog}
         onRestore={handleRestoreBackupSnapshot}
       />

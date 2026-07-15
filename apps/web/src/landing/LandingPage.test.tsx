@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppRouter } from "../AppRouter";
 import { LandingPage } from "./LandingPage";
-import { resolveWindowsDownloadUrls } from "./releaseDownload";
+import { resolveLatestWindowsRelease } from "./releaseDownload";
 import webPackageJson from "../../package.json";
 
 vi.mock("../WebApp", () => ({
@@ -15,7 +15,7 @@ vi.mock("./releaseDownload", async () => {
   const actual = await vi.importActual<typeof import("./releaseDownload")>("./releaseDownload");
   return {
     ...actual,
-    resolveWindowsDownloadUrls: vi.fn(),
+    resolveLatestWindowsRelease: vi.fn(),
   };
 });
 
@@ -47,17 +47,27 @@ const RESOLVED_DOWNLOAD_STATES = {
   exe: MANIFEST_DOWNLOAD_STATE,
 };
 
+const FALLBACK_RELEASE_STATE = {
+  version: null,
+  installers: FALLBACK_DOWNLOAD_STATES,
+};
+
+const RESOLVED_RELEASE_STATE = {
+  version: "v1.0.1",
+  installers: RESOLVED_DOWNLOAD_STATES,
+};
+
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
 const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
 const LATEST_RELEASE_NOTICE = new RegExp(
-  `v${webPackageJson.version.replaceAll(".", "\\.")} 탑재 완료: 백업 기록 선택 복원과 보안 의존성 정리`
+  `v${webPackageJson.version.replaceAll(".", "\\.")} 최신 버전 설치 파일`
 );
 
 beforeEach(() => {
   vi.clearAllMocks();
   window.location.hash = "";
-  vi.mocked(resolveWindowsDownloadUrls).mockResolvedValue(FALLBACK_DOWNLOAD_STATES);
+  vi.mocked(resolveLatestWindowsRelease).mockResolvedValue(FALLBACK_RELEASE_STATE);
 });
 
 afterEach(() => {
@@ -101,7 +111,7 @@ describe("LandingPage", () => {
   });
 
   it("updates the MSI download link href when the resolver returns a GitHub asset", async () => {
-    vi.mocked(resolveWindowsDownloadUrls).mockResolvedValue(RESOLVED_DOWNLOAD_STATES);
+    vi.mocked(resolveLatestWindowsRelease).mockResolvedValue(RESOLVED_RELEASE_STATE);
 
     render(<LandingPage />);
 
@@ -112,7 +122,7 @@ describe("LandingPage", () => {
   });
 
   it("renders a separate EXE download link when the resolver returns an EXE URL", async () => {
-    vi.mocked(resolveWindowsDownloadUrls).mockResolvedValue(RESOLVED_DOWNLOAD_STATES);
+    vi.mocked(resolveLatestWindowsRelease).mockResolvedValue(RESOLVED_RELEASE_STATE);
 
     render(<LandingPage />);
 
@@ -123,7 +133,7 @@ describe("LandingPage", () => {
   });
 
   it("keeps the download button disabled when no installer URL is available", async () => {
-    vi.mocked(resolveWindowsDownloadUrls).mockResolvedValue(FALLBACK_DOWNLOAD_STATES);
+    vi.mocked(resolveLatestWindowsRelease).mockResolvedValue(FALLBACK_RELEASE_STATE);
 
     render(<LandingPage />);
 
@@ -153,6 +163,10 @@ describe("LandingPage", () => {
 
     const dialog = screen.getByRole("dialog", { name: "업데이트 기록" });
     expect(dialog).toBeInTheDocument();
+    expect(screen.getByText("v1.0.1")).toBeInTheDocument();
+    expect(screen.getByText("KST 백업 및 릴리스 자동화")).toBeInTheDocument();
+    expect(screen.getByText("백업 기록 서버 페이지 조회")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-15")).toBeInTheDocument();
     expect(screen.getByText("v1.0.0")).toBeInTheDocument();
     expect(screen.getByText("백업 기록 선택 복원")).toBeInTheDocument();
     expect(
@@ -190,6 +204,17 @@ describe("LandingPage", () => {
     await user.click(screen.getByRole("button", { name: "업데이트 기록 닫기" }));
 
     expect(screen.queryByRole("dialog", { name: "업데이트 기록" })).not.toBeInTheDocument();
+  });
+
+  it("displays the latest GitHub Release version returned by the resolver", async () => {
+    vi.mocked(resolveLatestWindowsRelease).mockResolvedValue({
+      version: "v2.3.4",
+      installers: RESOLVED_DOWNLOAD_STATES,
+    });
+
+    render(<LandingPage />);
+
+    expect(await screen.findByText(/v2\.3\.4 최신 버전 설치 파일/)).toBeInTheDocument();
   });
 
   it("renders both SmartScreen guidance images with exact alt text", async () => {

@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import {
-  resolveWindowsDownloadUrls,
+  resolveLatestWindowsRelease,
   type WindowsInstallerDownloadStates,
   type WindowsInstallerKind,
 } from "./releaseDownload";
 import webPackageJson from "../../package.json";
 
 const LOADING_DOWNLOAD_LABEL = "다운로드 파일을 확인하는 중입니다.";
-const LATEST_RELEASE_VERSION = `v${webPackageJson.version}`;
+const FALLBACK_RELEASE_VERSION = `v${webPackageJson.version}`;
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
 const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/";
@@ -19,6 +19,22 @@ type ReleaseHistoryEntry = {
 };
 
 const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
+  {
+    date: "2026-07-15",
+    title: "백업 기록 서버 페이지 조회",
+    items: [
+      "서버 복원 기록을 최신순 10개씩 Firestore에서 조회하고, 다음 페이지는 커서로 이어 불러오며 이전 페이지는 캐시를 사용하도록 개선했습니다.",
+    ],
+  },
+  {
+    version: "v1.0.1",
+    title: "KST 백업 및 릴리스 자동화",
+    items: [
+      "대한민국 날짜별 최신 백업 1개를 최근 365일 동안 보관하도록 서버 백업 정책을 정리했습니다.",
+      "앱과 백업 기록의 날짜·시각을 대한민국 표준시(Asia/Seoul)로 일관되게 표시합니다.",
+      "검증된 main 변경의 patch 버전 증가와 Windows·macOS·웹 배포 준비를 자동화했습니다.",
+    ],
+  },
   {
     date: "2026-07-13",
     title: "자동 버전 및 릴리스",
@@ -113,14 +129,16 @@ function getInstallImagePath(fileName: string): string {
 
 export function LandingPage() {
   const [downloadStates, setDownloadStates] = useState<WindowsInstallerDownloadStates | null>(null);
+  const [releaseVersion, setReleaseVersion] = useState(FALLBACK_RELEASE_VERSION);
   const [isReleaseHistoryOpen, setIsReleaseHistoryOpen] = useState(false);
 
   useEffect(() => {
     let mounted = true;
 
-    resolveWindowsDownloadUrls().then((nextState) => {
+    resolveLatestWindowsRelease().then((latestRelease) => {
       if (mounted) {
-        setDownloadStates(nextState);
+        setDownloadStates(latestRelease.installers);
+        setReleaseVersion(latestRelease.version ?? FALLBACK_RELEASE_VERSION);
       }
     });
 
@@ -142,8 +160,8 @@ export function LandingPage() {
       <section className="landing-page__section landing-page__section--download">
         <h2>프로그램 다운로드</h2>
         <p className="landing-page__release-notice">
-          {LATEST_RELEASE_VERSION} 탑재 완료: 백업 기록 선택 복원과 보안 의존성 정리가
-          반영된 최신 Windows 설치 파일을 받을 수 있습니다.
+          {releaseVersion} 최신 버전 설치 파일을 받을 수 있습니다. v1.0.1부터 대한민국
+          시간 기준 일별 백업 보존과 자동 릴리스가 적용됩니다.
         </p>
         <p>
           Windows MSI/EXE 설치 파일과 웹앱 실행 링크를 제공합니다. macOS 버전은 현재

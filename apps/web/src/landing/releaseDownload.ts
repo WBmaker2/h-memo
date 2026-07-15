@@ -11,6 +11,11 @@ export type WindowsInstallerKind = "msi" | "exe";
 
 export type WindowsInstallerDownloadStates = Record<WindowsInstallerKind, ReleaseDownloadState>;
 
+export type LatestWindowsReleaseState = {
+  version: string | null;
+  installers: WindowsInstallerDownloadStates;
+};
+
 type GitHubAsset = {
   name: string;
   browser_download_url: string;
@@ -23,6 +28,12 @@ type GitHubAssetCandidate = {
 
 type GitHubLatestReleaseResponse = {
   assets?: unknown;
+  tag_name?: unknown;
+};
+
+type LatestReleaseResolution = {
+  version: string | null;
+  installers: Partial<WindowsInstallerDownloadStates>;
 };
 
 type DownloadManifestResponse = {
@@ -68,6 +79,15 @@ function isValidAsset(asset: unknown): asset is GitHubAsset {
     isValidBrowserDownloadUrl((asset as GitHubAssetCandidate).browser_download_url) &&
     typeof (asset as GitHubAssetCandidate).name === "string"
   );
+}
+
+function normalizeReleaseVersion(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const version = value.trim();
+  return /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ? version : null;
 }
 
 function toDownloadState(
@@ -180,30 +200,34 @@ async function resolveFromLatestRelease(
   }
 }
 
-async function resolveInstallersFromLatestRelease(
+async function resolveLatestRelease(
   fetcher: typeof fetch = fetch,
-): Promise<Partial<WindowsInstallerDownloadStates>> {
+): Promise<LatestReleaseResolution> {
   try {
     const response = await fetcher(GITHUB_LATEST_RELEASE_API_URL);
     if (!response.ok) {
-      return {};
+      return { version: null, installers: {} };
     }
 
     const release = (await response.json()) as GitHubLatestReleaseResponse;
     const assetsRaw = release.assets;
+    const version = normalizeReleaseVersion(release.tag_name);
 
     if (!Array.isArray(assetsRaw)) {
-      return {};
+      return { version, installers: {} };
     }
 
     const validAssets = assetsRaw.filter(isValidAsset);
     if (validAssets.length === 0) {
-      return {};
+      return { version, installers: {} };
     }
 
-    return chooseWindowsInstallers(validAssets);
+    return {
+      version,
+      installers: chooseWindowsInstallers(validAssets),
+    };
   } catch {
-    return {};
+    return { version: null, installers: {} };
   }
 }
 
@@ -254,14 +278,25 @@ export async function resolveWindowsDownloadUrl(
 export async function resolveWindowsDownloadUrls(
   fetcher: typeof fetch = fetch,
 ): Promise<WindowsInstallerDownloadStates> {
-  const latestReleaseStates = await resolveInstallersFromLatestRelease(fetcher);
+  const latestRelease = await resolveLatestWindowsRelease(fetcher);
+  return latestRelease.installers;
+}
+
+export async function resolveLatestWindowsRelease(
+  fetcher: typeof fetch = fetch,
+): Promise<LatestWindowsReleaseState> {
+  const latestRelease = await resolveLatestRelease(fetcher);
+  const latestReleaseStates = latestRelease.installers;
   const hasBothLatestInstallers = latestReleaseStates.msi && latestReleaseStates.exe;
   const manifestStates = hasBothLatestInstallers
     ? {}
     : await resolveInstallersFromDownloadManifest(fetcher);
 
   return {
-    msi: latestReleaseStates.msi ?? manifestStates.msi ?? FALLBACK_STATE,
-    exe: latestReleaseStates.exe ?? manifestStates.exe ?? FALLBACK_STATE,
+    version: latestRelease.version,
+    installers: {
+      msi: latestReleaseStates.msi ?? manifestStates.msi ?? FALLBACK_STATE,
+      exe: latestReleaseStates.exe ?? manifestStates.exe ?? FALLBACK_STATE,
+    },
   };
 }

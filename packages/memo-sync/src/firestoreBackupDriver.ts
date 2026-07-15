@@ -1,11 +1,17 @@
 import {
   collection as firestoreCollection,
   doc as firestoreDoc,
+  documentId as firestoreDocumentId,
   getDoc as firestoreGetDoc,
   getDocs as firestoreGetDocs,
+  limit as firestoreLimit,
+  orderBy as firestoreOrderBy,
+  query as firestoreQuery,
   runTransaction as firestoreRunTransaction,
   serverTimestamp as firestoreServerTimestamp,
   setDoc as firestoreSetDoc,
+  startAfter as firestoreStartAfter,
+  where as firestoreWhere,
   writeBatch as firestoreWriteBatch,
   type Firestore,
 } from "firebase/firestore";
@@ -20,6 +26,13 @@ export type DriverDocumentSnapshot = {
 export type DriverQuerySnapshot = {
   docs: DriverDocumentSnapshot[];
   empty: boolean;
+};
+
+export type DriverPageQuery = {
+  limit: number;
+  savedAtFrom: Date;
+  savedAtTo: Date;
+  startAfter?: DriverDocumentSnapshot;
 };
 
 export type DriverWriteBatch = {
@@ -42,6 +55,7 @@ export type FirestoreBackupDriver = {
   id(ref: unknown): string;
   getDoc(ref: unknown): Promise<DriverDocumentSnapshot>;
   getDocs(ref: unknown): Promise<DriverQuerySnapshot>;
+  getDocsPage(ref: unknown, options: DriverPageQuery): Promise<DriverQuerySnapshot>;
   setDoc(ref: unknown, data: Record<string, unknown>, options?: { merge?: boolean }): Promise<void>;
   writeBatch(firestore: unknown): DriverWriteBatch;
   runTransaction<T>(
@@ -62,6 +76,23 @@ export const firebaseBackupDriver: FirestoreBackupDriver = {
   id: (ref) => (ref as { id: string }).id,
   getDoc: async (ref) => (await firestoreGetDoc(ref as never)) as unknown as DriverDocumentSnapshot,
   getDocs: async (ref) => (await firestoreGetDocs(ref as never)) as unknown as DriverQuerySnapshot,
+  getDocsPage: async (ref, options) => {
+    const constraints: unknown[] = [
+      firestoreWhere("savedAt", ">=", options.savedAtFrom),
+      firestoreWhere("savedAt", "<=", options.savedAtTo),
+      firestoreOrderBy("savedAt", "desc"),
+      firestoreOrderBy(firestoreDocumentId(), "desc"),
+    ];
+    if (options.startAfter) {
+      constraints.push(firestoreStartAfter(options.startAfter as never));
+    }
+    constraints.push(firestoreLimit(options.limit));
+    const queryRef = (firestoreQuery as unknown as (
+      source: unknown,
+      ...queryConstraints: unknown[]
+    ) => unknown)(ref, ...constraints);
+    return (await firestoreGetDocs(queryRef as never)) as unknown as DriverQuerySnapshot;
+  },
   setDoc: async (ref, data, options) => {
     await firestoreSetDoc(ref as never, data as never, options as never);
   },

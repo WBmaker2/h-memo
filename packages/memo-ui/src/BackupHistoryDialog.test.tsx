@@ -92,4 +92,125 @@ describe("BackupHistoryDialog", () => {
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
+
+  it("shows ten newest backups per page and navigates the remaining history", async () => {
+    const user = userEvent.setup();
+    const items = Array.from({ length: 25 }, (_, index) => ({
+      ...item,
+      id: `snapshot-${index + 1}`,
+      kstDate: `2026-06-${String(30 - index).padStart(2, "0")}`,
+      previewText: `백업 ${index + 1}`,
+    }));
+
+    render(
+      <BackupHistoryDialog
+        isOpen
+        isBusy={false}
+        items={items}
+        onClose={vi.fn()}
+        onRestore={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("전체 25개 · 1 / 3 페이지")).toBeInTheDocument();
+    expect(screen.getByText("2026-06-30")).toBeInTheDocument();
+    expect(screen.getByText("2026-06-21")).toBeInTheDocument();
+    expect(screen.queryByText("2026-06-20")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "이전 페이지" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "다음 페이지" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "다음 페이지" }));
+
+    expect(screen.getByText("전체 25개 · 2 / 3 페이지")).toBeInTheDocument();
+    expect(screen.getByText("2026-06-20")).toBeInTheDocument();
+    expect(screen.getByText("2026-06-11")).toBeInTheDocument();
+    expect(screen.queryByText("2026-06-30")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "다음 페이지" }));
+
+    expect(screen.getByText("전체 25개 · 3 / 3 페이지")).toBeInTheDocument();
+    expect(screen.getByText("2026-06-10")).toBeInTheDocument();
+    expect(screen.getByText("2026-06-06")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다음 페이지" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "이전 페이지" })).toBeEnabled();
+  });
+
+  it("returns to the newest page when the dialog is reopened", async () => {
+    const user = userEvent.setup();
+    const items = Array.from({ length: 11 }, (_, index) => ({
+      ...item,
+      id: `snapshot-${index + 1}`,
+      kstDate: `2026-06-${String(30 - index).padStart(2, "0")}`,
+    }));
+    const { rerender } = render(
+      <BackupHistoryDialog
+        isOpen
+        isBusy={false}
+        items={items}
+        onClose={vi.fn()}
+        onRestore={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "다음 페이지" }));
+    expect(screen.getByText("전체 11개 · 2 / 2 페이지")).toBeInTheDocument();
+
+    rerender(
+      <BackupHistoryDialog
+        isOpen={false}
+        isBusy={false}
+        items={items}
+        onClose={vi.fn()}
+        onRestore={vi.fn()}
+      />
+    );
+    rerender(
+      <BackupHistoryDialog
+        isOpen
+        isBusy={false}
+        items={items}
+        onClose={vi.fn()}
+        onRestore={vi.fn()}
+      />
+    );
+
+    expect(await screen.findByText("전체 11개 · 1 / 2 페이지")).toBeInTheDocument();
+  });
+
+  it("delegates server-backed page navigation without slicing the current page", async () => {
+    const user = userEvent.setup();
+    const onPreviousPage = vi.fn();
+    const onNextPage = vi.fn();
+    const currentPageItems = Array.from({ length: 10 }, (_, index) => ({
+      ...item,
+      id: `server-${index + 11}`,
+      kstDate: `2026-06-${String(20 - index).padStart(2, "0")}`,
+    }));
+
+    render(
+      <BackupHistoryDialog
+        isOpen
+        isBusy={false}
+        items={currentPageItems}
+        pagination={{
+          pageNumber: 2,
+          hasPreviousPage: true,
+          hasNextPage: true,
+          onPreviousPage,
+          onNextPage,
+        }}
+        onClose={vi.fn()}
+        onRestore={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("2페이지 · 최대 10개씩 표시")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /백업 복원/ })).toHaveLength(10);
+
+    await user.click(screen.getByRole("button", { name: "이전 페이지" }));
+    await user.click(screen.getByRole("button", { name: "다음 페이지" }));
+
+    expect(onPreviousPage).toHaveBeenCalledOnce();
+    expect(onNextPage).toHaveBeenCalledOnce();
+  });
 });

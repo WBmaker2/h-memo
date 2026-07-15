@@ -49,6 +49,22 @@ export type BackupSnapshotSummary = {
   legacyUndated: boolean;
 };
 
+export type BackupSnapshotPageCursor =
+  | { kind: "firestore"; snapshot: unknown }
+  | { kind: "offset"; offset: number };
+
+export type BackupSnapshotPageRequest = {
+  limit: number;
+  cursor: BackupSnapshotPageCursor | null;
+  savedAtFrom: string;
+  savedAtTo: string;
+};
+
+export type BackupSnapshotSummaryPage = {
+  summaries: BackupSnapshotSummary[];
+  nextCursor: BackupSnapshotPageCursor | null;
+};
+
 export type BackupCleanupCandidate = {
   id: string;
   schemaVersion: BackupSchemaVersion;
@@ -60,6 +76,10 @@ export type BackupCleanupCandidate = {
 export interface BackupGateway {
   saveBackup(userId: string, payload: MemoBackupPayload): Promise<BackupSaveResult>;
   listBackupSummaries(userId: string): Promise<BackupSnapshotSummary[]>;
+  listBackupSummaryPage?(
+    userId: string,
+    request: BackupSnapshotPageRequest,
+  ): Promise<BackupSnapshotSummaryPage>;
   loadBackup(userId: string, snapshotId: string): Promise<unknown | null>;
   loadCurrentMemos(userId: string): Promise<StoredCurrentMemo[]>;
   loadDeletedMemoIds(userId: string): Promise<string[]>;

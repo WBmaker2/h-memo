@@ -79,6 +79,7 @@ export class FakeFirestoreDriver {
   readonly transactionReadCounts: number[] = [];
   readonly transactionWriteCounts: number[] = [];
   readonly readCollectionPaths: string[] = [];
+  readonly pageReadDocumentCounts: number[] = [];
   private readonly versions = new Map<string, number>();
   private nextDocument = 1;
   private serverClockMs = Date.parse("2026-05-13T09:00:00.000Z");
@@ -128,6 +129,43 @@ export class FakeFirestoreDriver {
       .filter(([path]) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([path, data]) => this.snapshot(path, data));
+    return { docs, empty: docs.length === 0 };
+  }
+
+  async getDocsPage(
+    ref: DriverRef,
+    options: {
+      limit: number;
+      savedAtFrom: Date;
+      savedAtTo: Date;
+      startAfter?: DriverSnapshot;
+    },
+  ) {
+    this.readCollectionPaths.push(ref.path);
+    const prefix = `${ref.path}/`;
+    const from = options.savedAtFrom.toISOString();
+    const to = options.savedAtTo.toISOString();
+    const cursorSavedAt = options.startAfter
+      ? this.snapshotSavedAt(options.startAfter)
+      : null;
+    const docs = [...this.docs.entries()]
+      .filter(([path]) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
+      .map(([path, data]) => this.snapshot(path, data))
+      .filter((snapshot) => {
+        const savedAt = this.snapshotSavedAt(snapshot);
+        if (savedAt === null || savedAt < from || savedAt > to) return false;
+        if (!options.startAfter || cursorSavedAt === null) return true;
+        return (
+          savedAt < cursorSavedAt ||
+          (savedAt === cursorSavedAt && snapshot.id < options.startAfter.id)
+        );
+      })
+      .sort((left, right) => {
+        const savedAtOrder = this.snapshotSavedAt(right)!.localeCompare(this.snapshotSavedAt(left)!);
+        return savedAtOrder || right.id.localeCompare(left.id);
+      })
+      .slice(0, options.limit);
+    this.pageReadDocumentCounts.push(docs.length);
     return { docs, empty: docs.length === 0 };
   }
 
@@ -261,6 +299,18 @@ export class FakeFirestoreDriver {
       exists: () => data !== undefined,
       data: () => cloneValue(data ?? {}),
     };
+  }
+
+  private snapshotSavedAt(snapshot: DriverSnapshot): string | null {
+    const savedAt = snapshot.data().savedAt;
+    if (typeof savedAt === "string") {
+      const parsed = new Date(savedAt);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+    if (savedAt instanceof FakeTimestamp) {
+      return savedAt.toDate().toISOString();
+    }
+    return null;
   }
 
   private apply(operations: DriverOperation[]) {

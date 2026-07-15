@@ -728,3 +728,25 @@ body {
   color: #64748b;
   font-size: 12px;
 }
+
+.backup-history-list {
+  max-height: min(420px, calc(100vh - 250px));
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.backup-history-pagination {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid #dbe3ef;
+}
+
+.backup-history-pagination__status {
+  min-width: 0;
+  color: #475569;
+  font-size: 12px;
+  text-align: center;
+}

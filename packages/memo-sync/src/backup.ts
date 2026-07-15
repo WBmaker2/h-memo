@@ -6,11 +6,14 @@ import {
 import { validateLegacyFirestoreV1Payload } from "./legacyBackupPayload";
 import { isRecord, normalizeFirestoreTimestamp } from "./firestoreBackupShared";
 import { selectDailyBackupSummaries } from "./backupRetention";
+import { getKstRetentionStartInstant } from "./backupKstDate";
 import type {
   BackedUpMemo,
   BackedUpSnapshot,
   BackupSaveResult,
   BackupGateway,
+  BackupSnapshotPageCursor,
+  BackupSnapshotSummaryPage,
   MemoBackupPayload,
   StoredBackupSnapshot,
 } from "./backupTypes";
@@ -36,6 +39,9 @@ export type {
 } from "./backupTypes";
 export type { FirestoreBackupDriver } from "./firestoreBackupDriver";
 export type { BackupSnapshotSummary } from "./backupTypes";
+
+const DEFAULT_BACKUP_HISTORY_PAGE_SIZE = 10;
+const MAX_BACKUP_HISTORY_PAGE_SIZE = 50;
 
 function isIncompleteSchemaV2Snapshot(value: unknown) {
   return isRecord(value) && value.schemaVersion === 2 && value.state !== "complete";
@@ -68,6 +74,49 @@ export async function listBackupSnapshotSummaries(
   now = new Date().toISOString()
 ) {
   return selectDailyBackupSummaries(await gateway.listBackupSummaries(userId), now);
+}
+
+export async function listBackupSnapshotSummaryPage(
+  gateway: BackupGateway,
+  userId: string,
+  options: {
+    limit?: number;
+    cursor?: BackupSnapshotPageCursor | null;
+    now?: string;
+  } = {},
+): Promise<BackupSnapshotSummaryPage> {
+  const limit = Math.min(
+    MAX_BACKUP_HISTORY_PAGE_SIZE,
+    Math.max(1, Math.trunc(options.limit ?? DEFAULT_BACKUP_HISTORY_PAGE_SIZE)),
+  );
+  const cursor = options.cursor ?? null;
+  const now = options.now ?? new Date().toISOString();
+
+  if (cursor?.kind !== "offset" && gateway.listBackupSummaryPage) {
+    const page = await gateway.listBackupSummaryPage(userId, {
+      limit,
+      cursor,
+      savedAtFrom: getKstRetentionStartInstant(now),
+      savedAtTo: new Date(now).toISOString(),
+    });
+    if (page.summaries.length > 0 || page.nextCursor !== null || cursor !== null) {
+      return {
+        summaries: selectDailyBackupSummaries(page.summaries, now),
+        nextCursor: page.nextCursor,
+      };
+    }
+  }
+
+  const summaries = await listBackupSnapshotSummaries(gateway, userId, now);
+  const offset = cursor?.kind === "offset" ? cursor.offset : 0;
+  const nextOffset = offset + limit;
+  return {
+    summaries: summaries.slice(offset, nextOffset),
+    nextCursor:
+      nextOffset < summaries.length
+        ? { kind: "offset", offset: nextOffset }
+        : null,
+  };
 }
 
 export async function loadBackupSnapshot(

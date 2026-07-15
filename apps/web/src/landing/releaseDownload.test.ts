@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DOWNLOAD_MANIFEST_PATH,
+  resolveLatestWindowsRelease,
   resolveWindowsDownloadUrl,
   resolveWindowsDownloadUrls,
 } from "./releaseDownload";
@@ -287,5 +288,85 @@ describe("resolveWindowsDownloadUrls", () => {
         source: "fallback",
       },
     });
+  });
+});
+
+describe("resolveLatestWindowsRelease", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns the latest GitHub release version with both Windows installers", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      makeResponse({
+        body: {
+          tag_name: "v1.0.1",
+          assets: [
+            {
+              name: "H.Memo_1.0.1_x64-setup.exe",
+              browser_download_url: "https://github.com/example/H.Memo_1.0.1_x64-setup.exe",
+            },
+            {
+              name: "H.Memo_1.0.1_x64_en-US.msi",
+              browser_download_url: "https://github.com/example/H.Memo_1.0.1_x64_en-US.msi",
+            },
+          ],
+        },
+      }),
+    );
+
+    const result = await resolveLatestWindowsRelease(fetcher);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result.version).toBe("v1.0.1");
+    expect(result.installers.msi.url).toContain("H.Memo_1.0.1_x64_en-US.msi");
+    expect(result.installers.exe.url).toContain("H.Memo_1.0.1_x64-setup.exe");
+  });
+
+  it("omits an invalid release tag while preserving resolved installers", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      makeResponse({
+        body: {
+          tag_name: "latest release",
+          assets: [
+            {
+              name: "H.Memo_1.0.1_x64_en-US.msi",
+              browser_download_url: "https://github.com/example/H.Memo_1.0.1_x64_en-US.msi",
+            },
+            {
+              name: "H.Memo_1.0.1_x64-setup.exe",
+              browser_download_url: "https://github.com/example/H.Memo_1.0.1_x64-setup.exe",
+            },
+          ],
+        },
+      }),
+    );
+
+    const result = await resolveLatestWindowsRelease(fetcher);
+
+    expect(result.version).toBeNull();
+    expect(result.installers.msi.source).toBe("github-asset");
+    expect(result.installers.exe.source).toBe("github-asset");
+  });
+
+  it("uses manifest installers and no remote version when GitHub is unavailable", async () => {
+    const fetcher = vi.fn()
+      .mockRejectedValueOnce(new Error("network error"))
+      .mockResolvedValueOnce(
+        makeResponse({
+          body: {
+            windows: {
+              msiUrl: "https://github.com/example/manifest-msi.msi",
+              exeUrl: "https://github.com/example/manifest-exe.exe",
+            },
+          },
+        }),
+      );
+
+    const result = await resolveLatestWindowsRelease(fetcher);
+
+    expect(result.version).toBeNull();
+    expect(result.installers.msi.source).toBe("download-manifest");
+    expect(result.installers.exe.source).toBe("download-manifest");
   });
 });

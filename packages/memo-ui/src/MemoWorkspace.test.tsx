@@ -39,6 +39,13 @@ describe("MemoWorkspace", () => {
     expect(screen.getByText("KST 날짜 표시 안정화")).toBeInTheDocument();
     expect(screen.getByText("최종 호환성 보강")).toBeInTheDocument();
     expect(screen.getByText("KST 일별 백업 보존")).toBeInTheDocument();
+    expect(screen.getByText("백업 기록 서버 페이지 조회")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-15")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "서버 복원 기록을 최신순 10개씩 Firestore에서 조회하고, 다음 페이지는 커서로 이어 불러오며 이전 페이지는 캐시를 사용하도록 개선했습니다.",
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(
         "검증을 통과한 main 변경은 앱 패키지와 데스크톱 배포 버전을 patch 단위로 함께 올려 다음 릴리스를 준비하도록 개선했습니다.",

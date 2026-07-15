@@ -11,7 +11,7 @@ import {
   type BackupSnapshotSummary,
   deleteBackedUpMemo,
   listBackedUpMemos,
-  listBackupSnapshotSummaries,
+  listBackupSnapshotSummaryPage,
   loadBackupSnapshot,
   signInWithGoogle,
   signOutUser,
@@ -89,7 +89,7 @@ vi.mock("@h-memo/memo-sync", async () => {
     getFirebaseAuth: vi.fn(),
     backupMemos: vi.fn(),
     completeGoogleRedirectSignIn: vi.fn(),
-    listBackupSnapshotSummaries: vi.fn(),
+    listBackupSnapshotSummaryPage: vi.fn(),
     loadBackupSnapshot: vi.fn(),
     listBackedUpMemos: vi.fn(),
     deleteBackedUpMemo: vi.fn(),
@@ -245,7 +245,10 @@ beforeEach(() => {
   });
   vi.mocked(listBackedUpMemos).mockResolvedValue([]);
   vi.mocked(deleteBackedUpMemo).mockResolvedValue(1);
-  vi.mocked(listBackupSnapshotSummaries).mockResolvedValue([]);
+  vi.mocked(listBackupSnapshotSummaryPage).mockResolvedValue({
+    summaries: [],
+    nextCursor: null,
+  });
 });
 
 afterEach(() => {
@@ -1687,7 +1690,10 @@ describe("WebApp", () => {
       state: "complete",
       legacyUndated: false,
     };
-    vi.mocked(listBackupSnapshotSummaries).mockResolvedValue([summary]);
+    vi.mocked(listBackupSnapshotSummaryPage).mockResolvedValue({
+      summaries: [summary],
+      nextCursor: null,
+    });
     vi.mocked(loadBackupSnapshot).mockResolvedValue(restoredPayload);
 
     installLocalStorageStub({
@@ -1767,7 +1773,7 @@ describe("WebApp", () => {
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
 
     const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
-    expect(listBackupSnapshotSummaries).toHaveBeenCalledOnce();
+    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledOnce();
     expect(loadBackupSnapshot).not.toHaveBeenCalled();
     expect(within(dialog).getByText(/백업 시각: 2026\. 5\. 13\. 오후 7:05:00/)).toBeInTheDocument();
     expect(within(dialog).queryByText("2030-05-13T10:05:00.000Z")).not.toBeInTheDocument();

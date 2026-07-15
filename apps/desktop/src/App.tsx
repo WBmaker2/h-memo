@@ -85,14 +85,14 @@ import {
   getFirebaseAuth,
   subscribeAuthUser,
   hasFirebaseConfig,
-  listBackupSnapshotSummaries,
+  listBackupSnapshotSummaryPage,
   listBackedUpMemos,
   loadBackupSnapshot,
   signInWithGoogle,
   signOutUser,
   waitForSignedInUser,
   type BackedUpMemo,
-  type BackupSnapshotSummary,
+  type BackupSnapshotSummaryPage,
   type GoogleOAuthTokens,
   type HMemoUser,
 } from "@h-memo/memo-sync";
@@ -150,6 +150,7 @@ const MIN_EXPANDED_WINDOW_HEIGHT = 160;
 const RESTORE_SAFETY_POLL_INTERVAL_MS = 250;
 const DESKTOP_EVENT_TIMEOUT_MS = 1000;
 const APP_VERSION_LABEL = `v${desktopPackageJson.version}`;
+const BACKUP_HISTORY_PAGE_SIZE = 10;
 
 function isTauriRuntime() {
   return "__TAURI_INTERNALS__" in window;
@@ -289,11 +290,15 @@ export function App() {
   });
   const [backupHistoryDialog, setBackupHistoryDialog] = useState<{
     isOpen: boolean;
-    snapshots: BackupSnapshotSummary[];
+    pages: BackupSnapshotSummaryPage[];
+    pageIndex: number;
   }>({
     isOpen: false,
-    snapshots: [],
+    pages: [],
+    pageIndex: 0,
   });
+  const currentBackupHistoryPage =
+    backupHistoryDialog.pages[backupHistoryDialog.pageIndex] ?? null;
   const [isBusy, setIsBusy] = useState(false);
   const [isRestoreLocked, setIsRestoreLocked] = useState(false);
   const [isRestoreLockReady, setIsRestoreLockReady] = useState(!isTauri);
@@ -1810,18 +1815,21 @@ export function App() {
     setBackupStatus("백업 기록을 불러옵니다.");
     try {
       await waitForPendingPersists();
-      const snapshots = await listBackupSnapshotSummaries(services.gateway, user.uid);
+      const firstPage = await listBackupSnapshotSummaryPage(services.gateway, user.uid, {
+        limit: BACKUP_HISTORY_PAGE_SIZE,
+      });
 
-      if (snapshots.length === 0) {
+      if (firstPage.summaries.length === 0) {
         setBackupStatus("복원할 백업이 없습니다.");
         return;
       }
 
       setBackupHistoryDialog({
         isOpen: true,
-        snapshots,
+        pages: [firstPage],
+        pageIndex: 0,
       });
-      setBackupStatus(`백업 기록 ${snapshots.length}개를 불러왔습니다.`);
+      setBackupStatus(`최신 백업 기록 ${firstPage.summaries.length}개를 불러왔습니다.`);
     } catch (error) {
       setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
     } finally {
@@ -1831,6 +1839,49 @@ export function App() {
 
   const handleCloseBackupHistoryDialog = () => {
     setBackupHistoryDialog((previous) => ({ ...previous, isOpen: false }));
+  };
+
+  const handlePreviousBackupHistoryPage = () => {
+    setBackupHistoryDialog((previous) => ({
+      ...previous,
+      pageIndex: Math.max(0, previous.pageIndex - 1),
+    }));
+  };
+
+  const handleNextBackupHistoryPage = async () => {
+    if (isBusy) return;
+
+    const cachedPageIndex = backupHistoryDialog.pageIndex + 1;
+    if (cachedPageIndex < backupHistoryDialog.pages.length) {
+      setBackupHistoryDialog((previous) => ({
+        ...previous,
+        pageIndex: Math.min(previous.pageIndex + 1, previous.pages.length - 1),
+      }));
+      return;
+    }
+
+    const cursor = currentBackupHistoryPage?.nextCursor ?? null;
+    const services = ensureSyncServices();
+    if (!cursor || !services || !user) return;
+
+    setIsBusy(true);
+    setBackupStatus("다음 백업 기록을 불러옵니다.");
+    try {
+      const nextPage = await listBackupSnapshotSummaryPage(services.gateway, user.uid, {
+        limit: BACKUP_HISTORY_PAGE_SIZE,
+        cursor,
+      });
+      setBackupHistoryDialog((previous) => ({
+        ...previous,
+        pages: [...previous.pages, nextPage],
+        pageIndex: previous.pageIndex + 1,
+      }));
+      setBackupStatus(`백업 기록 ${nextPage.summaries.length}개를 불러왔습니다.`);
+    } catch (error) {
+      setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
+    } finally {
+      setIsBusy(false);
+    }
   };
 
   const handleRestoreBackupSnapshot = async (snapshotId: string) => {
@@ -1853,7 +1904,7 @@ export function App() {
         gateway: services.gateway,
         userId: currentUser.uid,
         snapshotId,
-        summaries: backupHistoryDialog.snapshots,
+        summaries: backupHistoryDialog.pages.flatMap((page) => page.summaries),
         confirm: (message) => window.confirm(message),
         loadSnapshot: loadBackupSnapshot,
         restore: (payload) =>
@@ -1876,7 +1927,7 @@ export function App() {
       if (selection.kind === "unavailable") {
         throw new Error("선택한 백업을 불러오지 못했습니다.");
       }
-      setBackupHistoryDialog({ isOpen: false, snapshots: [] });
+      setBackupHistoryDialog({ isOpen: false, pages: [], pageIndex: 0 });
       setBackupStatus(`복원 완료: ${selection.payload.memos.length}개 메모`);
     } catch (error) {
       setBackupStatus(`${RESTORE_FAILED_PREFIX} ${getErrorMessage(error)}`);
@@ -2333,7 +2384,14 @@ export function App() {
       <BackupHistoryDialog
         isOpen={backupHistoryDialog.isOpen}
         isBusy={isBusy || isRestoreLocked}
-        items={backupHistoryDialog.snapshots}
+        items={currentBackupHistoryPage?.summaries ?? []}
+        pagination={{
+          pageNumber: backupHistoryDialog.pageIndex + 1,
+          hasPreviousPage: backupHistoryDialog.pageIndex > 0,
+          hasNextPage: currentBackupHistoryPage?.nextCursor != null,
+          onPreviousPage: handlePreviousBackupHistoryPage,
+          onNextPage: handleNextBackupHistoryPage,
+        }}
         onClose={handleCloseBackupHistoryDialog}
         onRestore={handleRestoreBackupSnapshot}
       />

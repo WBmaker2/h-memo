@@ -55,6 +55,14 @@ export function getKstRetentionStartKey(
   return shiftKstDateKey(today, -(retentionDays - 1));
 }
 
+export function getKstRetentionStartInstant(
+  now: string | Date,
+  retentionDays = BACKUP_RETENTION_DAYS,
+): string {
+  const startKey = getKstRetentionStartKey(now, retentionDays);
+  return new Date(`${startKey}T00:00:00+09:00`).toISOString();
+}
+
 export function isKstDateInRetention(key: string, now: string | Date): boolean {
   const today = toKstDateKey(now);
   if (!today || !parseKstDateKey(key)) return false;

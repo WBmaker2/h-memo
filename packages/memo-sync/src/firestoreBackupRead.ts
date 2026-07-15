@@ -4,7 +4,12 @@ import {
   effectiveSchemaV2Time,
   parseBackupSnapshotSummary,
 } from "./backupSnapshotSummary";
-import type { BackupSnapshotSummary, StoredBackupSnapshot } from "./backupTypes";
+import type {
+  BackupSnapshotPageRequest,
+  BackupSnapshotSummary,
+  BackupSnapshotSummaryPage,
+  StoredBackupSnapshot,
+} from "./backupTypes";
 import type { DriverDocumentSnapshot } from "./firestoreBackupDriver";
 import {
   BACKUP_COLLECTIONS,
@@ -37,6 +42,39 @@ export async function listFirestoreBackupSummaries(
     .filter((snapshot) => snapshot.data().userId === userId)
     .map((snapshot) => parseBackupSnapshotSummary(snapshot.id, snapshot.data()))
     .filter((summary): summary is BackupSnapshotSummary => summary !== null);
+}
+
+export async function listFirestoreBackupSummaryPage(
+  context: FirestoreBackupContext,
+  userId: string,
+  request: BackupSnapshotPageRequest,
+): Promise<BackupSnapshotSummaryPage> {
+  const cursorSnapshot = request.cursor?.kind === "firestore"
+    ? request.cursor.snapshot as DriverDocumentSnapshot
+    : undefined;
+  const querySnapshot = await context.driver.getDocsPage(
+    snapshotCollection(context, userId),
+    {
+      limit: request.limit + 1,
+      savedAtFrom: new Date(request.savedAtFrom),
+      savedAtTo: new Date(request.savedAtTo),
+      startAfter: cursorSnapshot,
+    },
+  );
+  const pageDocuments = querySnapshot.docs.slice(0, request.limit);
+  const summaries = pageDocuments
+    .filter((snapshot) => snapshot.data().userId === userId)
+    .map((snapshot) => parseBackupSnapshotSummary(snapshot.id, snapshot.data()))
+    .filter((summary): summary is BackupSnapshotSummary => summary !== null);
+  const lastDocument = pageDocuments.at(-1);
+
+  return {
+    summaries,
+    nextCursor:
+      querySnapshot.docs.length > request.limit && lastDocument
+        ? { kind: "firestore", snapshot: lastDocument }
+        : null,
+  };
 }
 
 export async function loadFirestoreBackup(

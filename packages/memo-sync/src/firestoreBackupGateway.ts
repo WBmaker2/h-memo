@@ -1,8 +1,14 @@
 import type { Firestore } from "firebase/firestore";
-import type { MemoBackupPayload, BackupGateway, StoredCurrentMemo } from "./backupTypes";
+import type {
+  MemoBackupPayload,
+  BackupGateway,
+  BackupSnapshotPageRequest,
+  StoredCurrentMemo,
+} from "./backupTypes";
 import { firebaseBackupDriver, type FirestoreBackupDriver } from "./firestoreBackupDriver";
 import {
   listFirestoreBackupSummaries,
+  listFirestoreBackupSummaryPage,
   loadFirestoreBackup,
 } from "./firestoreBackupRead";
 import { saveFirestoreBackup } from "./firestoreBackupWrite";
@@ -29,6 +35,10 @@ export class FirestoreBackupGateway implements BackupGateway {
 
   listBackupSummaries(userId: string) {
     return listFirestoreBackupSummaries(this.context, userId);
+  }
+
+  listBackupSummaryPage(userId: string, request: BackupSnapshotPageRequest) {
+    return listFirestoreBackupSummaryPage(this.context, userId, request);
   }
 
   loadBackup(userId: string, snapshotId: string) {
