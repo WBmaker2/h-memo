@@ -273,26 +273,23 @@ describe("WebApp", () => {
     });
   });
 
-  it("explains that Web Locks support is required before creating a memo", async () => {
+  it("creates a memo without Web Locks support", async () => {
     const user = userEvent.setup();
     Reflect.deleteProperty(navigator, "locks");
     render(<WebApp />);
 
     await createMemoFromAppMenu(user);
 
-    await waitFor(() => {
-      expect(screen.getByRole("status")).toHaveTextContent("Web Locks");
-      expect(screen.getByRole("status")).toHaveTextContent("최신 브라우저");
-    });
-    expect(window.localStorage.getItem(LOCAL_MEMO_KEY)).toBeNull();
-    expect(screen.queryByRole("textbox", { name: "메모 내용" })).not.toBeInTheDocument();
+    const editor = await screen.findByRole("textbox", { name: "메모 내용" });
+    expect(editor).not.toHaveAttribute("readonly");
+    expect(window.localStorage.getItem(LOCAL_MEMO_KEY)).not.toBeNull();
   });
 
-  it("does not show an optimistic edit when Web Locks are unavailable", async () => {
+  it("persists edits without Web Locks support", async () => {
     const memo = createMemo({
       id: "unsupported-existing-edit",
       now: "2026-07-13T09:10:00.000Z",
-      plainText: "저장 가능한 것처럼 보이면 안 되는 메모",
+      plainText: "편집 전 메모",
     });
     installLocalStorageStub({
       initialEntries: [[LOCAL_MEMO_KEY, JSON.stringify([memo])]],
@@ -301,19 +298,17 @@ describe("WebApp", () => {
     render(<WebApp />);
 
     const editor = await screen.findByRole("textbox", { name: "메모 내용" });
-    fireEvent.change(editor, {
-      target: { value: "저장되지 않은 낙관적 편집" },
-    });
+    fireEvent.change(editor, { target: { value: "Web Locks 없이 저장한 메모" } });
 
-    expect(editor).toHaveValue(memo.plainText);
-    expect(editor).toHaveAttribute("readonly");
-    expect(screen.getByRole("status")).toHaveTextContent("Web Locks");
-    expect(
-      JSON.parse(window.localStorage.getItem(LOCAL_MEMO_KEY) ?? "[]")[0].plainText
-    ).toBe(memo.plainText);
+    await waitFor(() => {
+      expect(
+        JSON.parse(window.localStorage.getItem(LOCAL_MEMO_KEY) ?? "[]")[0].plainText
+      ).toBe("Web Locks 없이 저장한 메모");
+    });
+    expect(editor).not.toHaveAttribute("readonly");
   });
 
-  it("disables restore and server mutation controls when Web Locks are unavailable", async () => {
+  it("keeps restore and server controls available without Web Locks", async () => {
     const user = userEvent.setup();
     vi.mocked(getFirebaseClientEnv).mockReturnValue(VALID_FIREBASE_ENV);
     vi.mocked(subscribeAuthUser).mockImplementation((_auth, callback) => {
@@ -325,14 +320,11 @@ describe("WebApp", () => {
     render(<WebApp />);
     await user.click(screen.getByLabelText("앱 메뉴"));
 
-    expect(screen.getByRole("button", { name: "서버 메모 관리" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "서버 백업" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "서버 복원" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "JSON 복원" })).toBeDisabled();
-    expect(screen.getByLabelText("JSON 백업 파일 선택")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "JSON 백업" })).toBeEnabled();
-    expect(screen.getByRole("status")).toHaveTextContent("Web Locks");
-    expect(window.confirm).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "서버 메모 관리" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "서버 백업" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "JSON 복원" })).toBeEnabled();
+    expect(screen.getByLabelText("JSON 백업 파일 선택")).toBeEnabled();
   });
 
   it("exports TXT backup for edited memo", async () => {
@@ -1773,7 +1765,7 @@ describe("WebApp", () => {
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
 
     const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
-    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledOnce();
+    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(2);
     expect(loadBackupSnapshot).not.toHaveBeenCalled();
     expect(within(dialog).getByText(/백업 시각: 2026\. 5\. 13\. 오후 7:05:00/)).toBeInTheDocument();
     expect(within(dialog).queryByText("2030-05-13T10:05:00.000Z")).not.toBeInTheDocument();

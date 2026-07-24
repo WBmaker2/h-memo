@@ -193,6 +193,7 @@ describe("WebApp backup history failures", () => {
     }];
     const cursor = { kind: "firestore" as const, snapshot: { id: "cursor" } };
     vi.mocked(listBackupSnapshotSummaryPage)
+      .mockResolvedValueOnce({ summaries: [], nextCursor: null })
       .mockResolvedValueOnce({ summaries: firstPage, nextCursor: cursor })
       .mockResolvedValueOnce({ summaries: secondPage, nextCursor: null });
 
@@ -203,14 +204,14 @@ describe("WebApp backup history failures", () => {
     const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
     expect(within(dialog).getByText("2026-07-15")).toBeInTheDocument();
     expect(within(dialog).getByText("1페이지 · 최대 10개씩 표시")).toBeInTheDocument();
-    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(1);
+    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(2);
 
     await user.click(within(dialog).getByRole("button", { name: "다음 페이지" }));
     await waitFor(() => {
       expect(within(dialog).getByText("2026-07-05")).toBeInTheDocument();
       expect(within(dialog).getByText("2페이지 · 최대 10개씩 표시")).toBeInTheDocument();
     });
-    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(2);
+    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(3);
     expect(listBackupSnapshotSummaryPage).toHaveBeenLastCalledWith(
       expect.anything(),
       "user-1",
@@ -221,6 +222,6 @@ describe("WebApp backup history failures", () => {
     expect(within(dialog).getByText("2026-07-15")).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "다음 페이지" }));
     expect(within(dialog).getByText("2026-07-05")).toBeInTheDocument();
-    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(2);
+    expect(listBackupSnapshotSummaryPage).toHaveBeenCalledTimes(3);
   });
 });

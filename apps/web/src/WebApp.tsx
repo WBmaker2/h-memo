@@ -55,10 +55,14 @@ import {
   WEB_MEMO_STORAGE_KEY,
 } from "./adapters/localStorageMemoRepository";
 import {
-  WEB_LOCKS_REQUIRED_MESSAGE,
   WebMutationBarrier,
 } from "./adapters/webMutationBarrier";
 import { restoreWebBackupSelection } from "./webBackupHistory";
+import {
+  WEB_AUTO_BACKUP_IDLE_MS,
+  createWebMemoFingerprint,
+  hasWebBackupConflict,
+} from "./webAutoBackup";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
@@ -94,6 +98,8 @@ const NO_BACKUP_MESSAGE = "복원할 백업이 없습니다.";
 const SERVER_MEMO_INITIAL_STATUS = "서버 메모를 불러오지 않았습니다.";
 const RESTORE_SAFETY_CHANGED_EVENT = "h-memo:restore-safety-changed";
 const RESTORE_SAFETY_POLL_INTERVAL_MS = 250;
+const AUTO_BACKUP_CONFLICT_MESSAGE =
+  "다른 기기에서 더 최근 백업이 생성되어 자동 백업을 중단했습니다. 최신 서버 메모를 확인해 주세요.";
 
 type BackupMessage = string;
 type SyncServices = {
@@ -110,7 +116,11 @@ type WebPreviewUser = {
 
 function createRepository(mutationBarrier: WebMutationBarrier) {
   return new LocalStorageMemoRepository({
-    beforeWrite: () => mutationBarrier.assertMutationWriteAllowed(),
+    beforeWrite: () => {
+      if (mutationBarrier.isSupported()) {
+        mutationBarrier.assertMutationWriteAllowed();
+      }
+    },
   });
 }
 
@@ -223,6 +233,7 @@ export function WebApp() {
   const [serverMemoManagerOpen, setServerMemoManagerOpen] = useState(false);
   const [serverMemoItems, setServerMemoItems] = useState<BackedUpMemo[]>([]);
   const [serverMemoStatus, setServerMemoStatus] = useState(SERVER_MEMO_INITIAL_STATUS);
+  const [cloudChangeVersion, setCloudChangeVersion] = useState(0);
 
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
@@ -230,6 +241,12 @@ export function WebApp() {
   const restoreSnapshotInFlightRef = useRef(false);
   const syncServicesRef = useRef<SyncServices | null>(null);
   const jsonImportInputRef = useRef<HTMLInputElement | null>(null);
+  const autoBackupStateRef = useRef({
+    observedSnapshotId: null as string | null,
+    lastFingerprint: null as string | null,
+    initializedUserId: null as string | null,
+    inFlight: false,
+  });
 
   const buildFirebaseClientEnv = useMemo(() => getFirebaseClientEnv(), []);
   const hasBuildFirebaseConfigSet = useMemo(
@@ -387,11 +404,7 @@ export function WebApp() {
 
   useEffect(() => {
     setBackupStatus(
-      !supportsSafeMutations
-        ? WEB_LOCKS_REQUIRED_MESSAGE
-        : hasFirebaseConfigSet
-          ? BROWSER_BACKUP_READY_MESSAGE
-          : FIREBASE_UNAVAILABLE_MESSAGE
+      hasFirebaseConfigSet ? BROWSER_BACKUP_READY_MESSAGE : FIREBASE_UNAVAILABLE_MESSAGE
     );
     setServicesAvailableState(hasFirebaseConfigSet);
     void reloadMemos().catch((error) => {
@@ -554,16 +567,20 @@ export function WebApp() {
     if (restoreLockRef.current) {
       return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
     }
-    let expectedEpoch: number;
-    try {
-      mutationBarrier.assertSupported();
-      expectedEpoch = mutationBarrier.getObservedEpoch();
-    } catch (error) {
-      return Promise.reject(error);
+    let queued: Promise<T>;
+    if (supportsSafeMutations) {
+      let expectedEpoch: number;
+      try {
+        expectedEpoch = mutationBarrier.getObservedEpoch();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      queued = persistQueueRef.current.then(() =>
+        mutationBarrier.runMutation(expectedEpoch, operation)
+      );
+    } else {
+      queued = persistQueueRef.current.then(operation);
     }
-    const queued = persistQueueRef.current.then(() =>
-      mutationBarrier.runMutation(expectedEpoch, operation)
-    );
     persistQueueRef.current = queued
       .then(() => {
         persistErrorRef.current = null;
@@ -604,7 +621,7 @@ export function WebApp() {
     setIsRestoreLocked(true);
     try {
       await waitForPendingPersists();
-      return await mutationBarrier.runRestore(async () => {
+      const restoreOperation = async () => {
         let result!: T;
         let operationError: unknown;
         try {
@@ -638,7 +655,10 @@ export function WebApp() {
           );
         }
         return result;
-      });
+      };
+      return supportsSafeMutations
+        ? await mutationBarrier.runRestore(restoreOperation)
+        : await restoreOperation();
     } finally {
       if (restoreLockRef.current === token) {
         restoreLockRef.current = null;
@@ -721,6 +741,92 @@ export function WebApp() {
     broadcastRestoreSafetyChanged();
   };
 
+  useEffect(() => {
+    if (!user || !isServerReady) {
+      return;
+    }
+    const services = ensureSyncServices();
+    if (!services || autoBackupStateRef.current.initializedUserId === user.uid) {
+      return;
+    }
+
+    let cancelled = false;
+    autoBackupStateRef.current.initializedUserId = user.uid;
+    void (async () => {
+      try {
+        const page = await listBackupSnapshotSummaryPage(services.gateway, user.uid, { limit: 1 });
+        if (cancelled) return;
+        const latest = page.summaries[0] ?? null;
+        autoBackupStateRef.current.observedSnapshotId = latest?.id ?? null;
+        const localMemos = await repository.listMemos();
+        const hasActiveLocalMemo = localMemos.some((memo) => memo.deletedAt === null);
+        if (!latest || hasActiveLocalMemo) {
+          return;
+        }
+        const payload = await loadBackupSnapshot(services.gateway, user.uid, latest.id);
+        if (cancelled || !payload) return;
+        await runWithWebRestoreLock(() =>
+          replaceMemosWithSafety("server", user.uid, payload.memos)
+        );
+        autoBackupStateRef.current.lastFingerprint = createWebMemoFingerprint(payload.memos);
+        setBackupStatus(`최신 서버 메모 ${payload.memos.length}개를 불러왔습니다.`);
+      } catch (error) {
+        if (!cancelled) {
+          autoBackupStateRef.current.initializedUserId = null;
+          setBackupStatus(`최신 서버 메모 확인 실패: ${getErrorMessage(error)}`);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ensureSyncServices, isServerReady, repository, user]);
+
+  useEffect(() => {
+    if (cloudChangeVersion === 0 || !user || !isServerReady) {
+      return;
+    }
+    const userId = user.uid;
+    const timerId = window.setTimeout(() => {
+      if (autoBackupStateRef.current.inFlight || restoreLockRef.current) return;
+      const services = ensureSyncServices();
+      if (!services) return;
+      autoBackupStateRef.current.inFlight = true;
+      void (async () => {
+        try {
+          await waitForPendingPersists();
+          const persistedMemos = await repository.listMemos();
+          const fingerprint = createWebMemoFingerprint(persistedMemos);
+          if (fingerprint === autoBackupStateRef.current.lastFingerprint) return;
+          const page = await listBackupSnapshotSummaryPage(services.gateway, userId, { limit: 1 });
+          const latestSnapshotId = page.summaries[0]?.id ?? null;
+          if (hasWebBackupConflict(
+            autoBackupStateRef.current.observedSnapshotId,
+            latestSnapshotId
+          )) {
+            setBackupStatus(AUTO_BACKUP_CONFLICT_MESSAGE);
+            return;
+          }
+          setBackupStatus("수정 내용을 서버에 자동 백업합니다.");
+          const result = await backupMemos(services.gateway, userId, persistedMemos);
+          autoBackupStateRef.current.observedSnapshotId = result.snapshotId;
+          autoBackupStateRef.current.lastFingerprint = fingerprint;
+          setBackupStatus(`자동 백업 완료: ${formatBackupSaveStatus(result)}`);
+        } catch (error) {
+          setBackupStatus(`자동 백업 실패: ${getErrorMessage(error)}`);
+        } finally {
+          autoBackupStateRef.current.inFlight = false;
+        }
+      })();
+    }, WEB_AUTO_BACKUP_IDLE_MS);
+    return () => window.clearTimeout(timerId);
+  }, [cloudChangeVersion, ensureSyncServices, isServerReady, repository, user]);
+
+  const markCloudChange = () => {
+    setCloudChangeVersion((version) => version + 1);
+  };
+
   const handleCreateMemo = async () => {
     if (restoreLockRef.current) {
       return;
@@ -734,6 +840,7 @@ export function WebApp() {
 
     try {
       await persistMemo(nextMemo);
+      markCloudChange();
     } catch (error) {
       setBackupStatus(`메모 저장 실패: ${getErrorMessage(error)}`);
     }
@@ -743,16 +850,14 @@ export function WebApp() {
     if (restoreLockRef.current) {
       return;
     }
-    try {
-      mutationBarrier.assertSupported();
-    } catch (error) {
-      setBackupStatus(`메모 저장 실패: ${getErrorMessage(error)}`);
-      return;
-    }
     upsertMemo(nextMemo);
-    void persistMemo(nextMemo, { skipStateUpdate: true }).catch((error) => {
-      setBackupStatus(`메모 저장 실패: ${getErrorMessage(error)}`);
-    });
+    void persistMemo(nextMemo, { skipStateUpdate: true })
+      .then(() => {
+        markCloudChange();
+      })
+      .catch((error) => {
+        setBackupStatus(`메모 저장 실패: ${getErrorMessage(error)}`);
+      });
   };
 
   const handleDeleteMemo = async (memoId: string) => {
@@ -768,6 +873,7 @@ export function WebApp() {
       const deletedAt = new Date().toISOString();
       const deleted = await enqueuePersist(() => repository.softDeleteMemo(memoId, deletedAt));
       upsertMemo(deleted);
+      markCloudChange();
     } catch (error) {
       setBackupStatus(`메모 삭제 실패: ${getErrorMessage(error)}`);
     }
@@ -1116,6 +1222,9 @@ export function WebApp() {
       const result = await runWithWebRestoreLock(() =>
         backupCurrentMemos(services, user.uid)
       );
+      const persistedMemos = await repository.listMemos();
+      autoBackupStateRef.current.observedSnapshotId = result.snapshotId;
+      autoBackupStateRef.current.lastFingerprint = createWebMemoFingerprint(persistedMemos);
       setBackupStatus(formatBackupSaveStatus(result));
     } catch (error) {
       setBackupStatus(`${BACKUP_FAILED_PREFIX} ${getErrorMessage(error)}`);
@@ -1396,15 +1505,11 @@ export function WebApp() {
   };
 
   const isBackupDisabled =
-    !supportsSafeMutations || !isServerReady || user === null || isBusy || isRestoreLocked;
+    !isServerReady || user === null || isBusy || isRestoreLocked;
   const isRestoreDisabled =
-    !supportsSafeMutations || !isServerReady || user === null || isBusy || isRestoreLocked;
+    !isServerReady || user === null || isBusy || isRestoreLocked;
   const isAuthDisabled = !isServerReady || isBusy || isRestoreLocked;
-  const visibleBackupStatus = supportsSafeMutations
-    ? backupStatus
-    : backupStatus === WEB_LOCKS_REQUIRED_MESSAGE
-      ? backupStatus
-      : `${WEB_LOCKS_REQUIRED_MESSAGE} ${backupStatus}`;
+  const visibleBackupStatus = backupStatus;
 
   return (
     <>
@@ -1418,11 +1523,11 @@ export function WebApp() {
         onMemoChange={handleMemoChange}
         onDeleteMemo={handleDeleteMemo}
         onCloseMemo={handleCloseMemo}
-        isMemoEditingDisabled={isRestoreLocked || !supportsSafeMutations}
+        isMemoEditingDisabled={isRestoreLocked}
         actions={
           <button
             type="button"
-            disabled={!supportsSafeMutations || isBusy || isRestoreLocked}
+            disabled={isBusy || isRestoreLocked}
             onClick={handleOpenServerMemoManager}
           >
             서버 메모 관리
@@ -1445,7 +1550,7 @@ export function WebApp() {
           onClearFirebaseConfig: allowFirebaseConfigOverride ? handleClearFirebaseConfig : undefined,
           isServerAvailable: isServerReady,
           isServerBusy: isBusy || isRestoreLocked,
-          isLocalRestoreDisabled: !supportsSafeMutations,
+          isLocalRestoreDisabled: false,
           isBackupDisabled,
           isRestoreDisabled,
           canUndoRestore: restoreSafetyPoint !== null,
@@ -1461,7 +1566,7 @@ export function WebApp() {
         className="visually-hidden"
         type="file"
         accept="application/json,.json"
-        disabled={!supportsSafeMutations}
+        disabled={isBusy || isRestoreLocked}
         onChange={handleJsonImportFileChange}
       />
       <ServerMemoManagerDialog
