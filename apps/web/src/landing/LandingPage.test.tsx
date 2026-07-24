@@ -59,7 +59,7 @@ const RESOLVED_RELEASE_STATE = {
 
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
-const WEB_APP_URL = "#/app";
+const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/#/app";
 const LATEST_RELEASE_NOTICE = new RegExp(
   `v${webPackageJson.version.replaceAll(".", "\\.")} 최신 버전 설치 파일`
 );

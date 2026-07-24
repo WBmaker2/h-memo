@@ -10,7 +10,7 @@ const LOADING_DOWNLOAD_LABEL = "다운로드 파일을 확인하는 중입니다
 const FALLBACK_RELEASE_VERSION = `v${webPackageJson.version}`;
 const MACOS_DOWNLOAD_URL =
   "https://github.com/WBmaker2/h-memo/releases/download/v0.1.2/H.Memo_0.1.2_aarch64.dmg";
-const WEB_APP_URL = "#/app";
+const WEB_APP_URL = "https://wbmaker2.github.io/h-memo/#/app";
 type ReleaseHistoryEntry = {
   date?: string;
   version?: string;
