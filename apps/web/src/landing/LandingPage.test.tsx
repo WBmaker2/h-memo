@@ -166,6 +166,8 @@ describe("LandingPage", () => {
     expect(screen.getByText("v1.0.1")).toBeInTheDocument();
     expect(screen.getByText("KST 백업 및 릴리스 자동화")).toBeInTheDocument();
     expect(screen.getByText("백업 기록 서버 페이지 조회")).toBeInTheDocument();
+    expect(screen.getByText("데스크톱 Google 재로그인 복구")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-27")).toBeInTheDocument();
     expect(screen.getByText("2026-07-15")).toBeInTheDocument();
     expect(screen.getByText("v1.0.0")).toBeInTheDocument();
     expect(screen.getByText("백업 기록 선택 복원")).toBeInTheDocument();

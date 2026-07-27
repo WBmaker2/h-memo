@@ -16,7 +16,10 @@ describe("Windows Tauri workflow", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("release_tag:");
     expect(workflow).toContain("VITE_GOOGLE_OAUTH_CLIENT_ID:");
-    expect(workflow).not.toContain("GOOGLE_OAUTH_CLIENT_SECRET:");
+    expect(workflow).toContain(
+      "GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET || '' }}"
+    );
+    expect(workflow).toContain("check:firebase-env -- --require-desktop-oauth");
     expect(workflow).toContain("Ensure Windows Tauri CLI native binding");
     expect(workflow).toContain("@tauri-apps/cli-win32-x64-msvc@$tauriCliVersion");
     expect(workflow).toContain("--generate-notes");

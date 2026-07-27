@@ -44,6 +44,12 @@ const UPDATE_HISTORY = [
     detail:
       "서버 복원 기록을 최신순 10개씩 Firestore에서 조회하고, 다음 페이지는 커서로 이어 불러오며 이전 페이지는 캐시를 사용하도록 개선했습니다.",
   },
+  {
+    date: "2026-07-27",
+    title: "데스크톱 Google 재로그인 복구",
+    detail:
+      "Windows와 macOS에서 Google 계정 재로그인 시 필요한 OAuth 토큰 교환 설정을 복원하고, 누락된 릴리스는 빌드 전에 감지하도록 개선했습니다.",
+  },
 ] as const;
 
 type MemoWorkspaceShellProps = {

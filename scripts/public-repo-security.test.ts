@@ -45,7 +45,7 @@ describe("Public repo security guardrails", () => {
     ).toBe(true);
   });
 
-  it("keeps Google OAuth client secret out of workflow env wiring", () => {
+  it("keeps Google OAuth client secret values out of source and uses Actions secrets", () => {
     const workflowDir = path.resolve(".github", "workflows");
     const workflows = readdirSync(workflowDir)
       .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
@@ -53,7 +53,18 @@ describe("Public repo security guardrails", () => {
 
     workflows.forEach((workflowPath) => {
       const workflow = readFileSync(workflowPath, "utf8");
-      expect(workflow).not.toMatch(/\bGOOGLE_OAUTH_CLIENT_SECRET\b/);
+      const secretAssignments = workflow
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("GOOGLE_OAUTH_CLIENT_SECRET:"));
+      const expectedAssignment =
+        "GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET || '' }}";
+
+      expect(secretAssignments.every((line) => line === expectedAssignment)).toBe(true);
+      expect(workflow).not.toContain("VITE_GOOGLE_OAUTH_CLIENT_SECRET");
+      if (workflowPath.endsWith("windows-tauri.yml") || workflowPath.endsWith("macos-tauri.yml")) {
+        expect(secretAssignments.length).toBeGreaterThan(0);
+      }
     });
   });
 });

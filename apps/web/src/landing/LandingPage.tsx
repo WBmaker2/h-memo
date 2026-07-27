@@ -20,6 +20,13 @@ type ReleaseHistoryEntry = {
 
 const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
   {
+    date: "2026-07-27",
+    title: "데스크톱 Google 재로그인 복구",
+    items: [
+      "Windows와 macOS에서 Google 계정 재로그인 시 필요한 OAuth 토큰 교환 설정을 복원하고, 누락된 릴리스는 빌드 전에 감지하도록 개선했습니다.",
+    ],
+  },
+  {
     date: "2026-07-15",
     title: "백업 기록 서버 페이지 조회",
     items: [

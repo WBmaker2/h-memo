@@ -25,6 +25,8 @@ use tauri::{
 use tauri_plugin_dialog::DialogExt;
 use url::{form_urlencoded, Url};
 
+mod google_oauth_secret;
+
 const WINDOW_LABEL: &str = "main";
 const OPEN_ALL_MEMOS_LABEL: &str = "open_all_memos";
 const NEW_MEMO_LABEL: &str = "new_memo";
@@ -1203,6 +1205,9 @@ async fn start_google_desktop_oauth(client_id: String) -> Result<GoogleOAuthToke
 }
 
 fn run_google_desktop_oauth(client_id: String) -> AnyhowResult<GoogleOAuthTokens> {
+  let client_secret = google_oauth_secret::configured_client_secret().context(
+    "Google OAuth Client Secret 설정이 누락되었습니다. 최신 H Memo 설치 파일을 사용해 주세요.",
+  )?;
   let listener = TcpListener::bind("127.0.0.1:0").context("failed to start loopback listener")?;
   listener
     .set_nonblocking(true)
@@ -1250,7 +1255,13 @@ fn run_google_desktop_oauth(client_id: String) -> AnyhowResult<GoogleOAuthTokens
     .context("Google 로그인 응답에 인증 코드가 없습니다.")?;
 
   respond_to_browser(&mut stream, true)?;
-  exchange_google_code(&client_id, &redirect_uri, &code, &code_verifier)
+  exchange_google_code(
+    &client_id,
+    &redirect_uri,
+    &code,
+    &code_verifier,
+    &client_secret,
+  )
 }
 
 fn random_urlsafe(byte_count: usize) -> String {
@@ -1377,9 +1388,16 @@ fn exchange_google_code(
   redirect_uri: &str,
   code: &str,
   code_verifier: &str,
+  client_secret: &str,
 ) -> AnyhowResult<GoogleOAuthTokens> {
   let client = reqwest::blocking::Client::new();
-  let token_form = build_google_token_form(client_id, redirect_uri, code, code_verifier);
+  let token_form = build_google_token_form(
+    client_id,
+    redirect_uri,
+    code,
+    code_verifier,
+    client_secret,
+  );
   let response = client
     .post(GOOGLE_OAUTH_TOKEN_URL)
     .form(&token_form)
@@ -1416,9 +1434,11 @@ fn build_google_token_form<'a>(
   redirect_uri: &'a str,
   code: &'a str,
   code_verifier: &'a str,
+  client_secret: &'a str,
 ) -> Vec<(&'static str, &'a str)> {
   vec![
     ("client_id", client_id),
+    ("client_secret", client_secret),
     ("redirect_uri", redirect_uri),
     ("grant_type", "authorization_code"),
     ("code", code),
@@ -3114,16 +3134,17 @@ mod tests {
   }
 
   #[test]
-  fn builds_token_form_without_client_secret() {
+  fn builds_token_form_with_client_secret_and_pkce() {
     let form = build_google_token_form(
       "client-id",
       "http://127.0.0.1:9004",
       "auth-code",
       "code-verifier",
+      "client-secret",
     );
 
-    assert_eq!(form.len(), 5);
-    assert!(!form.iter().any(|(key, _)| *key == "client_secret"));
+    assert_eq!(form.len(), 6);
+    assert!(form.contains(&("client_secret", "client-secret")));
     assert!(form.contains(&("client_id", "client-id")));
     assert!(form.contains(&("redirect_uri", "http://127.0.0.1:9004")));
     assert!(form.contains(&("grant_type", "authorization_code")));

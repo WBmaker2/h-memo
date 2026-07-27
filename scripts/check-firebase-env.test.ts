@@ -120,6 +120,27 @@ describe("check-firebase-env", () => {
     expect(result.desktopOAuth.missing).toEqual(["GOOGLE_OAUTH_CLIENT_SECRET"]);
   });
 
+  it("accepts complete desktop OAuth credentials without exposing values", () => {
+    const result = checkFirebaseEnv(
+      {
+        VITE_FIREBASE_API_KEY: "api-key",
+        VITE_FIREBASE_AUTH_DOMAIN: "project.firebaseapp.com",
+        VITE_FIREBASE_PROJECT_ID: "project-id",
+        VITE_FIREBASE_APP_ID: "app-id",
+        VITE_GOOGLE_OAUTH_CLIENT_ID: "desktop-client-id",
+        GOOGLE_OAUTH_CLIENT_SECRET: "desktop-client-secret",
+      },
+      { requireDesktopOAuth: true }
+    );
+
+    expect(result.desktopOAuth.present).toEqual([
+      "VITE_GOOGLE_OAUTH_CLIENT_ID",
+      "GOOGLE_OAUTH_CLIENT_SECRET",
+    ]);
+    expect(result.desktopOAuth.missing).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain("desktop-client-secret");
+  });
+
   it("loads built-in Firebase defaults before env files and process env", () => {
     const fixture = createTempEnvDir();
     try {

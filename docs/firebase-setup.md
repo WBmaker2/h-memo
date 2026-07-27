@@ -28,6 +28,7 @@
 - `VITE_FIREBASE_MESSAGING_SENDER_ID` (선택)
 - `VITE_FIREBASE_MEASUREMENT_ID` (선택)
 - `VITE_GOOGLE_OAUTH_CLIENT_ID` (Windows/macOS/Linux 데스크톱 시스템 브라우저 로그인용, 데스크톱 운영 빌드 필수)
+- `GOOGLE_OAUTH_CLIENT_SECRET` (Desktop OAuth 토큰 교환용, GitHub Actions secret으로만 관리)
 
 예시 파일: [`.env.example`](../.env.example)
 
@@ -41,8 +42,8 @@ npm run check:firebase-env
 - 내장 기본값과 환경 변수 적용 후 필수 항목이 누락되면 종료 코드가 1로 실패합니다.
 - 누락된 항목 이름만 출력되며 비밀 값은 출력되지 않습니다.
 
-CI에서는 필요 시 GitHub Actions `secrets` 또는 `vars`에 `VITE_GOOGLE_OAUTH_CLIENT_ID`를 등록하고, Windows/macOS 데스크톱 빌드 job에서 환경변수로 주입합니다.
-`GOOGLE_OAUTH_CLIENT_SECRET`은 Desktop OAuth PKCE 흐름에서 더 이상 사용되지 않으므로, 이번 변경 후 즉시 삭제하거나 회전(재발급 후 교체)할 수 있습니다.
+CI에서는 `VITE_GOOGLE_OAUTH_CLIENT_ID`를 GitHub Actions `vars` 또는 `secrets`에, `GOOGLE_OAUTH_CLIENT_SECRET`을 반드시 Actions `secrets`에 등록하고 Windows/macOS 데스크톱 빌드 job에서만 환경변수로 주입합니다.
+설치형 앱의 client secret은 바이너리에서 추출될 수 있으므로 서비스 계정 키 같은 기밀로 간주하지 않습니다. 저장소와 로그에는 값을 남기지 않고, PKCE와 사용자별 Firestore 규칙을 실제 보안 경계로 유지합니다.
 
 설치된 앱이나 웹 앱에서 내장/빌드 시점 Firebase 설정이 모두 비어 있는 경우에만 앱 메뉴의 **구글 로그인 설정**이 나타납니다. 이 입력 폼은 개발·진단용이며, 운영 배포판에서는 소유자 Firebase 프로젝트가 고정되도록 숨겨집니다.
 
@@ -56,9 +57,8 @@ CI에서는 필요 시 GitHub Actions `secrets` 또는 `vars`에 `VITE_GOOGLE_OA
 3. 웹 앱 구성의 API 키 / Auth domain / 프로젝트 ID / 앱 ID가 앱에 내장된 Firebase 설정 또는 `.env`/CI 변수와 일치하는지 확인
 4. 앱은 기본적으로 구글 로그인 후 여러 메모 전체의 서버 백업/복원을 동작시킵니다.
 5. 데스크톱 Tauri 런타임에서는 시스템 기본 브라우저를 열고 Google **Desktop app** OAuth client의 PKCE + loopback 흐름으로 ID 토큰을 받은 뒤 Firebase credential로 로그인합니다.
-6. Google Cloud Console → APIs & Services → Credentials에서 **Desktop app** 유형의 OAuth client를 만들고 client ID를 앱 설정에 `VITE_GOOGLE_OAUTH_CLIENT_ID`로 주입합니다.
-7. `VITE_GOOGLE_OAUTH_CLIENT_ID`가 빠진 데스크톱 빌드는 Google 로그인 버튼을 비활성화하고 설정 필요 메시지를 표시합니다. 웹 OAuth client의 redirect URI는 loopback 랜덤 포트를 허용하지 않으므로 데스크톱 로그인 대체 경로로 사용하지 않습니다.
-   `GOOGLE_OAUTH_CLIENT_SECRET`은 더 이상 데스크톱 OAuth 토큰 교환 파라미터로 사용되지 않습니다.
+6. Google Cloud Console → APIs & Services → Credentials에서 **Desktop app** 유형의 OAuth client를 만들고 client ID를 `VITE_GOOGLE_OAUTH_CLIENT_ID`, client secret을 `GOOGLE_OAUTH_CLIENT_SECRET`으로 주입합니다.
+7. `VITE_GOOGLE_OAUTH_CLIENT_ID` 또는 `GOOGLE_OAUTH_CLIENT_SECRET`이 빠진 릴리스 빌드는 CI에서 실패해야 합니다. 웹 OAuth client의 redirect URI는 loopback 랜덤 포트를 허용하지 않으므로 데스크톱 로그인 대체 경로로 사용하지 않습니다.
 
 ## 4) 웹앱 배포 도메인 허용
 

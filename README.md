@@ -35,8 +35,8 @@ npm run dev
 
 ### Firebase 환경 변수
 
-기본 배포판은 H Memo용 Firebase Web Client 설정을 내장합니다. Windows/macOS 데스크톱 Google 로그인은 시스템 기본 브라우저와 로컬 loopback을 사용하는 **Desktop app** OAuth 흐름이므로, 운영 빌드에는 `VITE_GOOGLE_OAUTH_CLIENT_ID`만 주입하면 됩니다. 다른 Firebase 프로젝트로 개발/스테이징 테스트를 할 때는 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고해 환경 변수를 지정하세요.
-운영 배포판은 H Memo용 Firebase Web Client 설정과 Desktop OAuth client ID를 내장해 사용자가 `구글 로그인`만으로 백업/복원을 시작할 수 있게 합니다. OAuth client secret은 더 이상 배포본에 주입하지 않습니다.
+기본 배포판은 H Memo용 Firebase Web Client 설정을 내장합니다. Windows/macOS 데스크톱 Google 로그인은 시스템 기본 브라우저와 로컬 loopback을 사용하는 **Desktop app** OAuth 흐름이므로, 운영 빌드에는 `VITE_GOOGLE_OAUTH_CLIENT_ID`와 `GOOGLE_OAUTH_CLIENT_SECRET`을 주입합니다. 다른 Firebase 프로젝트로 개발/스테이징 테스트를 할 때는 [`docs/firebase-setup.md`](./docs/firebase-setup.md) 또는 `.env.example`를 참고해 환경 변수를 지정하세요.
+운영 배포판은 H Memo용 Firebase Web Client 설정과 Desktop OAuth client 자격 증명을 내장해 사용자가 `구글 로그인`만으로 백업/복원을 시작할 수 있게 합니다. 설치형 앱의 client secret은 바이너리에서 추출될 수 있으므로 서비스 계정 키처럼 신뢰 경계로 사용하지 않으며, PKCE와 Firestore 보안 규칙을 함께 유지합니다.
 내장/빌드 설정이 모두 비어 있는 개발 빌드에서만 앱 메뉴의 `구글 로그인 설정` 입력 폼이 나타납니다.
 
 ## Web App

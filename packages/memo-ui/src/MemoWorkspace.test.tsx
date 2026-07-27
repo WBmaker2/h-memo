@@ -40,10 +40,17 @@ describe("MemoWorkspace", () => {
     expect(screen.getByText("최종 호환성 보강")).toBeInTheDocument();
     expect(screen.getByText("KST 일별 백업 보존")).toBeInTheDocument();
     expect(screen.getByText("백업 기록 서버 페이지 조회")).toBeInTheDocument();
+    expect(screen.getByText("데스크톱 Google 재로그인 복구")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-27")).toBeInTheDocument();
     expect(screen.getByText("2026-07-15")).toBeInTheDocument();
     expect(
       screen.getByText(
         "서버 복원 기록을 최신순 10개씩 Firestore에서 조회하고, 다음 페이지는 커서로 이어 불러오며 이전 페이지는 캐시를 사용하도록 개선했습니다.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Windows와 macOS에서 Google 계정 재로그인 시 필요한 OAuth 토큰 교환 설정을 복원하고, 누락된 릴리스는 빌드 전에 감지하도록 개선했습니다.",
       ),
     ).toBeInTheDocument();
     expect(

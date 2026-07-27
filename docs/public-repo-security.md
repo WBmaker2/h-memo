@@ -19,8 +19,9 @@
 ## 3) 데스크톱 OAuth 정책
 
 - 데스크톱 OAuth는 Desktop OAuth client ID + PKCE/loopback 방식으로 처리합니다.
-- 운영 릴리스에서는 `GOOGLE_OAUTH_CLIENT_SECRET`을 바이너리에 주입하거나 Workflow env에 전달해서는 안 됩니다.
-- 현재 구현에서는 `GOOGLE_OAUTH_CLIENT_SECRET` 의존을 제거했으므로, 기존 비밀이 저장소/워크플로에 남아 있다면 즉시 삭제 또는 회전(재발급) 처리합니다.
+- 현재 Google 토큰 엔드포인트가 요구하는 `GOOGLE_OAUTH_CLIENT_SECRET`은 GitHub Actions secret에서 Windows/macOS 네이티브 빌드에만 전달합니다.
+- 설치형 앱의 OAuth client secret은 바이너리에서 추출될 수 있으므로 기밀 저장소나 데이터 접근 권한으로 취급하지 않습니다. 저장소·로그 노출 방지와 릴리스 설정 검증을 위한 Actions secret으로 관리합니다.
+- PKCE, 일회성 authorization code, loopback callback의 state 검증을 유지하고 실제 사용자 데이터 권한은 Firebase Authentication과 Firestore 규칙으로 제한합니다.
 
 ## 4) GitHub 저장소 보안 권장 설정
 
@@ -43,7 +44,8 @@
 
 릴리스/배포 전 다음을 확인합니다.
 
-- `GOOGLE_OAUTH_CLIENT_SECRET` 문자열이 워크플로 `.github/workflows/*.yml`에 남아 있지 않은지 확인
+- `GOOGLE_OAUTH_CLIENT_SECRET`이 실제 값 없이 `${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}` 참조로만 Windows/macOS 워크플로에 존재하는지 확인
+- `VITE_GOOGLE_OAUTH_CLIENT_SECRET`처럼 프론트엔드 번들에 직접 노출되는 변수가 없는지 확인
 - `VITE_GOOGLE_OAUTH_CLIENT_ID`가 데스크톱 빌드 환경 변수로만 필요한 곳에 전달되는지 확인
 - `npm test` 및 `npm run typecheck` 통과
 - `.github/dependabot.yml` 존재 및 활성 상태 확인
