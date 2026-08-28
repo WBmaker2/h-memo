@@ -14,6 +14,7 @@ import {
   listBackupSnapshots,
   listBackedUpMemos,
   loadBackupSnapshot,
+  loadLatestBackupSnapshotSummary,
   type BackupGateway,
   type BackupSaveResult,
   type MemoBackupPayload,
@@ -48,6 +49,28 @@ describe("memo-sync backup", () => {
 
     expect(restored?.memos[0]?.id).toBe("memo-new");
     expect(gateway.snapshotLoadCount).toBe(1);
+  });
+
+  it("loads only the latest backup summary without reading its payload", async () => {
+    const gateway = new FakeBackupGateway();
+    const userId = "user-1";
+    await backupMemos(
+      gateway,
+      userId,
+      [createMemo({ id: "memo-old", now: "2026-05-13T09:00:00.000Z" })],
+      "2026-05-13T09:01:00.000Z"
+    );
+    await backupMemos(
+      gateway,
+      userId,
+      [createMemo({ id: "memo-new", now: "2026-05-13T09:02:00.000Z" })],
+      "2026-05-13T09:03:00.000Z"
+    );
+
+    const latest = await loadLatestBackupSnapshotSummary(gateway, userId);
+
+    expect(latest?.id).toBe("2");
+    expect(gateway.snapshotLoadCount).toBe(0);
   });
 
   it("filters daily summaries before any snapshot payload is loaded", async () => {

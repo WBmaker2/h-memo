@@ -22,3 +22,7 @@ export type {
   BackupSaveStatusInput,
 } from "./backupStatusText";
 export { formatDateTime } from "./formatDateTime";
+export {
+  StartupServerRestoreDialog,
+  type StartupServerRestoreDialogProps,
+} from "./StartupServerRestoreDialog";

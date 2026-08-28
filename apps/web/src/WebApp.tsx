@@ -18,6 +18,7 @@ import {
   BackupHistoryDialog,
   MemoWorkspace,
   ServerMemoManagerDialog,
+  StartupServerRestoreDialog,
   formatBackupSaveStatus,
 } from "@h-memo/memo-ui";
 import {
@@ -39,6 +40,7 @@ import {
   type BackupSnapshotSummaryPage,
   type HMemoUser,
 } from "@h-memo/memo-sync";
+import * as memoSync from "@h-memo/memo-sync";
 import {
   clearStoredFirebaseClientConfig,
   mergeFirebaseClientConfig,
@@ -63,6 +65,7 @@ import {
   createWebMemoFingerprint,
   hasWebBackupConflict,
 } from "./webAutoBackup";
+import { useWebStartupServerRestore } from "./features/startup-sync/useWebStartupServerRestore";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
@@ -201,6 +204,31 @@ function broadcastRestoreSafetyChanged() {
   window.dispatchEvent(new Event(RESTORE_SAFETY_CHANGED_EVENT));
 }
 
+async function createSyncContentHash(userId: string, memos: Memo[]): Promise<string> {
+  const payload = createBackupPayload({
+    userId,
+    memos,
+    createdAt: "1970-01-01T00:00:00.000Z",
+  });
+  if (typeof memoSync.createBackupContentHash === "function") {
+    return memoSync.createBackupContentHash(payload);
+  }
+  return JSON.stringify(payload.memos);
+}
+
+function persistSyncCheckpoint(
+  storage: Storage | null,
+  input: Parameters<typeof memoSync.createLocalSyncCheckpoint>[0],
+) {
+  if (
+    typeof memoSync.createLocalSyncCheckpoint !== "function" ||
+    typeof memoSync.writeLocalSyncCheckpoint !== "function"
+  ) {
+    return;
+  }
+  memoSync.writeLocalSyncCheckpoint(storage, memoSync.createLocalSyncCheckpoint(input));
+}
+
 export function WebApp() {
   const mutationBarrier = useMemo(() => new WebMutationBarrier(), []);
   const supportsSafeMutations = mutationBarrier.isSupported();
@@ -230,6 +258,7 @@ export function WebApp() {
   const [isBusy, setIsBusy] = useState(false);
   const [isRestoreLocked, setIsRestoreLocked] = useState(false);
   const [syncServicesInitialized, setSyncServicesInitialized] = useState(false);
+  const [hasLoadedMemos, setHasLoadedMemos] = useState(false);
   const [serverMemoManagerOpen, setServerMemoManagerOpen] = useState(false);
   const [serverMemoItems, setServerMemoItems] = useState<BackedUpMemo[]>([]);
   const [serverMemoStatus, setServerMemoStatus] = useState(SERVER_MEMO_INITIAL_STATUS);
@@ -244,7 +273,6 @@ export function WebApp() {
   const autoBackupStateRef = useRef({
     observedSnapshotId: null as string | null,
     lastFingerprint: null as string | null,
-    initializedUserId: null as string | null,
     inFlight: false,
   });
 
@@ -280,12 +308,14 @@ export function WebApp() {
     setSyncServicesInitialized(false);
     setServicesAvailableState(hasFirebaseConfigSet);
     setUser(null);
+    setHasLoadedMemos(false);
   }, [firebaseClientEnv, hasFirebaseConfigSet]);
 
   const reloadMemos = useCallback(async () => {
     const readAndApply = async () => {
       const all = await repository.listMemos();
       setMemos(sortMemos(all));
+      setHasLoadedMemos(true);
       return all;
     };
     if (!supportsSafeMutations) {
@@ -741,50 +771,42 @@ export function WebApp() {
     broadcastRestoreSafetyChanged();
   };
 
-  useEffect(() => {
-    if (!user || !isServerReady) {
-      return;
-    }
-    const services = ensureSyncServices();
-    if (!services || autoBackupStateRef.current.initializedUserId === user.uid) {
-      return;
-    }
-
-    let cancelled = false;
-    autoBackupStateRef.current.initializedUserId = user.uid;
-    void (async () => {
-      try {
-        const page = await listBackupSnapshotSummaryPage(services.gateway, user.uid, { limit: 1 });
-        if (cancelled) return;
-        const latest = page.summaries[0] ?? null;
-        autoBackupStateRef.current.observedSnapshotId = latest?.id ?? null;
-        const localMemos = await repository.listMemos();
-        const hasActiveLocalMemo = localMemos.some((memo) => memo.deletedAt === null);
-        if (!latest || hasActiveLocalMemo) {
-          return;
-        }
-        const payload = await loadBackupSnapshot(services.gateway, user.uid, latest.id);
-        if (cancelled || !payload) return;
-        await runWithWebRestoreLock(() =>
-          replaceMemosWithSafety("server", user.uid, payload.memos)
-        );
-        autoBackupStateRef.current.lastFingerprint = createWebMemoFingerprint(payload.memos);
-        setBackupStatus(`최신 서버 메모 ${payload.memos.length}개를 불러왔습니다.`);
-      } catch (error) {
-        if (!cancelled) {
-          autoBackupStateRef.current.initializedUserId = null;
-          setBackupStatus(`최신 서버 메모 확인 실패: ${getErrorMessage(error)}`);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [ensureSyncServices, isServerReady, repository, user]);
+  const startupServerRestore = useWebStartupServerRestore({
+    user,
+    isServerReady,
+    hasLoadedMemos,
+    repository,
+    storage: restoreSafetyStorage,
+    getServices: () => {
+      const services = ensureSyncServices();
+      return services ? { gateway: services.gateway } : null;
+    },
+    getLatestServerSummary: async (gateway, userId) => {
+      const page = await listBackupSnapshotSummaryPage(gateway, userId, { limit: 1 });
+      return page.summaries[0] ?? null;
+    },
+    getLocalFingerprint: createWebMemoFingerprint,
+    restoreServerMemos: async (userId, payload) => {
+      await runWithWebRestoreLock(() =>
+        replaceMemosWithSafety("server", userId, payload.memos)
+      );
+    },
+    onStatus: setBackupStatus,
+  });
 
   useEffect(() => {
-    if (cloudChangeVersion === 0 || !user || !isServerReady) {
+    autoBackupStateRef.current.observedSnapshotId = startupServerRestore.baseline.snapshotId;
+    autoBackupStateRef.current.lastFingerprint = startupServerRestore.baseline.localFingerprint;
+  }, [startupServerRestore.baseline]);
+
+  useEffect(() => {
+    if (
+      cloudChangeVersion === 0 ||
+      !user ||
+      !isServerReady ||
+      !startupServerRestore.isReadyForAutoBackup ||
+      startupServerRestore.isAutoBackupPaused
+    ) {
       return;
     }
     const userId = user.uid;
@@ -812,6 +834,13 @@ export function WebApp() {
           const result = await backupMemos(services.gateway, userId, persistedMemos);
           autoBackupStateRef.current.observedSnapshotId = result.snapshotId;
           autoBackupStateRef.current.lastFingerprint = fingerprint;
+          const contentHash = await createSyncContentHash(userId, persistedMemos);
+          persistSyncCheckpoint(restoreSafetyStorage, {
+            userId,
+            snapshotId: result.snapshotId,
+            contentHash,
+            serverSavedAt: new Date().toISOString(),
+          });
           setBackupStatus(`자동 백업 완료: ${formatBackupSaveStatus(result)}`);
         } catch (error) {
           setBackupStatus(`자동 백업 실패: ${getErrorMessage(error)}`);
@@ -821,7 +850,16 @@ export function WebApp() {
       })();
     }, WEB_AUTO_BACKUP_IDLE_MS);
     return () => window.clearTimeout(timerId);
-  }, [cloudChangeVersion, ensureSyncServices, isServerReady, repository, user]);
+  }, [
+    cloudChangeVersion,
+    ensureSyncServices,
+    isServerReady,
+    repository,
+    startupServerRestore.isReadyForAutoBackup,
+    restoreSafetyStorage,
+    startupServerRestore.isAutoBackupPaused,
+    user,
+  ]);
 
   const markCloudChange = () => {
     setCloudChangeVersion((version) => version + 1);
@@ -1225,6 +1263,13 @@ export function WebApp() {
       const persistedMemos = await repository.listMemos();
       autoBackupStateRef.current.observedSnapshotId = result.snapshotId;
       autoBackupStateRef.current.lastFingerprint = createWebMemoFingerprint(persistedMemos);
+      const contentHash = await createSyncContentHash(user.uid, persistedMemos);
+      persistSyncCheckpoint(restoreSafetyStorage, {
+        userId: user.uid,
+        snapshotId: result.snapshotId,
+        contentHash,
+        serverSavedAt: null,
+      });
       setBackupStatus(formatBackupSaveStatus(result));
     } catch (error) {
       setBackupStatus(`${BACKUP_FAILED_PREFIX} ${getErrorMessage(error)}`);
@@ -1505,9 +1550,19 @@ export function WebApp() {
   };
 
   const isBackupDisabled =
-    !isServerReady || user === null || isBusy || isRestoreLocked;
+    !isServerReady ||
+    user === null ||
+    isBusy ||
+    isRestoreLocked ||
+    startupServerRestore.phase === "prompting" ||
+    startupServerRestore.isBusy;
   const isRestoreDisabled =
-    !isServerReady || user === null || isBusy || isRestoreLocked;
+    !isServerReady ||
+    user === null ||
+    isBusy ||
+    isRestoreLocked ||
+    startupServerRestore.phase === "prompting" ||
+    startupServerRestore.isBusy;
   const isAuthDisabled = !isServerReady || isBusy || isRestoreLocked;
   const visibleBackupStatus = backupStatus;
 
@@ -1523,11 +1578,20 @@ export function WebApp() {
         onMemoChange={handleMemoChange}
         onDeleteMemo={handleDeleteMemo}
         onCloseMemo={handleCloseMemo}
-        isMemoEditingDisabled={isRestoreLocked}
+        isMemoEditingDisabled={
+          isRestoreLocked ||
+          startupServerRestore.phase === "prompting" ||
+          startupServerRestore.isBusy
+        }
         actions={
           <button
             type="button"
-            disabled={isBusy || isRestoreLocked}
+            disabled={
+              isBusy ||
+              isRestoreLocked ||
+              startupServerRestore.phase === "prompting" ||
+              startupServerRestore.isBusy
+            }
             onClick={handleOpenServerMemoManager}
           >
             서버 메모 관리
@@ -1566,7 +1630,12 @@ export function WebApp() {
         className="visually-hidden"
         type="file"
         accept="application/json,.json"
-        disabled={isBusy || isRestoreLocked}
+        disabled={
+          isBusy ||
+          isRestoreLocked ||
+          startupServerRestore.phase === "prompting" ||
+          startupServerRestore.isBusy
+        }
         onChange={handleJsonImportFileChange}
       />
       <ServerMemoManagerDialog
@@ -1593,6 +1662,17 @@ export function WebApp() {
         onClose={handleCloseBackupHistoryDialog}
         onRestore={handleRestoreBackupSnapshot}
       />
+      {startupServerRestore.dialog ? (
+        <StartupServerRestoreDialog
+          isOpen
+          isBusy={startupServerRestore.isBusy}
+          local={startupServerRestore.dialog.local}
+          server={startupServerRestore.dialog.server}
+          errorMessage={startupServerRestore.errorMessage}
+          onAccept={startupServerRestore.accept}
+          onDecline={startupServerRestore.decline}
+        />
+      ) : null}
     </>
   );
 }

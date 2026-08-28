@@ -9,6 +9,7 @@ import { firebaseBackupDriver, type FirestoreBackupDriver } from "./firestoreBac
 import {
   listFirestoreBackupSummaries,
   listFirestoreBackupSummaryPage,
+  loadActiveSnapshotSummary,
   loadFirestoreBackup,
 } from "./firestoreBackupRead";
 import { saveFirestoreBackup } from "./firestoreBackupWrite";
@@ -35,6 +36,10 @@ export class FirestoreBackupGateway implements BackupGateway {
 
   listBackupSummaries(userId: string) {
     return listFirestoreBackupSummaries(this.context, userId);
+  }
+
+  loadLatestBackupSummary(userId: string) {
+    return loadActiveSnapshotSummary(this.context, userId);
   }
 
   listBackupSummaryPage(userId: string, request: BackupSnapshotPageRequest) {

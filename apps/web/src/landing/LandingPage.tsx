@@ -20,6 +20,13 @@ type ReleaseHistoryEntry = {
 
 const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
   {
+    date: "2026-08-28",
+    title: "시작 시 서버 최신 메모 확인",
+    items: [
+      "로컬 메모와 서버 최신 백업을 비교해 서버에만 새 변경이 있을 때 확인 모달을 표시하고, Enter로 안전하게 복원하도록 개선했습니다.",
+    ],
+  },
+  {
     date: "2026-07-27",
     title: "데스크톱 Google 재로그인 복구",
     items: [

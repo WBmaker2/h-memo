@@ -365,6 +365,16 @@ vi.mock("@h-memo/memo-sync", () => {
       saveBackup = vi.fn();
       deleteMemoFromBackups = vi.fn();
     },
+    createBackupContentHash: async () => "f".repeat(64),
+    createLocalSyncCheckpoint: (input: Record<string, unknown>) => ({
+      version: 1,
+      ...input,
+      recordedAt: "2026-08-28T00:00:00.000Z",
+    }),
+    readLocalSyncCheckpoint: () => null,
+    writeLocalSyncCheckpoint: () => true,
+    compareStartupVersions: () => ({ kind: "no-server-backup", server: null }),
+    getLatestMemoUpdatedAt: () => null,
     backupMemos: (gateway: unknown, userId: string, memos: unknown[]) =>
       mockBackupMemos(gateway, userId, memos),
     createFirebaseApp: (env: unknown) => mockCreateFirebaseApp(env),
@@ -3484,7 +3494,9 @@ describe("desktop App", () => {
       expect(screen.getByRole("status")).toHaveTextContent(expectedStatus);
       expect(screen.getByDisplayValue("로컬 내용")).toBeInTheDocument();
     });
-    expect(mockListBackupSnapshotSummaries).toHaveBeenCalledOnce();
+    // The native main window checks the latest server summary at startup before
+    // the user opens the manual restore history.
+    expect(mockListBackupSnapshotSummaries).toHaveBeenCalledTimes(2);
     expect(mockLoadBackupSnapshot).toHaveBeenCalledWith(
       expect.anything(),
       "user-1",

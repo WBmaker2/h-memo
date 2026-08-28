@@ -107,7 +107,8 @@ body {
 .memo-menu__panel button,
 .settings-panel button,
 .server-memo-dialog button,
-.backup-history-dialog button {
+.backup-history-dialog button,
+.startup-server-restore-dialog button {
   min-width: 0;
   min-height: 40px;
   white-space: normal;
@@ -618,7 +619,8 @@ body {
 
 .delete-dialog-backdrop,
 .backup-history-dialog-backdrop,
-.server-memo-dialog-backdrop {
+.server-memo-dialog-backdrop,
+.startup-server-restore-dialog-backdrop {
   position: fixed;
   inset: 0;
   z-index: 100;
@@ -630,7 +632,8 @@ body {
 
 .delete-dialog,
 .backup-history-dialog,
-.server-memo-dialog {
+.server-memo-dialog,
+.startup-server-restore-dialog {
   display: grid;
   gap: 12px;
   width: min(460px, calc(100vw - 32px));
@@ -645,14 +648,16 @@ body {
 
 .delete-dialog h2,
 .backup-history-dialog h2,
-.server-memo-dialog h2 {
+.server-memo-dialog h2,
+.startup-server-restore-dialog h2 {
   margin: 0;
   font-size: 18px;
 }
 
 .delete-dialog p,
 .backup-history-dialog p,
-.server-memo-dialog p {
+.server-memo-dialog p,
+.startup-server-restore-dialog p {
   margin: 0;
 }
 
@@ -687,7 +692,9 @@ body {
 
 .backup-history-dialog__description,
 .server-memo-dialog__description,
-.server-memo-list__empty {
+.server-memo-list__empty,
+.startup-server-restore-dialog__description,
+.startup-server-restore-dialog__safety {
   color: #475569;
 }
 
@@ -749,4 +756,94 @@ body {
   color: #475569;
   font-size: 12px;
   text-align: center;
+}
+
+.startup-server-restore-dialog-backdrop {
+  z-index: 120;
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.38);
+}
+
+.startup-server-restore-dialog {
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(620px, calc(100dvh - 24px));
+  gap: 14px;
+  border-radius: 12px;
+  padding: clamp(18px, 4vw, 26px);
+}
+
+.startup-server-restore-dialog h2 {
+  font-size: clamp(20px, 5vw, 26px);
+  line-height: 1.3;
+}
+
+.startup-server-restore-dialog__safety {
+  border-left: 3px solid #2563eb;
+  padding-left: 10px;
+  font-size: 13px;
+}
+
+.startup-server-restore-dialog__versions {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.startup-server-restore-dialog__versions div {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.startup-server-restore-dialog__versions dt {
+  color: #475569;
+  font-weight: 700;
+}
+
+.startup-server-restore-dialog__versions dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.startup-server-restore-dialog__status {
+  min-height: 20px;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.startup-server-restore-dialog__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.startup-server-restore-dialog__actions button {
+  min-height: 44px;
+}
+
+.startup-server-restore-dialog__accept {
+  border-color: #1d4ed8;
+  color: #ffffff;
+  background: #2563eb;
+  font-weight: 700;
+}
+
+@media (max-width: 480px) {
+  .startup-server-restore-dialog__actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-server-restore-dialog-backdrop,
+  .startup-server-restore-dialog {
+    animation: none;
+    transition: none;
+  }
 }
