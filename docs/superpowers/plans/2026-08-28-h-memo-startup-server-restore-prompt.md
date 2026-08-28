@@ -197,8 +197,8 @@ npm run check:versions
 - `npm run check:versions` → 8개 버전 필드 모두 `1.0.6` 일치
 - `git diff --check` → 공백/패치 오류 없음
 - 빌드에서 기존과 동일하게 단일 JS 청크가 500 kB를 초과한다는 Vite 경고가 남아 있습니다. 이번 변경의 실패가 아니며 코드 분할은 별도 개선 과제로 남겼습니다.
-- 실제 Firebase 인증·Firestore 데이터, Tauri main/자식 창, 320px 브라우저, 오프라인/동시 변경 수동 검증과 VoiceOver 검증은 이 작업에서 실행하지 않았습니다. VoiceOver는 저장소 지침에 따라 제외했습니다.
-- 다음 단계 브라우저 QA에서 Playwright Firefox를 설치하고 권한 제한 없이 실행했습니다. 웹앱 `#/app`의 320×280·390×844·1280×800에서 `scrollWidth === clientWidth`(각 320·390·1280)를 확인했고, 메모 입력 후에도 가로 스크롤이 없었습니다. Tab으로 `메모 메뉴`에 도달하고 Enter로 메뉴를 열었으며, 랜딩의 `업데이트 기록`에서 2026-08-28 시작 동기화 항목을 확인했습니다. 콘솔은 Errors 0, Warnings 0이었습니다. 개발 서버·Playwright 세션·QA 산출물은 종료/정리했습니다.
+- 구현 직후 기준으로 실제 Firebase 인증·Firestore 데이터, Tauri main/자식 창, 오프라인/동시 변경 수동 검증과 VoiceOver 검증은 실행하지 않았습니다. 이후 공개 Pages의 브라우저·반응형 검증은 아래 릴리스 기록에서 별도로 수행했습니다. VoiceOver는 저장소 지침에 따라 제외했습니다.
+- 브라우저 QA에서 Playwright Firefox를 설치하고 권한 제한 없이 실행했습니다. 웹앱 `#/app`의 320×280·390×844·1280×800에서 `scrollWidth === clientWidth`(각 320·390·1280)를 확인했고, 메모 입력 후에도 가로 스크롤이 없었습니다. Tab으로 `메모 메뉴`에 도달하고 Enter로 메뉴를 열었으며, 랜딩의 `업데이트 기록`에서 2026-08-28 시작 동기화 항목을 확인했습니다. 콘솔은 Errors 0, Warnings 0이었습니다. 개발 서버·Playwright 세션·QA 산출물은 종료/정리했습니다.
 - 릴리스 전 로컬 수용 사전 확인에서 `cargo clean` 후 `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --offline`을 재실행해 Rust 37개 테스트가 통과했습니다. 첫 실패는 이전 체크아웃 경로를 가리키는 생성 산출물 때문이었고, 소스 변경 없이 생성 산출물만 재생성했습니다.
 - `npm run check:firebase-env -- --require-desktop-oauth`는 필수 Firebase 클라이언트 키는 통과했지만 로컬에 데스크톱 Google OAuth 클라이언트 ID·시크릿이 없어 실패했습니다. `npm run test:firestore-rules`는 로컬 Java 런타임이 없어 실행되지 않았습니다. 두 검증은 릴리스 CI의 GitHub 시크릿·Temurin Java 환경에서 재확인합니다.
 
@@ -211,5 +211,10 @@ npm run check:versions
 ## Release execution log
 
 - `codex/startup-server-restore-prompt` 기능 브랜치를 생성했습니다. 기존 사용자 소유 미추적 파일(`.chatgpt2codex/`, `h-memo-public-menu-fix.png`, `img/`)은 릴리스 변경에서 제외합니다.
-- 다음 단계: 의도한 소스·테스트·이 문서만 명시적으로 스테이징하고 커밋한 뒤 origin에 푸시, PR CI와 Pages 미리보기 빌드를 확인합니다.
-- PR 통과 후 `main` 병합, `Auto Version and Tag`가 생성한 patch 버전·태그와 Windows/macOS/Pages 워크플로를 확인하고 공개 Pages의 실제 학습자 경로를 검증합니다.
+- 완료한 순서: 의도한 소스·테스트·이 문서만 명시적으로 스테이징하고 커밋한 뒤 origin에 푸시, PR CI와 Pages 미리보기 빌드를 확인했습니다.
+- 완료한 순서: PR 통과 후 `main` 병합, `Auto Version and Tag`가 생성한 patch 버전·태그와 Windows/macOS/Pages 워크플로를 확인하고 공개 Pages의 실제 학습자 경로를 검증했습니다.
+- 실제 실행: 커밋 `51f9d5365a68594ff7ff63cccf7b1c83bdea9788`을 `codex/startup-server-restore-prompt`에 푸시하고 [PR #47](https://github.com/WBmaker2/h-memo/pull/47)을 생성했습니다. PR의 공통 CI·Windows·macOS·Pages 미리보기 검증이 모두 통과했습니다.
+- 실제 실행: PR을 `main`에 병합한 커밋은 `274fc1f59a7c8a01dc17e276e49d073964b0a8bb`이며, `main` CI와 `Auto Version and Tag`가 성공했습니다. 자동 릴리스 커밋 `de102f8793876c7c4edec7477dab35c73affa936`과 태그 `v1.0.7`이 생성되었습니다.
+- 실제 실행: 태그 기반 [Web Pages Deploy](https://github.com/WBmaker2/h-memo/actions/runs/33176072446), [Windows Tauri Build](https://github.com/WBmaker2/h-memo/actions/runs/33176068369), [macOS Tauri Build](https://github.com/WBmaker2/h-memo/actions/runs/33176070437)가 모두 성공했습니다. Windows MSI/NSIS는 [H Memo v1.0.7 Release](https://github.com/WBmaker2/h-memo/releases/tag/v1.0.7)에 업로드되었습니다.
+- 실제 실행: 공개 Pages [랜딩](https://wbmaker2.github.io/h-memo/)과 [웹앱](https://wbmaker2.github.io/h-memo/#/app)을 HTTP 200 및 Firefox로 확인했습니다. 랜딩 제목·`v1.0.7` 링크·업데이트 기록의 2026-08-28 항목을 확인했고, 앱 경로의 제목과 메모 화면을 확인했습니다. 320·390·1280px에서 `scrollWidth === clientWidth`였으며 콘솔 Errors 0, Warnings 0이었습니다.
+- 남은 수동 수용: 실제 사용자 계정으로 Firestore에 서로 다른 버전의 백업을 준비한 뒤 서버 최신 모달에서 Enter 복원·아니요 유지·복원 오류 보존을 확인하는 시나리오는 계정/데이터 접근 승인이 필요합니다. VoiceOver 검증은 저장소 지침에 따라 제외했습니다.
