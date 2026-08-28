@@ -20,6 +20,7 @@ import {
   formatBackupSaveStatus,
   formatDateTime,
   MemoWorkspace,
+  StartupServerRestoreDialog,
   type FirebaseConfigFormValue,
 } from "@h-memo/memo-ui";
 import { TauriMemoRepository } from "./adapters/tauriMemoRepository";
@@ -95,7 +96,9 @@ import {
   type BackupSnapshotSummaryPage,
   type GoogleOAuthTokens,
   type HMemoUser,
+  type MemoBackupPayload,
 } from "@h-memo/memo-sync";
+import * as memoSync from "@h-memo/memo-sync";
 import {
   clearStoredFirebaseClientConfig,
   mergeFirebaseClientConfig,
@@ -107,6 +110,7 @@ import { validateFirebaseClientEnv } from "@h-memo/memo-sync/firebase-env-valida
 import desktopPackageJson from "../package.json";
 import { restoreDesktopBackupSelection } from "./desktopBackupHistory";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
+import { useDesktopStartupServerRestore } from "./features/startup-sync/useDesktopStartupServerRestore";
 
 type BackupMessage = string;
 type SyncServices = {
@@ -228,6 +232,31 @@ function createRestoreSafetyPoint(
   };
 }
 
+async function createSyncContentHash(userId: string, memos: Memo[]): Promise<string> {
+  const payload = createBackupPayload({
+    userId,
+    memos,
+    createdAt: "1970-01-01T00:00:00.000Z",
+  });
+  if (typeof memoSync.createBackupContentHash === "function") {
+    return memoSync.createBackupContentHash(payload);
+  }
+  return JSON.stringify(payload.memos);
+}
+
+function persistSyncCheckpoint(
+  storage: Storage | null,
+  input: Parameters<typeof memoSync.createLocalSyncCheckpoint>[0],
+) {
+  if (
+    typeof memoSync.createLocalSyncCheckpoint !== "function" ||
+    typeof memoSync.writeLocalSyncCheckpoint !== "function"
+  ) {
+    return;
+  }
+  memoSync.writeLocalSyncCheckpoint(storage, memoSync.createLocalSyncCheckpoint(input));
+}
+
 export function App() {
   const isTauri = isTauriRuntime();
   const requestedMemoId = useMemo(() => {
@@ -304,6 +333,11 @@ export function App() {
   const [isRestoreLockReady, setIsRestoreLockReady] = useState(!isTauri);
   const [servicesAvailable, setServicesAvailable] = useState(hasFirebaseConfigSet);
   const [hasLoadedMemos, setHasLoadedMemos] = useState(false);
+  const [authSettled, setAuthSettled] = useState(!hasFirebaseConfigSet);
+  // Startup server comparison is a native-main-window concern. The browser
+  // fallback keeps the existing manual backup/restore controls without running
+  // a second startup check that could race those controls.
+  const isMainWindow = isTauri && getCurrentWindowLabel() === "main";
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
   const restoreLockRef = useRef<string | null>(null);
@@ -342,6 +376,9 @@ export function App() {
   const restoreSnapshotInFlightRef = useRef(false);
   const createMemoFromTrayRef = useRef<() => Promise<void>>(async () => {});
   const openAllMemosFromTrayRef = useRef<() => Promise<void>>(async () => {});
+  const restoreStartupMemosRef = useRef<
+    (userId: string, payload: MemoBackupPayload) => Promise<void>
+  >(async () => {});
 
   const syncServicesRef = useRef<SyncServices | null>(null);
 
@@ -413,6 +450,8 @@ export function App() {
     setSyncServicesInitialized(false);
     setServicesAvailable(hasFirebaseConfigSet);
     setUser(null);
+    setHasLoadedMemos(false);
+    setAuthSettled(!hasFirebaseConfigSet);
   }, [firebaseClientEnv, hasFirebaseConfigSet]);
 
   const runAuthoritativeMemoReload = useCallback(
@@ -510,6 +549,7 @@ export function App() {
       const status = `${nextUser.displayName || nextUser.email || "사용자"}님이 로그인했습니다.`;
       userRef.current = nextUser;
       setUser(nextUser);
+      setAuthSettled(true);
       setBackupStatus(status);
       if (isTauri && options?.broadcast !== false) {
         void notifyAuthStateChanged({ user: nextUser, status }).catch((error) => {
@@ -524,6 +564,7 @@ export function App() {
     (status: string, options?: { broadcast?: boolean }) => {
       userRef.current = null;
       setUser(null);
+      setAuthSettled(true);
       setBackupStatus(status);
       if (isTauri && options?.broadcast !== false) {
         void notifyAuthStateChanged({ user: null, status }).catch((error) => {
@@ -614,6 +655,35 @@ export function App() {
     }
   }, [firebaseClientEnv, hasFirebaseConfigSet]);
 
+  const startupServerRestore = useDesktopStartupServerRestore({
+    user,
+    isMainWindow,
+    isServerReady: hasFirebaseConfigSet && servicesAvailable && syncServicesInitialized,
+    isRestoreLockReady,
+    hasLoadedMemos,
+    repository,
+    storage: restoreSafetyStorage,
+    getServices: () => {
+      const services = ensureSyncServices();
+      return services ? { gateway: services.gateway } : null;
+    },
+    getLatestServerSummary: async (gateway, userId) => {
+      const page = await listBackupSnapshotSummaryPage(gateway, userId, { limit: 1 });
+      return page.summaries[0] ?? null;
+    },
+    restoreServerMemos: (userId, payload) => restoreStartupMemosRef.current(userId, payload),
+    onStatus: setBackupStatus,
+  });
+
+  const isStartupBlocking =
+    isMainWindow &&
+    hasFirebaseConfigSet &&
+    servicesAvailable &&
+    syncServicesInitialized &&
+    (!authSettled ||
+      (user !== null &&
+        ["idle", "checking", "prompting", "restoring"].includes(startupServerRestore.phase)));
+
   useEffect(() => {
     if (!hasFirebaseConfigSet) {
       return;
@@ -665,6 +735,7 @@ export function App() {
           if (!isMounted) {
             return;
           }
+          setAuthSettled(true);
           setBackupStatus(`${AUTH_LOGIN_FAILED_PREFIX} ${getErrorMessage(error)}`);
         });
 
@@ -673,6 +744,7 @@ export function App() {
         unsubscribe();
       };
     } catch (error) {
+      setAuthSettled(true);
       setBackupStatus(`${AUTH_SUBSCRIBE_FAILED_PREFIX} ${getErrorMessage(error)}`);
       return;
     }
@@ -937,6 +1009,7 @@ export function App() {
       !isTauri ||
       !isRestoreLockReady ||
       !hasLoadedMemos ||
+      isStartupBlocking ||
       isRestoreLocked ||
       restoreLockRef.current
     ) {
@@ -949,6 +1022,7 @@ export function App() {
     activeMemoId,
     hasLoadedMemos,
     isRestoreLockReady,
+    isStartupBlocking,
     isRestoreLocked,
     isTauri,
     queueMemoWindowOwnership,
@@ -972,6 +1046,7 @@ export function App() {
       restoreLockRef.current ||
       requestedMemoId ||
       !hasLoadedMemos ||
+      isStartupBlocking ||
       openedRestoredMemoWindowsRef.current
     ) {
       return;
@@ -998,6 +1073,7 @@ export function App() {
     activeMemoId,
     hasLoadedMemos,
     isRestoreLockReady,
+    isStartupBlocking,
     isTauri,
     requestedMemoId,
     visibleMemos,
@@ -1297,6 +1373,12 @@ export function App() {
     await replaceMemosFromBackup(replacementMemos, currentMemos, synchronize);
     setRestoreSafetyPoint(safetyPoint);
     await broadcastRestoreSafetyChanged();
+  };
+
+  restoreStartupMemosRef.current = async (userId, payload) => {
+    await runWithDesktopRestoreLock((synchronize) =>
+      replaceMemosWithSafety("server", userId, payload.memos, synchronize)
+    );
   };
 
   const handleCreateMemo = async () => {
@@ -1781,6 +1863,13 @@ export function App() {
         assertActive();
         return backupMemos(services.gateway, user.uid, persistedMemos);
       });
+      const contentHash = await createSyncContentHash(user.uid, result.payload.memos);
+      persistSyncCheckpoint(restoreSafetyStorage, {
+        userId: user.uid,
+        snapshotId: result.snapshotId,
+        contentHash,
+        serverSavedAt: null,
+      });
       setBackupStatus(formatBackupSaveStatus(result));
       return true;
     } catch (error) {
@@ -2228,13 +2317,13 @@ export function App() {
 
   const isServerReady = hasFirebaseConfigSet && servicesAvailable;
   const isBackupDisabled =
-    !isServerReady || user === null || isBusy || isRestoreLocked || !isRestoreLockReady || !syncServicesInitialized;
+    !isServerReady || user === null || isBusy || isRestoreLocked || isStartupBlocking || !isRestoreLockReady || !syncServicesInitialized;
   const isRestoreDisabled =
-    !isServerReady || user === null || isBusy || isRestoreLocked || !isRestoreLockReady || !syncServicesInitialized;
+    !isServerReady || user === null || isBusy || isRestoreLocked || isStartupBlocking || !isRestoreLockReady || !syncServicesInitialized;
   const isAuthDisabled =
-    !isServerReady || isBusy || isRestoreLocked || !isRestoreLockReady || needsDesktopGoogleOAuthClient;
+    !isServerReady || isBusy || isRestoreLocked || isStartupBlocking || !isRestoreLockReady || needsDesktopGoogleOAuthClient;
   const isServerMemoManagerDisabled =
-    !isServerReady || user === null || isBusy || isRestoreLocked || !isRestoreLockReady || !syncServicesInitialized;
+    !isServerReady || user === null || isBusy || isRestoreLocked || isStartupBlocking || !isRestoreLockReady || !syncServicesInitialized;
 
   const handleRequestWindowDrag = () => {
     if (!isTauri) {
@@ -2318,7 +2407,7 @@ export function App() {
         onRequestSync={handleBackup}
         isSyncDisabled={isBackupDisabled}
         isSyncBusy={isBusy || isRestoreLocked}
-        isMemoEditingDisabled={isRestoreLocked || !isRestoreLockReady}
+        isMemoEditingDisabled={isRestoreLocked || !isRestoreLockReady || isStartupBlocking}
         actions={
           <button
             type="button"
@@ -2395,6 +2484,17 @@ export function App() {
         onClose={handleCloseBackupHistoryDialog}
         onRestore={handleRestoreBackupSnapshot}
       />
+      {startupServerRestore.dialog ? (
+        <StartupServerRestoreDialog
+          isOpen
+          isBusy={startupServerRestore.isBusy}
+          local={startupServerRestore.dialog.local}
+          server={startupServerRestore.dialog.server}
+          errorMessage={startupServerRestore.errorMessage}
+          onAccept={startupServerRestore.accept}
+          onDecline={startupServerRestore.decline}
+        />
+      ) : null}
       {serverMemoManager.isOpen ? (
         <div className="server-memo-dialog-backdrop">
           <section

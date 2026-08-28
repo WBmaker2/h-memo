@@ -161,6 +161,9 @@ describe("WebApp backup history failures", () => {
 
     render(<WebApp />);
     await waitFor(() => expect(screen.getByRole("button", { name: "서버 복원" })).toBeEnabled());
+    await user.click(
+      await screen.findByRole("button", { name: "아니요, 로컬 유지" })
+    );
     await user.click(screen.getByRole("button", { name: "서버 복원" }));
     const dialog = await screen.findByRole("dialog", { name: "백업 기록 선택" });
     expect(loadBackupSnapshot).not.toHaveBeenCalled();

@@ -50,6 +50,12 @@ const UPDATE_HISTORY = [
     detail:
       "Windows와 macOS에서 Google 계정 재로그인 시 필요한 OAuth 토큰 교환 설정을 복원하고, 누락된 릴리스는 빌드 전에 감지하도록 개선했습니다.",
   },
+  {
+    date: "2026-08-28",
+    title: "시작 시 서버 최신 메모 확인",
+    detail:
+      "로컬 메모와 서버 최신 백업을 비교해 서버에만 새 변경이 있을 때 확인 모달을 표시하고, Enter로 안전하게 복원하도록 개선했습니다.",
+  },
 ] as const;
 
 type MemoWorkspaceShellProps = {

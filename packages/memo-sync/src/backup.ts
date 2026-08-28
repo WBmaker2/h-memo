@@ -13,6 +13,7 @@ import type {
   BackupSaveResult,
   BackupGateway,
   BackupSnapshotPageCursor,
+  BackupSnapshotSummary,
   BackupSnapshotSummaryPage,
   MemoBackupPayload,
   StoredBackupSnapshot,
@@ -39,6 +40,20 @@ export type {
 } from "./backupTypes";
 export type { FirestoreBackupDriver } from "./firestoreBackupDriver";
 export type { BackupSnapshotSummary } from "./backupTypes";
+export {
+  createLocalSyncCheckpoint,
+  readLocalSyncCheckpoint,
+  writeLocalSyncCheckpoint,
+  clearLocalSyncCheckpoint,
+  type LocalSyncCheckpoint,
+} from "./localSyncCheckpoint";
+export {
+  compareStartupVersions,
+  getLatestMemoUpdatedAt,
+  type StartupLocalVersion,
+  type StartupVersionDecision,
+  type StartupVersionDecisionKind,
+} from "./startupVersionComparison";
 
 const DEFAULT_BACKUP_HISTORY_PAGE_SIZE = 10;
 const MAX_BACKUP_HISTORY_PAGE_SIZE = 50;
@@ -74,6 +89,23 @@ export async function listBackupSnapshotSummaries(
   now = new Date().toISOString()
 ) {
   return selectDailyBackupSummaries(await gateway.listBackupSummaries(userId), now);
+}
+
+export async function loadLatestBackupSnapshotSummary(
+  gateway: BackupGateway,
+  userId: string,
+): Promise<BackupSnapshotSummary | null> {
+  if (gateway.loadLatestBackupSummary) {
+    return gateway.loadLatestBackupSummary(userId);
+  }
+
+  const summaries = await gateway.listBackupSummaries(userId);
+  return [...summaries].sort((left, right) => {
+    if (left.savedAt === null && right.savedAt === null) return 0;
+    if (left.savedAt === null) return 1;
+    if (right.savedAt === null) return -1;
+    return right.savedAt.localeCompare(left.savedAt);
+  })[0] ?? null;
 }
 
 export async function listBackupSnapshotSummaryPage(

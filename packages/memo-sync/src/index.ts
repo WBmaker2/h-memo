@@ -11,6 +11,7 @@ export {
   listBackupSnapshotSummaries,
   listBackedUpMemos,
   listBackupSnapshots,
+  loadLatestBackupSnapshotSummary,
   loadBackupSnapshot,
   restoreLatestBackup,
 } from "./backup";
@@ -39,3 +40,18 @@ export type {
   StoredBackupSnapshot,
 } from "./backupTypes";
 export type { FirestoreBackupDriver } from "./firestoreBackupDriver";
+export { createBackupContentHash, createBackupPreviewText } from "./backupFingerprint";
+export {
+  compareStartupVersions,
+  getLatestMemoUpdatedAt,
+  type StartupLocalVersion,
+  type StartupVersionDecision,
+  type StartupVersionDecisionKind,
+} from "./startupVersionComparison";
+export {
+  createLocalSyncCheckpoint,
+  readLocalSyncCheckpoint,
+  writeLocalSyncCheckpoint,
+  clearLocalSyncCheckpoint,
+  type LocalSyncCheckpoint,
+} from "./localSyncCheckpoint";
