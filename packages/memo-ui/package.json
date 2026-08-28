@@ -1,12 +1,12 @@
 {
   "name": "@h-memo/memo-ui",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "peerDependencies": {
-    "@h-memo/memo-core": "1.0.6",
+    "@h-memo/memo-core": "1.0.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
