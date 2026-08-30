@@ -1794,9 +1794,17 @@ fn build_tray(app: &AppHandle) -> AnyhowResult<()> {
 }
 
 pub fn run() {
+  let updater_builder = tauri_plugin_updater::Builder::new();
+  #[cfg(not(debug_assertions))]
+  let updater_builder = match option_env!("TAURI_UPDATER_PUBLIC_KEY") {
+    Some(public_key) if !public_key.trim().is_empty() => updater_builder.pubkey(public_key),
+    _ => updater_builder,
+  };
+
   tauri::Builder::default()
     .plugin(tauri_plugin_autostart::Builder::new().build())
     .plugin(tauri_plugin_dialog::init())
+    .plugin(updater_builder.build())
     .setup(|app| {
       let connection = open_database(app.handle())?;
       initialize_database(&connection)?;

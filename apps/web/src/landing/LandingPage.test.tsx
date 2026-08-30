@@ -163,6 +163,12 @@ describe("LandingPage", () => {
 
     const dialog = screen.getByRole("dialog", { name: "업데이트 기록" });
     expect(dialog).toBeInTheDocument();
+    expect(screen.getByText("Windows 앱 자동 업데이트 안내 개선")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "새 버전을 발견하면 예/아니요로 선택하고, 1주일 또는 1달 뒤 다시 안내를 선택할 수 있도록 개선했습니다.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("v1.0.1")).toBeInTheDocument();
     expect(screen.getByText("KST 백업 및 릴리스 자동화")).toBeInTheDocument();
     expect(screen.getByText("백업 기록 서버 페이지 조회")).toBeInTheDocument();
@@ -206,6 +212,14 @@ describe("LandingPage", () => {
     await user.click(screen.getByRole("button", { name: "업데이트 기록 닫기" }));
 
     expect(screen.queryByRole("dialog", { name: "업데이트 기록" })).not.toBeInTheDocument();
+  });
+
+  it("promotes the Windows auto-update choices", () => {
+    render(<LandingPage />);
+
+    expect(
+      screen.getByText("Windows 앱 새 버전 자동 확인 및 1주일·1달 뒤 재안내 선택"),
+    ).toBeInTheDocument();
   });
 
   it("displays the latest GitHub Release version returned by the resolver", async () => {

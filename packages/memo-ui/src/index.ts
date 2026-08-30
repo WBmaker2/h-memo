@@ -26,3 +26,9 @@ export {
   StartupServerRestoreDialog,
   type StartupServerRestoreDialogProps,
 } from "./StartupServerRestoreDialog";
+export {
+  AppUpdateDialog,
+  type AppUpdateDialogPhase,
+  type AppUpdateDialogProps,
+  type UpdateSnoozePeriod,
+} from "./AppUpdateDialog";

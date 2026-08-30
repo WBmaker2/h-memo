@@ -111,6 +111,7 @@ import desktopPackageJson from "../package.json";
 import { restoreDesktopBackupSelection } from "./desktopBackupHistory";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
 import { useDesktopStartupServerRestore } from "./features/startup-sync/useDesktopStartupServerRestore";
+import { DesktopUpdatePrompt } from "./features/updater/DesktopUpdatePrompt";
 
 type BackupMessage = string;
 type SyncServices = {
@@ -2495,6 +2496,18 @@ export function App() {
           onDecline={startupServerRestore.decline}
         />
       ) : null}
+      <DesktopUpdatePrompt
+        enabled={isMainWindow}
+        blocked={
+          !authSettled ||
+          !hasLoadedMemos ||
+          !isRestoreLockReady ||
+          isBusy ||
+          isRestoreLocked ||
+          isStartupBlocking ||
+          Boolean(startupServerRestore.dialog)
+        }
+      />
       {serverMemoManager.isOpen ? (
         <div className="server-memo-dialog-backdrop">
           <section

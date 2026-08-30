@@ -548,6 +548,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: vi.fn().mockResolvedValue(null),
+}));
+
 function getMemoFromTime({
   id = `memo-${Date.now()}`,
   now = new Date().toISOString(),

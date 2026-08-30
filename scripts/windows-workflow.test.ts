@@ -3,12 +3,13 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+function readWorkflow() {
+  return readFileSync(path.resolve(".github", "workflows", "windows-tauri.yml"), "utf8");
+}
+
 describe("Windows Tauri workflow", () => {
   it("validates pull requests and version tags without building on main pushes", () => {
-    const workflow = readFileSync(
-      path.resolve(".github", "workflows", "windows-tauri.yml"),
-      "utf8"
-    );
+    const workflow = readWorkflow();
 
     expect(workflow).toMatch(/push:\s*\n\s*tags:\s*\n\s*- "v\*"/);
     expect(workflow).not.toMatch(/branches:\s*\n\s*- main/);
@@ -26,10 +27,7 @@ describe("Windows Tauri workflow", () => {
   });
 
   it("dereferences annotated tags to their commit before validating a release target", () => {
-    const workflow = readFileSync(
-      path.resolve(".github", "workflows", "windows-tauri.yml"),
-      "utf8"
-    );
+    const workflow = readWorkflow();
 
     expect(workflow).toContain(
       'gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq \'.sha\''
@@ -40,5 +38,70 @@ describe("Windows Tauri workflow", () => {
     );
     expect(workflow).not.toContain("/git/ref/${tag_ref}");
     expect(workflow).not.toContain(".object.sha");
+  });
+
+  it("uses Tauri updater signatures without paid Authenticode signing", () => {
+    const workflow = readWorkflow();
+
+    expect(workflow).toContain("TAURI_SIGNING_PRIVATE_KEY:");
+    expect(workflow).toContain("TAURI_SIGNING_PRIVATE_KEY_PASSWORD:");
+    expect(workflow).toContain("TAURI_UPDATER_PUBLIC_KEY:");
+    expect(workflow).toContain("Validate Tauri updater signing configuration");
+    expect(workflow).toContain('createUpdaterArtifacts":true');
+    expect(workflow).toContain("Create Tauri updater manifest");
+    expect(workflow).toContain("node scripts/create-updater-manifest.mjs");
+    expect(workflow).toContain("latest.json");
+    expect(workflow).toContain("*.msi.sig");
+    expect(workflow).toContain("*.exe.sig");
+    expect(workflow).not.toContain("id-token: write");
+    expect(workflow).not.toContain("azure/login");
+    expect(workflow).not.toContain("azure/artifact-signing-action");
+    expect(workflow).not.toContain("WINDOWS_ARTIFACT_SIGNING_");
+    expect(workflow).not.toContain("Get-AuthenticodeSignature");
+    expect(workflow).not.toContain("verify-windows-signatures.ps1");
+    expect(workflow).not.toContain("windows-release");
+  });
+
+  it("keeps non-release builds keyless and separates them from the release path", () => {
+    const workflow = readWorkflow();
+
+    expect(workflow).toContain("Build unsigned Windows installer for non-release validation");
+    expect(workflow).toContain(
+      "if: ${{ steps.release_tag.outputs.release_tag == '' }}"
+    );
+    expect(workflow).toContain(
+      "if: ${{ steps.release_tag.outputs.release_tag != '' }}"
+    );
+    expect(workflow).toContain("path: apps/desktop/src-tauri/target/release/bundle/msi/*");
+    expect(workflow).toContain("path: apps/desktop/src-tauri/target/release/bundle/nsis/*");
+  });
+
+  it("publishes both installer signatures and latest.json only after a successful build", () => {
+    const workflow = readWorkflow();
+    const buildJob = workflow.indexOf("  windows-tauri:");
+    const releaseJob = workflow.indexOf("  release:");
+    const releaseNeeds = workflow.indexOf("needs: windows-tauri", releaseJob);
+    const manifestStep = workflow.indexOf("- name: Create Tauri updater manifest");
+    const publishStep = workflow.indexOf(
+      "- name: Upload installers and updater manifest to GitHub Release"
+    );
+
+    expect(buildJob).toBeGreaterThan(-1);
+    expect(releaseJob).toBeGreaterThan(buildJob);
+    expect(releaseNeeds).toBeGreaterThan(releaseJob);
+    expect(manifestStep).toBeGreaterThan(releaseJob);
+    expect(publishStep).toBeGreaterThan(manifestStep);
+    expect(workflow).toContain('gh release upload "$RELEASE_TAG" "${artifacts[@]}"');
+    expect(workflow).toContain('gh release create "$RELEASE_TAG" "${artifacts[@]}"');
+  });
+
+  it("keeps a reproducible manifest command in the root scripts", () => {
+    const rootPackage = JSON.parse(
+      readFileSync(path.resolve("package.json"), "utf8")
+    );
+
+    expect(rootPackage.scripts["create:updater-manifest"]).toBe(
+      "node scripts/create-updater-manifest.mjs"
+    );
   });
 });

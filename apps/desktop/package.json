@@ -10,6 +10,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:windows": "tauri build --bundles nsis,msi",
+    "tauri:bundle:windows": "tauri bundle --bundles nsis,msi",
     "tauri:build:macos": "tauri build --bundles app",
     "tauri:icon": "tauri icon src-tauri/icons/icon.svg"
   },
@@ -20,6 +21,7 @@
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-autostart": "^2.2.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
