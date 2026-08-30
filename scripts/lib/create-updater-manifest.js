@@ -19,6 +19,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
     releaseTag: null,
     repository: null,
     assetDir: null,
+    manifestAssetName: null,
     output: null,
     notes: null,
     help: false,
@@ -28,6 +29,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
     ["--release-tag", "releaseTag"],
     ["--repository", "repository"],
     ["--asset-dir", "assetDir"],
+    ["--asset-name", "manifestAssetName"],
     ["--output", "output"],
     ["--notes", "notes"],
   ]);
@@ -161,11 +163,12 @@ export function createUpdaterManifestFromDirectory({
   releaseTag,
   repository,
   assetDir,
+  manifestAssetName = null,
   notes = null,
   publishedAt,
 }) {
-  const { assetDir: normalizedAssetDir, assetName } = findSingleMsi(assetDir);
-  const signaturePath = path.join(normalizedAssetDir, `${assetName}.sig`);
+  const { assetDir: normalizedAssetDir, assetName: localAssetName } = findSingleMsi(assetDir);
+  const signaturePath = path.join(normalizedAssetDir, `${localAssetName}.sig`);
   if (!existsSync(signaturePath)) {
     throw new Error(`Updater signature not found: ${signaturePath}`);
   }
@@ -174,7 +177,7 @@ export function createUpdaterManifestFromDirectory({
     version,
     releaseTag,
     repository,
-    assetName,
+    assetName: manifestAssetName ?? localAssetName,
     signature: readFileSync(signaturePath, "utf8"),
     notes,
     publishedAt,
@@ -184,7 +187,8 @@ export function createUpdaterManifestFromDirectory({
 function printUsage() {
   console.log(
     "Usage: node scripts/create-updater-manifest.mjs --version <version> " +
-      "--release-tag <tag> --repository <owner/name> --asset-dir <dir> --output <file> [--notes <text>]"
+      "--release-tag <tag> --repository <owner/name> --asset-dir <dir> --output <file> " +
+      "[--asset-name <published-name>] [--notes <text>]"
   );
 }
 
@@ -206,6 +210,7 @@ export function main(argv = process.argv.slice(2)) {
       releaseTag,
       repository,
       assetDir,
+      manifestAssetName: options.manifestAssetName,
       notes: options.notes,
     });
 
