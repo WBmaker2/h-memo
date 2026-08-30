@@ -1,7 +1,7 @@
 # H Memo 무료 Tauri updater 기반 Windows 자동 업데이트 계획
 
 - 작성일: 2026-08-30
-- 상태: Windows release 복구 경로 보완 및 v1.0.8 재배포 진행 중
+- 상태: v1.0.8 updater manifest 보정 및 재검증 진행 중
 - 결정: 유료 Windows Authenticode 인증서 서명 없이 Tauri updater의 무료 암호화 서명만 사용
 
 ## 1. 목표와 확정 범위
