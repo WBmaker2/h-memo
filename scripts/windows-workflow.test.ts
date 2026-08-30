@@ -57,7 +57,7 @@ describe("Windows Tauri workflow", () => {
     expect(workflow).toContain(
       '"pubkey":"${{ vars.TAURI_UPDATER_PUBLIC_KEY }}"'
     );
-    expect(workflow).toContain("Create Tauri updater manifest");
+    expect(workflow).toContain("node scripts/create-updater-manifest.mjs");
     expect(workflow).toContain("node scripts/create-updater-manifest.mjs");
     expect(workflow).toContain("latest.json");
     expect(workflow).toContain("*.msi.sig");
@@ -90,7 +90,6 @@ describe("Windows Tauri workflow", () => {
     const buildJob = workflow.indexOf("  windows-tauri:");
     const releaseJob = workflow.indexOf("  release:");
     const releaseNeeds = workflow.indexOf("needs: windows-tauri", releaseJob);
-    const manifestStep = workflow.indexOf("- name: Create Tauri updater manifest");
     const publishStep = workflow.indexOf(
       "- name: Upload installers and updater manifest to GitHub Release"
     );
@@ -98,10 +97,13 @@ describe("Windows Tauri workflow", () => {
     expect(buildJob).toBeGreaterThan(-1);
     expect(releaseJob).toBeGreaterThan(buildJob);
     expect(releaseNeeds).toBeGreaterThan(releaseJob);
-    expect(manifestStep).toBeGreaterThan(releaseJob);
-    expect(publishStep).toBeGreaterThan(manifestStep);
-    expect(workflow).toContain('gh release upload "$RELEASE_TAG" "${artifacts[@]}"');
-    expect(workflow).toContain('gh release create "$RELEASE_TAG" "${artifacts[@]}"');
+    expect(publishStep).toBeGreaterThan(releaseJob);
+    expect(workflow).toContain('gh release upload "$RELEASE_TAG" "${installer_artifacts[@]}"');
+    expect(workflow).toContain('gh release create "$RELEASE_TAG" "${installer_artifacts[@]}"');
+    expect(workflow).toContain("published_msi_assets");
+    expect(workflow).toContain("--asset-name \"$published_msi_asset\"");
+    expect(workflow).toContain("endswith(\".msi\")");
+    expect(workflow).toContain('gh release upload "$RELEASE_TAG" latest.json');
   });
 
   it("keeps a reproducible manifest command in the root scripts", () => {

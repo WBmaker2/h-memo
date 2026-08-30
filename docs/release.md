@@ -117,7 +117,7 @@ npm run check:versions -- --release-tag v1.0.7
 
 ## 6) updater manifest와 Windows 설치 방식
 
-release job은 [`scripts/create-updater-manifest.mjs`](../scripts/create-updater-manifest.mjs)를 실행해 GitHub Release의 MSI 이름과 MSI `.sig` 내용을 읽습니다. 결과인 `latest.json`은 다음 고정 endpoint에 게시됩니다.
+release job은 설치 파일을 먼저 GitHub Release에 게시한 뒤, GitHub가 최종 등록한 MSI asset명을 조회하여 [`scripts/create-updater-manifest.mjs`](../scripts/create-updater-manifest.mjs)에 전달합니다. 따라서 로컬 artifact명과 GitHub asset명의 공백/점 표기가 달라도 `latest.json`의 URL은 실제 게시 asset과 일치합니다. MSI `.sig` 내용도 함께 읽어 manifest에 넣습니다. 결과인 `latest.json`은 다음 고정 endpoint에 게시됩니다.
 
 ```text
 https://github.com/WBmaker2/h-memo/releases/latest/download/latest.json
