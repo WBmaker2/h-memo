@@ -1,7 +1,7 @@
 # H Memo 무료 Tauri updater 기반 Windows 자동 업데이트 계획
 
 - 작성일: 2026-08-30
-- 상태: v1.0.8 updater manifest 보정 및 재검증 진행 중
+- 상태: 구현 및 v1.0.8 릴리스 완료
 - 결정: 유료 Windows Authenticode 인증서 서명 없이 Tauri updater의 무료 암호화 서명만 사용
 
 ## 1. 목표와 확정 범위
@@ -211,6 +211,7 @@ npm run tauri:build:windows
 - 2026-08-30: 사용자 승인 후 Tauri 개인 키를 GitHub Secret, 공개 키를 GitHub Variable로 등록함. 첫 v1.0.8 Windows release workflow는 Tauri bundler 설정에서 `plugins.updater.pubkey`가 빠져 실패했으며, release 전용 config override에 공개 키를 주입하는 hotfix를 추가하고 정적 workflow 테스트 6건과 버전 검사를 통과시킴.
 - 2026-08-30: 기존 v1.0.8 태그를 유지하기 위해 release가 없는 기존 태그를 명시적으로 재빌드하는 경로를 추가함. 조상 태그·허용된 release-tooling 변경 파일·`rebuild_existing_tag=true` 입력을 모두 확인하며, `fix(release):` hotfix는 자동 patch bump에서 제외함.
 - 2026-08-30: GitHub Release가 파일명의 공백을 점으로 정규화할 수 있는 것을 확인함. 설치 파일을 먼저 게시한 뒤 실제 MSI asset명을 조회해 `latest.json`을 생성하도록 workflow와 manifest 생성기를 보완함.
+- 2026-08-30: Windows release workflow 33315582526이 signed MSI/NSIS와 각 signature, `latest.json` 게시에 성공함. manifest의 MSI URL을 실제 `H.Memo_1.0.8_x64_en-US.msi` asset으로 보정한 뒤 URL HTTP 200과 signature 길이 416을 확인했으며, GitHub Pages v1.0.8 배포와 main CI도 성공함.
 
 ## 9. 후속 요청: 업데이트 선택 및 재안내 기간
 
