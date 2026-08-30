@@ -208,19 +208,6 @@ jobs:
           name: h-memo-windows-nsis
           path: release-assets/nsis
 
-      - name: Create Tauri updater manifest
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.windows-tauri.outputs.release_tag }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          node scripts/create-updater-manifest.mjs \
-            --version "${RELEASE_TAG#v}" \
-            --release-tag "$RELEASE_TAG" \
-            --repository "$GITHUB_REPOSITORY" \
-            --asset-dir release-assets/msi \
-            --output latest.json
-
       - name: Upload installers and updater manifest to GitHub Release
         shell: bash
         env:
@@ -248,7 +235,7 @@ jobs:
             exit 1
           fi
 
-          artifacts=("${msi_files[@]}" "${msi_signatures[@]}" "${nsis_files[@]}" "${nsis_signatures[@]}" latest.json)
+          installer_artifacts=("${msi_files[@]}" "${msi_signatures[@]}" "${nsis_files[@]}" "${nsis_signatures[@]}")
           echo "Found one MSI, one MSI signature, one NSIS installer, and one NSIS signature."
 
           existing_tag_commit=""
@@ -277,7 +264,7 @@ jobs:
             while IFS= read -r changed_file; do
               [ -z "$changed_file" ] && continue
               case "$changed_file" in
-                .github/workflows/auto-version.yml|.github/workflows/windows-tauri.yml|docs/release.md|docs/superpowers/plans/2026-08-30-h-memo-tauri-free-updater.md|scripts/auto-version-workflow.test.ts|scripts/windows-workflow.test.ts)
+                .github/workflows/auto-version.yml|.github/workflows/windows-tauri.yml|docs/release.md|docs/superpowers/plans/2026-08-30-h-memo-tauri-free-updater.md|scripts/auto-version-workflow.test.ts|scripts/create-updater-manifest.mjs|scripts/create-updater-manifest.test.ts|scripts/lib/create-updater-manifest.js|scripts/windows-workflow.test.ts)
                   ;;
                 *)
                   disallowed_files+="$changed_file"$'\n'
@@ -296,13 +283,33 @@ jobs:
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName > /dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists. Uploading installers and latest.json..."
-            gh release upload "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$RELEASE_TAG" "${installer_artifacts[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           else
             if [ -n "$existing_tag_commit" ]; then
               echo "Creating release $RELEASE_TAG for the existing tag..."
-              gh release create "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --generate-notes
+              gh release create "$RELEASE_TAG" "${installer_artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --generate-notes
             else
               echo "Creating new release $RELEASE_TAG at $RELEASE_TARGET..."
-              gh release create "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --generate-notes --target "$RELEASE_TARGET"
+              gh release create "$RELEASE_TAG" "${installer_artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --generate-notes --target "$RELEASE_TARGET"
             fi
           fi
+
+          mapfile -t published_msi_assets < <(
+            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[] | select(.name | endswith(".msi")) | .name' | sort
+          )
+          if [ "${#published_msi_assets[@]}" -ne 1 ]; then
+            echo "Expected exactly one published MSI asset, found ${#published_msi_assets[@]}." >&2
+            exit 1
+          fi
+
+          published_msi_asset="${published_msi_assets[0]}"
+          echo "Using published MSI asset name for latest.json: $published_msi_asset"
+          node scripts/create-updater-manifest.mjs \
+            --version "${RELEASE_TAG#v}" \
+            --release-tag "$RELEASE_TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --asset-dir release-assets/msi \
+            --asset-name "$published_msi_asset" \
+            --output latest.json
+          gh release upload "$RELEASE_TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber

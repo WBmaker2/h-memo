@@ -60,6 +60,24 @@ describe("createUpdaterManifest", () => {
     expect(manifest.platforms["windows-x86_64"].url).toContain("H%20Memo_1.0.7.msi");
   });
 
+  it("can use the published GitHub asset name when it differs from the local artifact name", () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "h-memo-updater-"));
+    temporaryDirectories.push(directory);
+    writeFileSync(path.join(directory, "H Memo_1.0.8.msi"), "installer", "utf8");
+    writeFileSync(path.join(directory, "H Memo_1.0.8.msi.sig"), "signed", "utf8");
+
+    const manifest = createUpdaterManifestFromDirectory({
+      version: "1.0.8",
+      releaseTag: "v1.0.8",
+      repository: "WBmaker2/h-memo",
+      assetDir: directory,
+      manifestAssetName: "H.Memo_1.0.8.msi",
+      publishedAt: "2026-08-30T00:00:00.000Z",
+    });
+
+    expect(manifest.platforms["windows-x86_64"].url).toContain("H.Memo_1.0.8.msi");
+  });
+
   it("fails closed for a missing signature, invalid version, or ambiguous MSI directory", () => {
     expect(() =>
       createUpdaterManifest({
