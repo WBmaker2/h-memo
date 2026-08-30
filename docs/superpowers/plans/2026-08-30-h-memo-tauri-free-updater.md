@@ -1,7 +1,7 @@
 # H Memo 무료 Tauri updater 기반 Windows 자동 업데이트 계획
 
 - 작성일: 2026-08-30
-- 상태: Windows release 설정 보완 및 v1.0.8 재배포 진행 중
+- 상태: Windows release 복구 경로 보완 및 v1.0.8 재배포 진행 중
 - 결정: 유료 Windows Authenticode 인증서 서명 없이 Tauri updater의 무료 암호화 서명만 사용
 
 ## 1. 목표와 확정 범위
@@ -209,6 +209,7 @@ npm run tauri:build:windows
 - 2026-08-30: Tauri updater 상태/UI, 정적 manifest 생성기, Windows release workflow, 문서와 앱·웹 업데이트 내역을 구현함.
 - 2026-08-30: 전체 Vitest는 한 차례 76개 파일 통과·1개 skip, 552개 테스트 통과·11개 skip으로 완료함. 반복 집계에서는 기존 `apps/web/src/WebApp.test.tsx` 백업 타이밍 테스트가 간헐적으로 1건 실패했지만 해당 파일 단독 재실행은 42/42 통과함. TypeScript, Vite, Rust check/test, 버전·JSON·YAML·diff 검증도 완료함.
 - 2026-08-30: 사용자 승인 후 Tauri 개인 키를 GitHub Secret, 공개 키를 GitHub Variable로 등록함. 첫 v1.0.8 Windows release workflow는 Tauri bundler 설정에서 `plugins.updater.pubkey`가 빠져 실패했으며, release 전용 config override에 공개 키를 주입하는 hotfix를 추가하고 정적 workflow 테스트 6건과 버전 검사를 통과시킴.
+- 2026-08-30: 기존 v1.0.8 태그를 유지하기 위해 release가 없는 기존 태그를 명시적으로 재빌드하는 경로를 추가함. 조상 태그·허용된 release-tooling 변경 파일·`rebuild_existing_tag=true` 입력을 모두 확인하며, `fix(release):` hotfix는 자동 patch bump에서 제외함.
 
 ## 9. 후속 요청: 업데이트 선택 및 재안내 기간
 

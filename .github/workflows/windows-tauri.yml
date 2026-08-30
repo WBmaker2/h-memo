@@ -13,6 +13,11 @@ on:
       release_tag:
         description: "Release tag to publish (예: v0.1.0)"
         required: true
+      rebuild_existing_tag:
+        description: "Allow a controlled rebuild when a release tag exists without a GitHub Release"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   windows-tauri:
@@ -25,6 +30,8 @@ jobs:
       release_tag: ${{ steps.release_tag.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -174,6 +181,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Confirm release tag
         shell: bash
@@ -218,6 +227,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.windows-tauri.outputs.release_tag }}
           RELEASE_TARGET: ${{ github.sha }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          REBUILD_EXISTING_TAG: ${{ github.event.inputs.rebuild_existing_tag || 'false' }}
         run: |
           mapfile -t msi_files < <(find release-assets/msi -type f -name "*.msi" | sort)
           mapfile -t msi_signatures < <(find release-assets/msi -type f -name "*.msi.sig" | sort)
@@ -245,15 +256,53 @@ jobs:
             existing_tag_commit="$tag_commit"
           fi
           if [ -n "$existing_tag_commit" ] && [ "$existing_tag_commit" != "$RELEASE_TARGET" ]; then
-            echo "Release tag $RELEASE_TAG resolves to $existing_tag_commit, but this workflow built $RELEASE_TARGET." >&2
-            echo "Run the workflow from the matching tag/ref or use a new release tag." >&2
-            exit 1
+            if [ "$RELEASE_EVENT" != "workflow_dispatch" ] || [ "$REBUILD_EXISTING_TAG" != "true" ]; then
+              echo "Release tag $RELEASE_TAG resolves to $existing_tag_commit, but this workflow built $RELEASE_TARGET." >&2
+              echo "Run the workflow from the matching tag/ref or use a new release tag." >&2
+              exit 1
+            fi
+
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName > /dev/null 2>&1; then
+              echo "Controlled existing-tag rebuild is only allowed when the GitHub Release is missing." >&2
+              exit 1
+            fi
+
+            if ! git merge-base --is-ancestor "$existing_tag_commit" "$RELEASE_TARGET"; then
+              echo "The existing release tag must be an ancestor of the rebuild commit." >&2
+              exit 1
+            fi
+
+            changed_files="$(git diff --name-only "$existing_tag_commit" "$RELEASE_TARGET")"
+            disallowed_files=""
+            while IFS= read -r changed_file; do
+              [ -z "$changed_file" ] && continue
+              case "$changed_file" in
+                .github/workflows/auto-version.yml|.github/workflows/windows-tauri.yml|docs/release.md|docs/superpowers/plans/2026-08-30-h-memo-tauri-free-updater.md|scripts/auto-version-workflow.test.ts|scripts/windows-workflow.test.ts)
+                  ;;
+                *)
+                  disallowed_files+="$changed_file"$'\n'
+                  ;;
+              esac
+            done <<< "$changed_files"
+
+            if [ -n "$disallowed_files" ]; then
+              echo "Controlled existing-tag rebuild contains non-release-tooling changes:" >&2
+              printf '%s' "$disallowed_files" >&2
+              exit 1
+            fi
+
+            echo "Using controlled existing-tag rebuild for $RELEASE_TAG from $RELEASE_TARGET."
           fi
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName > /dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists. Uploading installers and latest.json..."
             gh release upload "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           else
-            echo "Creating new release $RELEASE_TAG at $RELEASE_TARGET..."
-            gh release create "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --generate-notes --target "$RELEASE_TARGET"
+            if [ -n "$existing_tag_commit" ]; then
+              echo "Creating release $RELEASE_TAG for the existing tag..."
+              gh release create "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --generate-notes
+            else
+              echo "Creating new release $RELEASE_TAG at $RELEASE_TARGET..."
+              gh release create "$RELEASE_TAG" "${artifacts[@]}" --repo "$GITHUB_REPOSITORY" --title "H Memo $RELEASE_TAG" --generate-notes --target "$RELEASE_TARGET"
+            fi
           fi

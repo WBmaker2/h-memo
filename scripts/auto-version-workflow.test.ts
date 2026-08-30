@@ -54,6 +54,7 @@ describe("Auto Version and Tag workflow", () => {
     );
 
     expect(workflow).toContain("Skipping automatic release commit");
+    expect(workflow).toContain("Skipping release tooling fix");
     expect(workflow).toContain('"Source-Commit: $SOURCE_COMMIT"');
     expect(workflow).toContain("Skipping already processed source commit");
     expect(workflow).toContain("npm run --silent version:bump");

@@ -30,7 +30,15 @@ npm run version:bump
 2. **Run workflow**에서 실행할 브랜치/태그를 선택하고 `release_tag` 입력 (예: `v1.0.7`)
 3. 실행하면 선택한 ref의 workflow 실행 커밋(`GITHUB_SHA`) 기준으로 릴리스 artifact가 업로드됩니다.
 
-수동 실행에서 `release_tag`가 아직 존재하지 않으면 workflow는 `gh release create --target "$GITHUB_SHA"`로 해당 태그에 release를 생성합니다. 이미 존재하는 태그라면 태그 SHA가 현재 workflow 실행 커밋과 같은지 확인하고, 다르면 asset 덮어쓰기를 중단합니다.
+수동 실행에서 `release_tag`가 아직 존재하지 않으면 workflow는 `gh release create --target "$GITHUB_SHA"`로 해당 태그에 release를 생성합니다. 이미 존재하는 태그라면 기본적으로 태그 SHA가 현재 workflow 실행 커밋과 같은지 확인하고, 다르면 asset 덮어쓰기를 중단합니다. 태그는 생성됐지만 GitHub Release가 만들어지지 않은 release-tooling hotfix를 복구할 때만 `rebuild_existing_tag=true`를 추가할 수 있으며, 이 경로는 기존 태그가 현재 커밋의 조상이고 허용된 release workflow 파일만 변경된 경우에 한정됩니다.
+
+예를 들어 v1.0.8 Windows Release가 빌드 설정 오류로 게시되지 않은 경우에는 다음처럼 실행합니다.
+
+```bash
+gh workflow run windows-tauri.yml --ref main -f release_tag=v1.0.8 -f rebuild_existing_tag=true
+```
+
+`fix(release):`로 시작하는 release-tooling hotfix는 제품 코드 버전을 다시 올리지 않도록 자동 patch bump 대상에서 제외합니다.
 
 ## 3) 동작 정리
 

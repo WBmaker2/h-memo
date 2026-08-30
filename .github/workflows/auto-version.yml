@@ -58,6 +58,12 @@ jobs:
             exit 0
           fi
 
+          if [[ "$source_subject" == fix\(release\):* ]]; then
+            echo "Skipping release tooling fix $SOURCE_COMMIT."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if git log origin/main --format=%B | grep -Fqx "Source-Commit: $SOURCE_COMMIT"; then
             echo "Skipping already processed source commit $SOURCE_COMMIT."
             echo "eligible=false" >> "$GITHUB_OUTPUT"
