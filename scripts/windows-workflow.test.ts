@@ -16,6 +16,7 @@ describe("Windows Tauri workflow", () => {
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("release_tag:");
+    expect(workflow).toContain("rebuild_existing_tag:");
     expect(workflow).toContain("VITE_GOOGLE_OAUTH_CLIENT_ID:");
     expect(workflow).toContain(
       "GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET || '' }}"
@@ -36,6 +37,11 @@ describe("Windows Tauri workflow", () => {
     expect(workflow).toContain(
       '[ "$existing_tag_commit" != "$RELEASE_TARGET" ]'
     );
+    expect(workflow).toContain("RELEASE_EVENT:");
+    expect(workflow).toContain("REBUILD_EXISTING_TAG:");
+    expect(workflow).toContain("Controlled existing-tag rebuild");
+    expect(workflow).toContain("git merge-base --is-ancestor");
+    expect(workflow).toContain("git diff --name-only");
     expect(workflow).not.toContain("/git/ref/${tag_ref}");
     expect(workflow).not.toContain(".object.sha");
   });
@@ -48,6 +54,9 @@ describe("Windows Tauri workflow", () => {
     expect(workflow).toContain("TAURI_UPDATER_PUBLIC_KEY:");
     expect(workflow).toContain("Validate Tauri updater signing configuration");
     expect(workflow).toContain('createUpdaterArtifacts":true');
+    expect(workflow).toContain(
+      '"pubkey":"${{ vars.TAURI_UPDATER_PUBLIC_KEY }}"'
+    );
     expect(workflow).toContain("Create Tauri updater manifest");
     expect(workflow).toContain("node scripts/create-updater-manifest.mjs");
     expect(workflow).toContain("latest.json");

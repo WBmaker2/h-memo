@@ -1,7 +1,7 @@
 # H Memo 무료 Tauri updater 기반 Windows 자동 업데이트 계획
 
 - 작성일: 2026-08-30
-- 상태: 후속 UX 구현 및 v1.0.8 릴리스 진행 중
+- 상태: Windows release 복구 경로 보완 및 v1.0.8 재배포 진행 중
 - 결정: 유료 Windows Authenticode 인증서 서명 없이 Tauri updater의 무료 암호화 서명만 사용
 
 ## 1. 목표와 확정 범위
@@ -21,7 +21,7 @@ H Memo Windows 데스크톱 앱이 시작될 때 새 버전을 확인하고, 새
 - GitHub Release의 정적 `latest.json` manifest 생성 및 게시
 - Windows x86_64용 MSI를 updater의 표준 설치 payload로 사용
 - 앱 시작 시 서버 최신 메모리 복원 확인과 충돌하지 않는 업데이트 확인
-- 업데이트 확인, 설치 진행률, 실패, 재시도, 나중에 선택하는 사용자 경험
+- 업데이트 확인, 설치 진행률, 실패, 재시도, 예/아니요와 재안내 기간 선택 사용자 경험
 - 웹 랜딩 페이지와 데스크톱 앱의 `업데이트 내역`에 같은 변경 사항 기록
 - 유료 Windows Authenticode/Azure Artifact Signing 없이 동작하는 Windows release workflow
 
@@ -33,7 +33,7 @@ H Memo Windows 데스크톱 앱이 시작될 때 새 버전을 확인하고, 새
 - macOS 자동 업데이트
 - 웹 브라우저 버전의 자동 업데이트
 - MSI와 NSIS를 설치 방식별로 자동 판별하는 migration 로직
-- 이번 작업에서 실제 GitHub Secret/Variable 등록, tag 생성, release 배포
+- Windows 릴리스의 실제 운영 승인·수동 설치 확인
 
 ## 3. 구현 결정
 
@@ -84,7 +84,7 @@ H Memo 시작
 
 ```text
 idle → checking → idle                         (업데이트 없음)
-                   └→ available → dismissed   (나중에)
+                   └→ available → dismissed   (아니요 또는 재안내 기간 저장)
                                 └→ installing → 앱 재시작/설치
                                 └→ error → installing (재시도)
 ```
@@ -183,8 +183,9 @@ npm run tauri:build:windows
 
 - 새 버전이 있을 때 main 창에 한국어 업데이트 확인 dialog가 표시됩니다.
 - startup server restore 중에는 업데이트 dialog가 겹치지 않습니다.
-- `나중에`를 선택하면 현재 실행을 계속할 수 있고, 같은 실행에서 반복 표시되지 않습니다.
-- `업데이트`를 선택하면 Tauri가 서명 검증 후 MSI 설치를 시작합니다.
+- `아니요`를 선택하면 현재 실행을 계속할 수 있고, 같은 실행에서 반복 표시되지 않습니다.
+- `1주일 뒤에 다시 안내` 또는 `1달 뒤에 다시 안내`를 선택하면 해당 기간 동안 원격 업데이트 확인과 대화상자 표시를 건너뜁니다.
+- `예`를 선택하면 Tauri가 서명 검증 후 MSI 설치를 시작합니다.
 - 설치 파일 또는 signature가 바뀌면 updater가 설치를 거부합니다.
 - 네트워크가 없거나 manifest가 없을 때 앱 시작과 기존 메모리 기능은 계속 사용할 수 있습니다.
 - release workflow에는 Authenticode/Azure/OIDC가 필요하지 않습니다.
@@ -199,14 +200,16 @@ npm run tauri:build:windows
 - MSI 설치본을 updater 기준으로 삼으므로 기존 NSIS 설치본은 첫 updater-enabled MSI 설치 시 설치 방식이 달라질 수 있습니다. 이번 범위에서는 자동 migration을 약속하지 않습니다.
 - 무료 Tauri updater 서명은 Windows가 표시하는 개발자/게시자 신뢰 경고를 없애지 않습니다. 사용자 안내와 수동 설치 fallback을 문서에 남깁니다.
 - 개인 키를 분실하면 이후 update artifact를 같은 신뢰 체계로 서명할 수 없으므로 Secret 백업 정책이 필요합니다.
-- 실제 키 등록과 release 실행은 구현 완료 후 별도 운영 작업으로 남기며, 이번 작업에서 자동으로 수행하지 않습니다.
+- 사용자 승인 후 Tauri 개인 키는 GitHub Secret에, 공개 키는 GitHub Variable에 등록했으며, v1.0.8 release workflow의 CLI config override에 `plugins.updater.pubkey` 필드가 빠져 첫 Windows 빌드가 실패했습니다.
 
 ## 8. 작업 로그
 
 - 2026-08-30: 사용자로부터 “유료 Windows 인증서 서명 없이, Tauri 무료 업데이트 서명만 사용” 결정과 구현 착수를 승인받음.
 - 2026-08-30: 계획 문서 작성 완료 후 구현 시작.
 - 2026-08-30: Tauri updater 상태/UI, 정적 manifest 생성기, Windows release workflow, 문서와 앱·웹 업데이트 내역을 구현함.
-- 2026-08-30: 전체 Vitest는 한 차례 76개 파일 통과·1개 skip, 552개 테스트 통과·11개 skip으로 완료함. 반복 집계에서는 기존 `apps/web/src/WebApp.test.tsx` 백업 타이밍 테스트가 간헐적으로 1건 실패했지만 해당 파일 단독 재실행은 42/42 통과함. TypeScript, Vite, Rust check/test, 버전·JSON·YAML·diff 검증도 완료함. 실제 Windows installer/release 실행과 GitHub Secret/Variable 등록은 운영 단계로 남김.
+- 2026-08-30: 전체 Vitest는 한 차례 76개 파일 통과·1개 skip, 552개 테스트 통과·11개 skip으로 완료함. 반복 집계에서는 기존 `apps/web/src/WebApp.test.tsx` 백업 타이밍 테스트가 간헐적으로 1건 실패했지만 해당 파일 단독 재실행은 42/42 통과함. TypeScript, Vite, Rust check/test, 버전·JSON·YAML·diff 검증도 완료함.
+- 2026-08-30: 사용자 승인 후 Tauri 개인 키를 GitHub Secret, 공개 키를 GitHub Variable로 등록함. 첫 v1.0.8 Windows release workflow는 Tauri bundler 설정에서 `plugins.updater.pubkey`가 빠져 실패했으며, release 전용 config override에 공개 키를 주입하는 hotfix를 추가하고 정적 workflow 테스트 6건과 버전 검사를 통과시킴.
+- 2026-08-30: 기존 v1.0.8 태그를 유지하기 위해 release가 없는 기존 태그를 명시적으로 재빌드하는 경로를 추가함. 조상 태그·허용된 release-tooling 변경 파일·`rebuild_existing_tag=true` 입력을 모두 확인하며, `fix(release):` hotfix는 자동 patch bump에서 제외함.
 
 ## 9. 후속 요청: 업데이트 선택 및 재안내 기간
 
@@ -218,5 +221,5 @@ npm run tauri:build:windows
 - 저장된 기간 동안에는 updater의 원격 확인 자체를 건너뛰고, 만료되면 다음 시작에서 다시 확인합니다.
 - 기간을 선택하지 않고 `아니요`를 누르면 현재 실행에서만 닫고 다음 시작 때 다시 확인합니다.
 - `예`를 누르면 선택한 재안내 기간과 관계없이 즉시 Tauri updater 설치를 시작합니다.
-- 버전 변경은 저장소 규칙에 따라 수동 편집하지 않고, 현재 원격 `main`의 `v1.0.7`에서 실제 변경 CI가 성공한 뒤 `npm run version:bump` 자동 릴리스 경로로 `v1.0.8`을 생성합니다.
+- 버전 변경은 저장소 규칙에 따라 수동 편집하지 않고, 당시 원격 `main`의 `v1.0.7`에서 실제 변경 CI가 성공한 뒤 `npm run version:bump` 자동 릴리스 경로로 `v1.0.8`을 생성합니다.
 - v1.0.8 랜딩페이지 업데이트 기록에 예/아니요 및 재안내 선택 기능을 기록합니다.
