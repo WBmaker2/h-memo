@@ -34,6 +34,12 @@ describe("MemoWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "업데이트 내역" }));
 
     expect(screen.getByRole("region", { name: "업데이트 내역" })).toBeInTheDocument();
+    expect(screen.getByText("Windows 앱 자동 업데이트 안내 개선")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "새 버전을 발견하면 예/아니요로 선택하고, 1주일 또는 1달 뒤 다시 안내를 선택할 수 있도록 개선했습니다.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("2026-05-13")).toBeInTheDocument();
     expect(screen.getByText("자동 버전 및 릴리스")).toBeInTheDocument();
     expect(screen.getByText("KST 날짜 표시 안정화")).toBeInTheDocument();

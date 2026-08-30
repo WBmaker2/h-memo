@@ -5,6 +5,12 @@ import { SettingsPanel, type SettingsPanelProps } from "./SettingsPanel";
 
 const UPDATE_HISTORY = [
   {
+    date: "2026-08-30",
+    title: "Windows 앱 자동 업데이트 안내 개선",
+    detail:
+      "새 버전을 발견하면 예/아니요로 선택하고, 1주일 또는 1달 뒤 다시 안내를 선택할 수 있도록 개선했습니다.",
+  },
+  {
     date: "2026-05-13",
     title: "개발 시작",
     detail: "메모 작성, 로컬 저장, 데스크톱 창 작업을 시작했습니다.",

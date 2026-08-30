@@ -20,6 +20,13 @@ type ReleaseHistoryEntry = {
 
 const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
   {
+    date: "2026-08-30",
+    title: "Windows 앱 자동 업데이트 안내 개선",
+    items: [
+      "새 버전을 발견하면 예/아니요로 선택하고, 1주일 또는 1달 뒤 다시 안내를 선택할 수 있도록 개선했습니다.",
+    ],
+  },
+  {
     date: "2026-08-28",
     title: "시작 시 서버 최신 메모 확인",
     items: [
@@ -175,7 +182,8 @@ export function LandingPage() {
         <h2>프로그램 다운로드</h2>
         <p className="landing-page__release-notice">
           {releaseVersion} 최신 버전 설치 파일을 받을 수 있습니다. v1.0.1부터 대한민국
-          시간 기준 일별 백업 보존과 자동 릴리스가 적용됩니다.
+          시간 기준 일별 백업 보존과 자동 릴리스가 적용됩니다. Windows 앱은 새 버전을
+          자동으로 확인하고 원하는 시점에 업데이트할 수 있습니다.
         </p>
         <p>
           Windows MSI/EXE 설치 파일과 웹앱 실행 링크를 제공합니다. macOS 버전은 현재
@@ -310,6 +318,7 @@ export function LandingPage() {
           <li>메모창 여러 개를 동시에 열어 업무를 분리하여 관리</li>
           <li>TXT/JSON 로컬 백업 내보내기</li>
           <li>Google 계정 기반 서버 백업/복원</li>
+          <li>Windows 앱 새 버전 자동 확인 및 1주일·1달 뒤 재안내 선택</li>
           <li>Windows 시작프로그램 등록</li>
           <li>Windows 트레이 및 빠른 접근</li>
         </ul>
