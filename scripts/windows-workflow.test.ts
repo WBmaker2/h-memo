@@ -48,6 +48,9 @@ describe("Windows Tauri workflow", () => {
     expect(workflow).toContain("TAURI_UPDATER_PUBLIC_KEY:");
     expect(workflow).toContain("Validate Tauri updater signing configuration");
     expect(workflow).toContain('createUpdaterArtifacts":true');
+    expect(workflow).toContain(
+      '"pubkey":"${{ vars.TAURI_UPDATER_PUBLIC_KEY }}"'
+    );
     expect(workflow).toContain("Create Tauri updater manifest");
     expect(workflow).toContain("node scripts/create-updater-manifest.mjs");
     expect(workflow).toContain("latest.json");

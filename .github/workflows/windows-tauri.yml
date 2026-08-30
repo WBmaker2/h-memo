@@ -119,7 +119,7 @@ jobs:
 
       - name: Build signed Tauri updater artifacts for release
         if: ${{ steps.release_tag.outputs.release_tag != '' }}
-        run: npm run tauri:build:windows -w apps/desktop -- --config '{"bundle":{"createUpdaterArtifacts":true}}'
+        run: npm run tauri:build:windows -w apps/desktop -- --config '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"${{ vars.TAURI_UPDATER_PUBLIC_KEY }}"}}}'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
