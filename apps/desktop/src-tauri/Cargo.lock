@@ -1288,7 +1288,7 @@ dependencies = [
 
 [[package]]
 name = "h-memo-desktop"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
