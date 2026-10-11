@@ -58,7 +58,6 @@ describe("Windows Tauri workflow", () => {
       '"pubkey":"${{ vars.TAURI_UPDATER_PUBLIC_KEY }}"'
     );
     expect(workflow).toContain("node scripts/create-updater-manifest.mjs");
-    expect(workflow).toContain("node scripts/create-updater-manifest.mjs");
     expect(workflow).toContain("latest.json");
     expect(workflow).toContain("*.msi.sig");
     expect(workflow).toContain("*.exe.sig");
@@ -103,6 +102,14 @@ describe("Windows Tauri workflow", () => {
     expect(workflow).toContain("published_msi_assets");
     expect(workflow).toContain("--asset-name \"$published_msi_asset\"");
     expect(workflow).toContain("endswith(\".msi\")");
+    const manifestGeneration = workflow.indexOf("node scripts/create-updater-manifest.mjs", publishStep);
+    const manifestValidation = workflow.indexOf('if [ ! -s latest.json ]; then', manifestGeneration);
+    const manifestUpload = workflow.indexOf('gh release upload "$RELEASE_TAG" latest.json', manifestValidation);
+
+    expect(manifestGeneration).toBeGreaterThan(publishStep);
+    expect(manifestValidation).toBeGreaterThan(manifestGeneration);
+    expect(manifestUpload).toBeGreaterThan(manifestValidation);
+    expect(workflow.indexOf('if [ ! -s latest.json ]; then', publishStep)).toBe(manifestValidation);
     expect(workflow).toContain('gh release upload "$RELEASE_TAG" latest.json');
   });
 

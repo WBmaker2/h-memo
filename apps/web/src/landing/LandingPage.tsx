@@ -20,6 +20,13 @@ type ReleaseHistoryEntry = {
 
 const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
   {
+    date: "2026-10-12",
+    title: "시작 비교 안정화와 수동 업데이트 확인",
+    items: [
+      "앱 시작 시 서버 최신 메모 비교의 재시도와 판정을 안정화하고, 메뉴에서 Windows 앱 업데이트를 직접 확인해 최신 상태와 오류를 살펴본 뒤 다시 시도할 수 있도록 개선했습니다.",
+    ],
+  },
+  {
     date: "2026-08-30",
     title: "Windows 앱 자동 업데이트 안내 개선",
     items: [
@@ -259,6 +266,28 @@ export function LandingPage() {
         <p className="landing-page__download-meta">
           웹앱은 브라우저에서 열리며 설치 없이 H Memo를 사용할 수 있습니다.
         </p>
+        <section className="landing-page__update-guide" aria-label="설치와 업데이트 안내">
+          <h3>Windows 앱 업데이트</h3>
+          <p>
+            Windows 앱에서 앱 메뉴를 열고 <strong>업데이트 확인</strong>을 선택하세요.
+            새 버전이 있으면 내용을 확인한 뒤 <strong>업데이트 실행</strong>을 누르면 됩니다.
+            이미 최신 버전이거나 확인에 실패한 경우에도 결과가 표시되며, 실패하면 다시 확인할 수 있습니다.
+          </p>
+          <h3>시작 시 서버 메모 확인</h3>
+          <p>
+            앱을 시작할 때 로컬 메모와 서버 최신 백업을 비교합니다. 확인에 실패하면{" "}
+            <strong>서버 메모 다시 확인</strong>으로 재시도할 수 있습니다. 서버가 최신이면
+            복원 여부를 묻고, 로컬과 서버가 모두 바뀌었거나 서버 상태가 불확실하면 자동 복원하지 않고
+            로컬 메모를 유지합니다.
+          </p>
+          <h3>설치 방식 안내</h3>
+          <p>
+            앱 내부 업데이트는 Windows MSI 설치 파일을 사용하며, 업데이트 전에 기존 앱을
+            직접 제거할 필요가 없도록 구성했습니다. 다만 실제 Windows 업데이트 후 메모 보존은
+            검증하지 않았습니다. 업데이트 메뉴가 없는 구버전은 최신 MSI 설치 파일로 업데이트해
+            주세요. EXE로 설치한 앱을 MSI로 전환하는 경로는 검증되지 않았습니다.
+          </p>
+        </section>
       </section>
 
       {isReleaseHistoryOpen ? (

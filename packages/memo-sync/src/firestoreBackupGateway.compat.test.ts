@@ -14,6 +14,7 @@ import {
   listBackupSnapshots,
   listBackedUpMemos,
   loadBackupSnapshot,
+  loadLatestBackupSnapshotSummary,
   type BackupGateway,
   type MemoBackupPayload,
   type StoredCurrentMemo,
@@ -35,6 +36,34 @@ function snapshotId(path: string | { snapshotId: string }) {
 }
 
 describe("FirestoreBackupGateway compatibility contract", () => {
+  it("finds the latest valid snapshot when the legacy account has no active pointer", async () => {
+    const driver = new FakeFirestoreDriver();
+    const gateway = createGateway(driver);
+    driver.seed("users/user-1/backupSnapshots/old", {
+      schemaVersion: 3,
+      userId: "user-1",
+      clientCreatedAt: "2026-05-12T09:00:00.000Z",
+      memoCount: 0,
+      contentHash: "a".repeat(64),
+      previewText: "이전 메모",
+      state: "complete",
+      savedAt: new FakeTimestamp("2026-05-12T09:01:00.000Z"),
+    });
+    driver.seed("users/user-1/backupSnapshots/latest", {
+      schemaVersion: 3,
+      userId: "user-1",
+      clientCreatedAt: "2026-05-13T09:00:00.000Z",
+      memoCount: 0,
+      contentHash: "b".repeat(64),
+      previewText: "최신 메모",
+      state: "complete",
+      savedAt: new FakeTimestamp("2026-05-13T09:01:00.000Z"),
+    });
+
+    await expect(loadLatestBackupSnapshotSummary(gateway, "user-1"))
+      .resolves.toMatchObject({ id: "latest" });
+  });
+
   it("lists v2 and v3 history without reading snapshot memo subcollections", async () => {
     const driver = new FakeFirestoreDriver();
     const gateway = createGateway(driver);

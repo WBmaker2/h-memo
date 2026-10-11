@@ -250,4 +250,28 @@ describe("SettingsPanel", () => {
     expect(screen.queryByRole("heading", { name: "시작프로그램" })).not.toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "시작프로그램 등록" })).not.toBeInTheDocument();
   });
+
+  it("shows a Windows update check only when the desktop enables it", async () => {
+    const user = userEvent.setup();
+    const onCheckUpdates = vi.fn();
+    render(
+      <SettingsPanel
+        userName={null}
+        backupStatus="웹앱"
+        startupEnabled={false}
+        isUpdateCheckAvailable
+        onCheckUpdates={onCheckUpdates}
+        onBackup={vi.fn()}
+        onRestore={vi.fn()}
+        onExportText={vi.fn()}
+        onToggleStartup={vi.fn()}
+        onSignIn={vi.fn()}
+        onSignOut={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "업데이트 확인" }));
+    expect(onCheckUpdates).toHaveBeenCalledOnce();
+    expect(screen.getByText("공개 Windows 앱 업데이트를 확인합니다.")).toBeInTheDocument();
+  });
 });

@@ -25,6 +25,9 @@ export type SettingsPanelProps = {
   onUndoRestore?: () => void;
   isAuthDisabled?: boolean;
   showStartupSection?: boolean;
+  isUpdateCheckAvailable?: boolean;
+  isUpdateCheckBusy?: boolean;
+  onCheckUpdates?: () => void;
   firebaseConfig?: FirebaseConfigFormValue;
   onBackup: () => void;
   onRestore: () => void;
@@ -63,6 +66,9 @@ export function SettingsPanel({
   onUndoRestore = () => {},
   isAuthDisabled = false,
   showStartupSection = true,
+  isUpdateCheckAvailable = false,
+  isUpdateCheckBusy = false,
+  onCheckUpdates = () => {},
   firebaseConfig = EMPTY_FIREBASE_CONFIG,
   onBackup,
   onRestore,
@@ -294,6 +300,15 @@ export function SettingsPanel({
             </label>
           </div>
         </details>
+      ) : null}
+      {isUpdateCheckAvailable ? (
+        <section className="settings-panel__section" aria-label="프로그램 업데이트">
+          <h3 className="settings-panel__section-title">프로그램 업데이트</h3>
+          <button type="button" onClick={onCheckUpdates} disabled={isUpdateCheckBusy}>
+            {isUpdateCheckBusy ? "업데이트 확인 중…" : "업데이트 확인"}
+          </button>
+          <p>공개 Windows 앱 업데이트를 확인합니다.</p>
+        </section>
       ) : null}
     </section>
   );

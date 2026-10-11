@@ -89,6 +89,20 @@ describe("LandingPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("explains manual updates, startup comparison recovery, and MSI limits", () => {
+    render(<LandingPage />);
+
+    const guide = screen.getByRole("region", { name: "설치와 업데이트 안내" });
+    expect(guide).toHaveTextContent("업데이트 확인");
+    expect(guide).toHaveTextContent("업데이트 실행");
+    expect(guide).toHaveTextContent("서버 메모 다시 확인");
+    expect(guide).toHaveTextContent("복원 여부를 묻고");
+    expect(guide).toHaveTextContent("Windows MSI 설치 파일");
+    expect(guide).toHaveTextContent("실제 Windows 업데이트 후 메모 보존은 검증하지 않았습니다");
+    expect(guide).toHaveTextContent("최신 MSI 설치 파일로 업데이트해 주세요");
+    expect(guide).toHaveTextContent("EXE로 설치한 앱을 MSI로 전환하는 경로는 검증되지 않았습니다");
+  });
+
   it("renders a disabled download button before resolution", async () => {
     render(<LandingPage />);
 
@@ -163,6 +177,8 @@ describe("LandingPage", () => {
 
     const dialog = screen.getByRole("dialog", { name: "업데이트 기록" });
     expect(dialog).toBeInTheDocument();
+    expect(screen.getByText("시작 비교 안정화와 수동 업데이트 확인")).toBeInTheDocument();
+    expect(screen.getByText("2026-10-12")).toBeInTheDocument();
     expect(screen.getByText("Windows 앱 자동 업데이트 안내 개선")).toBeInTheDocument();
     expect(
       screen.getByText(

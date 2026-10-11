@@ -230,11 +230,6 @@ jobs:
             echo "Expected exactly one NSIS installer and one NSIS signature." >&2
             exit 1
           fi
-          if [ ! -s latest.json ]; then
-            echo "latest.json was not generated." >&2
-            exit 1
-          fi
-
           installer_artifacts=("${msi_files[@]}" "${msi_signatures[@]}" "${nsis_files[@]}" "${nsis_signatures[@]}")
           echo "Found one MSI, one MSI signature, one NSIS installer, and one NSIS signature."
 
@@ -312,4 +307,8 @@ jobs:
             --asset-dir release-assets/msi \
             --asset-name "$published_msi_asset" \
             --output latest.json
+          if [ ! -s latest.json ]; then
+            echo "latest.json was not generated." >&2
+            exit 1
+          fi
           gh release upload "$RELEASE_TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber

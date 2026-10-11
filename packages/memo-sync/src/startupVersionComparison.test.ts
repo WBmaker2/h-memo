@@ -91,6 +91,19 @@ describe("startup version comparison", () => {
     ).toMatchObject({ kind: "local-newer" });
   });
 
+  it("uses content hashes to detect same-ID checkpoint changes without mislabeling local-only edits", () => {
+    expect(compareStartupVersions({
+      local: local(),
+      server: server({ id: "snapshot-1", contentHash: HASH_B }),
+      checkpoint: checkpoint(),
+    })).toMatchObject({ kind: "server-newer" });
+    expect(compareStartupVersions({
+      local: local({ contentHash: HASH_B }),
+      server: server({ id: "snapshot-1", contentHash: HASH_A }),
+      checkpoint: checkpoint(),
+    })).toMatchObject({ kind: "local-newer" });
+  });
+
   it("stops automatic replacement when both sides changed", () => {
     expect(
       compareStartupVersions({

@@ -5,6 +5,12 @@ import { SettingsPanel, type SettingsPanelProps } from "./SettingsPanel";
 
 const UPDATE_HISTORY = [
   {
+    date: "2026-10-12",
+    title: "시작 비교 안정화와 수동 업데이트 확인",
+    detail:
+      "앱 시작 시 서버 최신 메모 비교의 재시도와 판정을 안정화하고, 메뉴에서 Windows 앱 업데이트를 직접 확인해 최신 상태와 오류를 살펴본 뒤 다시 시도할 수 있도록 개선했습니다.",
+  },
+  {
     date: "2026-08-30",
     title: "Windows 앱 자동 업데이트 안내 개선",
     detail:
@@ -201,6 +207,9 @@ export function MemoWorkspace({
         onUndoRestore={settingsProps.onUndoRestore}
         isAuthDisabled={settingsProps.isAuthDisabled}
         showStartupSection={settingsProps.showStartupSection}
+        isUpdateCheckAvailable={settingsProps.isUpdateCheckAvailable}
+        isUpdateCheckBusy={settingsProps.isUpdateCheckBusy}
+        onCheckUpdates={settingsProps.onCheckUpdates}
         firebaseConfig={settingsProps.firebaseConfig}
         onBackup={settingsProps.onBackup}
         onRestore={settingsProps.onRestore}

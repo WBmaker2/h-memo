@@ -206,7 +206,7 @@ export function AppUpdateDialog({
             className="app-update-dialog__accept"
             disabled={isInstalling}
           >
-            {isInstalled ? "확인" : isError ? "다시 시도" : "예"}
+            {isInstalled ? "확인" : isError ? "다시 시도" : "업데이트 실행"}
           </button>
         </form>
       </section>

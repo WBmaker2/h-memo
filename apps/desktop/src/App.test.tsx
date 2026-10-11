@@ -394,6 +394,8 @@ vi.mock("@h-memo/memo-sync", () => {
       summaries: await mockListBackupSnapshotSummaries(gateway, userId),
       nextCursor: null,
     }),
+    loadLatestBackupSnapshotSummary: async (gateway: unknown, userId: string) =>
+      (await mockListBackupSnapshotSummaries(gateway, userId))[0] ?? null,
     loadBackupSnapshot: (gateway: unknown, userId: string, snapshotId: string) =>
       mockLoadBackupSnapshot(gateway, userId, snapshotId),
     listBackedUpMemos: (gateway: unknown, userId: string) =>

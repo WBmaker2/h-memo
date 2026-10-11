@@ -33,8 +33,9 @@ function createUpdate() {
 function UpdaterHarness({
   enabled = true,
   blocked = false,
+  beforeInstall,
 }: Partial<UseDesktopUpdaterOptions>) {
-  const state = useDesktopUpdater({ enabled, blocked });
+  const state = useDesktopUpdater({ enabled, blocked, beforeInstall });
   return (
     <div>
       <output data-testid="phase">{state.phase}</output>
@@ -53,6 +54,9 @@ function UpdaterHarness({
       </button>
       <button type="button" onClick={() => void state.retry()}>
         retry
+      </button>
+      <button type="button" onClick={() => void state.checkNow()}>
+        check now
       </button>
     </div>
   );
@@ -74,6 +78,7 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.removeItem(UPDATE_SNOOZE_STORAGE_KEY);
 });
 
 describe("useDesktopUpdater", () => {
@@ -86,7 +91,7 @@ describe("useDesktopUpdater", () => {
     await waitFor(() => expect(mockCheck).toHaveBeenCalledOnce());
     rerender(<UpdaterHarness />);
     expect(mockCheck).toHaveBeenCalledOnce();
-    await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("idle"));
+    await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("up-to-date"));
   });
 
   it("exposes an available update and closes it when declined", async () => {
@@ -178,6 +183,63 @@ describe("useDesktopUpdater", () => {
     await user.click(screen.getByRole("button", { name: "retry" }));
     await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("installed"));
     expect(downloadAndInstall).toHaveBeenCalledTimes(2);
+  });
+
+
+  it("lets a manual check bypass snooze and reports the latest version", async () => {
+    window.localStorage.setItem(UPDATE_SNOOZE_STORAGE_KEY, String(Date.now() + 60_000));
+    const user = userEvent.setup();
+    mockCheck.mockResolvedValue(null);
+    render(<UpdaterHarness />);
+    await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("dismissed"));
+
+    await user.click(screen.getByRole("button", { name: "check now" }));
+    await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("up-to-date"));
+    expect(mockCheck).toHaveBeenCalledOnce();
+  });
+
+  it("finishes an in-flight check if the startup gate becomes blocked", async () => {
+    const pendingCheck = deferred<Update | null>();
+    mockCheck.mockReturnValue(pendingCheck.promise);
+    const { rerender } = render(<UpdaterHarness />);
+    await waitFor(() => expect(mockCheck).toHaveBeenCalledOnce());
+
+    rerender(<UpdaterHarness blocked />);
+    pendingCheck.resolve(null);
+    await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("up-to-date"));
+
+    rerender(<UpdaterHarness />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "check now" }));
+    await waitFor(() => expect(mockCheck).toHaveBeenCalledTimes(2));
+  });
+
+  it("waits for pending local writes before starting installation", async () => {
+    const { update, downloadAndInstall } = createUpdate();
+    const beforeInstall = vi.fn().mockRejectedValue(new Error("save failed"));
+    mockCheck.mockResolvedValue(update);
+    const user = userEvent.setup();
+    render(<UpdaterHarness beforeInstall={beforeInstall} />);
+    await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("available"));
+
+    await user.click(screen.getByRole("button", { name: "accept" }));
+    await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("error"));
+    expect(beforeInstall).toHaveBeenCalledOnce();
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+  });
+
+  it("prevents a manual check while blocked and retries an update check error", async () => {
+    const user = userEvent.setup();
+    mockCheck.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(null);
+    render(<UpdaterHarness blocked />);
+    await user.click(screen.getByRole("button", { name: "check now" }));
+    expect(mockCheck).not.toHaveBeenCalled();
+
+    cleanup();
+    render(<UpdaterHarness />);
+    await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("error"));
+    await user.click(screen.getByRole("button", { name: "check now" }));
+    await waitFor(() => expect(screen.getByTestId("phase")).toHaveTextContent("up-to-date"));
+    expect(mockCheck).toHaveBeenCalledTimes(2);
   });
 
   it("closes a pending update when the component unmounts", async () => {

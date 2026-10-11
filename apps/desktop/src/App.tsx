@@ -87,6 +87,7 @@ import {
   subscribeAuthUser,
   hasFirebaseConfig,
   listBackupSnapshotSummaryPage,
+  loadLatestBackupSnapshotSummary,
   listBackedUpMemos,
   loadBackupSnapshot,
   signInWithGoogle,
@@ -111,7 +112,12 @@ import desktopPackageJson from "../package.json";
 import { restoreDesktopBackupSelection } from "./desktopBackupHistory";
 import { getFirebaseClientEnv } from "./env/firebaseEnv";
 import { useDesktopStartupServerRestore } from "./features/startup-sync/useDesktopStartupServerRestore";
-import { DesktopUpdatePrompt } from "./features/updater/DesktopUpdatePrompt";
+import { StartupSyncNotice } from "./features/startup-sync/StartupSyncNotice";
+import {
+  DESKTOP_UPDATE_CHECK_EVENT,
+  DesktopUpdatePrompt,
+} from "./features/updater/DesktopUpdatePrompt";
+import { isWindowsDesktopUpdaterSupported } from "./features/updater/platformSupport";
 
 type BackupMessage = string;
 type SyncServices = {
@@ -275,6 +281,8 @@ export function App() {
   const [activeMemoId, setActiveMemoId] = useState<string | null>(requestedMemoId);
   const [ownedMemoId, setOwnedMemoId] = useState<string | null>(null);
   const [startupEnabled, setStartupEnabled] = useState(false);
+  const [isUpdaterBusy, setIsUpdaterBusy] = useState(false);
+  const [isUpdaterInstalling, setIsUpdaterInstalling] = useState(false);
   const [syncServicesInitialized, setSyncServicesInitialized] = useState(false);
   const buildFirebaseClientEnv = useMemo(() => getFirebaseClientEnv(), []);
   const hasBuildFirebaseConfigSet = useMemo(
@@ -339,6 +347,7 @@ export function App() {
   // fallback keeps the existing manual backup/restore controls without running
   // a second startup check that could race those controls.
   const isMainWindow = isTauri && getCurrentWindowLabel() === "main";
+  const isWindowsUpdaterAvailable = isWindowsDesktopUpdaterSupported(isTauri, navigator.userAgent);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistErrorRef = useRef<unknown | null>(null);
   const restoreLockRef = useRef<string | null>(null);
@@ -375,6 +384,8 @@ export function App() {
   const openedRestoredMemoWindowsRef = useRef(false);
   const userRef = useRef<HMemoUser | null>(null);
   const restoreSnapshotInFlightRef = useRef(false);
+  const startupBlockingRef = useRef(false);
+  const updateInstallStartedRef = useRef(false);
   const createMemoFromTrayRef = useRef<() => Promise<void>>(async () => {});
   const openAllMemosFromTrayRef = useRef<() => Promise<void>>(async () => {});
   const restoreStartupMemosRef = useRef<
@@ -668,10 +679,7 @@ export function App() {
       const services = ensureSyncServices();
       return services ? { gateway: services.gateway } : null;
     },
-    getLatestServerSummary: async (gateway, userId) => {
-      const page = await listBackupSnapshotSummaryPage(gateway, userId, { limit: 1 });
-      return page.summaries[0] ?? null;
-    },
+    getLatestServerSummary: loadLatestBackupSnapshotSummary,
     restoreServerMemos: (userId, payload) => restoreStartupMemosRef.current(userId, payload),
     onStatus: setBackupStatus,
   });
@@ -684,6 +692,7 @@ export function App() {
     (!authSettled ||
       (user !== null &&
         ["idle", "checking", "prompting", "restoring"].includes(startupServerRestore.phase)));
+  startupBlockingRef.current = isStartupBlocking;
 
   useEffect(() => {
     if (!hasFirebaseConfigSet) {
@@ -1093,6 +1102,9 @@ export function App() {
   };
 
   const enqueuePersist = <T,>(operation: () => Promise<T>) => {
+    if (updateInstallStartedRef.current) {
+      return Promise.reject(new Error("프로그램 업데이트 중에는 메모를 저장할 수 없습니다."));
+    }
     if (!restoreLockReadyRef.current || restoreLockRef.current) {
       return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
     }
@@ -1116,6 +1128,23 @@ export function App() {
 
   restoreLockWaitRef.current = waitForPendingPersists;
 
+  const prepareDesktopUpdateInstall = async () => {
+    updateInstallStartedRef.current = true;
+    setIsUpdaterInstalling(true);
+    try {
+      await waitForPendingPersists();
+    } catch (error) {
+      updateInstallStartedRef.current = false;
+      setIsUpdaterInstalling(false);
+      throw error;
+    }
+  };
+
+  const handleUpdaterInstallingChange = useCallback((installing: boolean) => {
+    updateInstallStartedRef.current = installing;
+    setIsUpdaterInstalling(installing);
+  }, []);
+
   const persistMemo = (nextMemo: Memo, options?: { skipStateUpdate: boolean }) => {
     if (!restoreLockReadyRef.current || restoreLockRef.current) {
       return Promise.reject(new Error("복원 작업 중에는 메모를 저장할 수 없습니다."));
@@ -1134,7 +1163,7 @@ export function App() {
 
   const persistActiveMemoWindowBounds = useCallback(
     async (boundsOverride?: WindowBounds) => {
-      if (!isTauri || !restoreLockReadyRef.current || restoreLockRef.current) {
+      if (!isTauri || updateInstallStartedRef.current || startupBlockingRef.current || !restoreLockReadyRef.current || restoreLockRef.current) {
         return;
       }
 
@@ -1147,6 +1176,9 @@ export function App() {
       }
 
       const bounds = boundsOverride ?? (await readWindowBounds());
+      if (updateInstallStartedRef.current || startupBlockingRef.current || !restoreLockReadyRef.current || restoreLockRef.current) {
+        return;
+      }
       const windowState = {
         x: bounds.x,
         y: bounds.y,
@@ -1154,9 +1186,17 @@ export function App() {
           ? { width: bounds.width, height: bounds.height }
           : {}),
       };
+      if (
+        target.windowState?.x === windowState.x &&
+        target.windowState?.y === windowState.y &&
+        (windowState.width === undefined || target.windowState?.width === windowState.width) &&
+        (windowState.height === undefined || target.windowState?.height === windowState.height)
+      ) {
+        return;
+      }
       const nextMemo = updateMemoWindowState(target, windowState, new Date().toISOString());
 
-      if (!restoreLockReadyRef.current || restoreLockRef.current) {
+      if (updateInstallStartedRef.current || !restoreLockReadyRef.current || restoreLockRef.current) {
         return;
       }
       upsertMemo(nextMemo);
@@ -2318,13 +2358,13 @@ export function App() {
 
   const isServerReady = hasFirebaseConfigSet && servicesAvailable;
   const isBackupDisabled =
-    !isServerReady || user === null || isBusy || isRestoreLocked || isStartupBlocking || !isRestoreLockReady || !syncServicesInitialized;
+    !isServerReady || user === null || isBusy || isRestoreLocked || isStartupBlocking || isUpdaterInstalling || !isRestoreLockReady || !syncServicesInitialized;
   const isRestoreDisabled =
-    !isServerReady || user === null || isBusy || isRestoreLocked || isStartupBlocking || !isRestoreLockReady || !syncServicesInitialized;
+    !isServerReady || user === null || isBusy || isRestoreLocked || isStartupBlocking || isUpdaterInstalling || !isRestoreLockReady || !syncServicesInitialized;
   const isAuthDisabled =
-    !isServerReady || isBusy || isRestoreLocked || isStartupBlocking || !isRestoreLockReady || needsDesktopGoogleOAuthClient;
+    !isServerReady || isBusy || isRestoreLocked || isStartupBlocking || isUpdaterInstalling || !isRestoreLockReady || needsDesktopGoogleOAuthClient;
   const isServerMemoManagerDisabled =
-    !isServerReady || user === null || isBusy || isRestoreLocked || isStartupBlocking || !isRestoreLockReady || !syncServicesInitialized;
+    !isServerReady || user === null || isBusy || isRestoreLocked || isStartupBlocking || isUpdaterInstalling || !isRestoreLockReady || !syncServicesInitialized;
 
   const handleRequestWindowDrag = () => {
     if (!isTauri) {
@@ -2408,7 +2448,7 @@ export function App() {
         onRequestSync={handleBackup}
         isSyncDisabled={isBackupDisabled}
         isSyncBusy={isBusy || isRestoreLocked}
-        isMemoEditingDisabled={isRestoreLocked || !isRestoreLockReady || isStartupBlocking}
+        isMemoEditingDisabled={isRestoreLocked || !isRestoreLockReady || isStartupBlocking || isUpdaterInstalling}
         actions={
           <button
             type="button"
@@ -2433,12 +2473,17 @@ export function App() {
           onExportJsonBackup: handleExportJsonBackup,
           onImportJsonBackup: handleImportJsonBackup,
           onToggleStartup: handleToggleStartup,
+          isUpdateCheckAvailable: isMainWindow && isWindowsUpdaterAvailable,
+          isUpdateCheckBusy:
+            isUpdaterBusy || !authSettled || !hasLoadedMemos || !isRestoreLockReady || isBusy ||
+            isRestoreLocked || isStartupBlocking || Boolean(startupServerRestore.dialog),
+          onCheckUpdates: () => window.dispatchEvent(new Event(DESKTOP_UPDATE_CHECK_EVENT)),
           onSignIn: handleSignIn,
           onSignOut: handleSignOut,
           onSaveFirebaseConfig: allowFirebaseConfigOverride ? handleSaveFirebaseConfig : undefined,
           onClearFirebaseConfig: allowFirebaseConfigOverride ? handleClearFirebaseConfig : undefined,
           isServerAvailable: servicesAvailable,
-          isServerBusy: isBusy || isRestoreLocked,
+          isServerBusy: isBusy || isRestoreLocked || isUpdaterInstalling,
           isBackupDisabled,
           isRestoreDisabled,
           canUndoRestore: restoreSafetyPoint !== null,
@@ -2496,8 +2541,13 @@ export function App() {
           onDecline={startupServerRestore.decline}
         />
       ) : null}
+      <StartupSyncNotice
+        phase={startupServerRestore.phase}
+        message={startupServerRestore.errorMessage}
+        onRetry={startupServerRestore.retry}
+      />
       <DesktopUpdatePrompt
-        enabled={isMainWindow}
+        enabled={isMainWindow && isWindowsUpdaterAvailable}
         blocked={
           !authSettled ||
           !hasLoadedMemos ||
@@ -2507,6 +2557,9 @@ export function App() {
           isStartupBlocking ||
           Boolean(startupServerRestore.dialog)
         }
+        beforeInstall={prepareDesktopUpdateInstall}
+        onBusyChange={setIsUpdaterBusy}
+        onInstallingChange={handleUpdaterInstallingChange}
       />
       {serverMemoManager.isOpen ? (
         <div className="server-memo-dialog-backdrop">

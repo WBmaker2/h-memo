@@ -10,6 +10,7 @@ import {
   listFirestoreBackupSummaries,
   listFirestoreBackupSummaryPage,
   loadActiveSnapshotSummary,
+  loadLatestServerSnapshotSummary,
   loadFirestoreBackup,
 } from "./firestoreBackupRead";
 import { saveFirestoreBackup } from "./firestoreBackupWrite";
@@ -39,7 +40,7 @@ export class FirestoreBackupGateway implements BackupGateway {
   }
 
   loadLatestBackupSummary(userId: string) {
-    return loadActiveSnapshotSummary(this.context, userId);
+    return loadLatestServerSnapshotSummary(this.context, userId);
   }
 
   listBackupSummaryPage(userId: string, request: BackupSnapshotPageRequest) {
