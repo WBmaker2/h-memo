@@ -33,6 +33,22 @@ type StartupBaseline = {
   contentHash: string | null;
 };
 
+function withStartupTimeout<T>(promise: Promise<T>, operation: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${operation} 응답 시간이 초과되었습니다.`)), 15_000);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 export type UseDesktopStartupServerRestoreOptions = {
   user: { uid: string } | null;
   isMainWindow: boolean;
@@ -101,6 +117,9 @@ export function useDesktopStartupServerRestore(
   });
   const checkedUserRef = useRef<string | null>(null);
   const operationRef = useRef(0);
+  const autoAttemptsRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
 
   const setReadyBaseline = useCallback((input: {
     snapshot: BackupSnapshotSummary | null;
@@ -144,13 +163,15 @@ export function useDesktopStartupServerRestore(
       try {
         const services = optionsRef.current.getServices();
         if (!services) {
-          setReadyBaseline({ snapshot: null, contentHash: "" });
-          return;
+          throw new Error("서버 백업 서비스를 사용할 수 없습니다.");
         }
 
         const localMemos = await optionsRef.current.repository.listMemos();
         const localHash = await createStartupContentHash(user.uid, localMemos);
-        const server = await optionsRef.current.getLatestServerSummary(services.gateway, user.uid);
+        const server = await withStartupTimeout(
+          optionsRef.current.getLatestServerSummary(services.gateway, user.uid),
+          "서버 최신본 확인",
+        );
         if (operation !== operationRef.current) return;
 
         const decision = memoSync.compareStartupVersions({
@@ -178,17 +199,17 @@ export function useDesktopStartupServerRestore(
 
         if (decision.kind === "conflict") {
           setPhase("conflict");
-          optionsRef.current.onStatus(
-            "로컬과 서버가 모두 변경되었습니다. 자동 복원을 중지했으니 백업 기록에서 비교 후 복원해 주세요."
-          );
+          const message = "로컬과 서버가 모두 변경되었습니다. 자동 복원을 중지했으니 백업 기록에서 비교 후 복원해 주세요.";
+          setErrorMessage(message);
+          optionsRef.current.onStatus(message);
           return;
         }
 
         if (decision.kind === "unknown") {
           setPhase("error");
-          optionsRef.current.onStatus(
-            "서버 최신본의 시각을 확인할 수 없습니다. 자동 복원을 하지 않고 로컬 메모를 유지합니다."
-          );
+          const message = "서버 최신본의 시각을 확인할 수 없습니다. 자동 복원을 하지 않고 로컬 메모를 유지합니다.";
+          setErrorMessage(message);
+          optionsRef.current.onStatus(message);
           return;
         }
 
@@ -204,21 +225,54 @@ export function useDesktopStartupServerRestore(
         setReadyBaseline({ snapshot: server, contentHash: localHash });
       } catch (error) {
         if (operation !== operationRef.current) return;
-        checkedUserRef.current = null;
         setPhase("error");
-        optionsRef.current.onStatus(
-          `최신 서버 메모 확인 실패: ${error instanceof Error ? error.message : "알 수 없는 오류"}`
-        );
+        const detail = error instanceof Error ? error.message : "알 수 없는 오류";
+        setErrorMessage(`최신 서버 메모 확인에 실패했습니다: ${detail}`);
+        optionsRef.current.onStatus(`최신 서버 메모 확인 실패: ${detail}`);
+        if (autoAttemptsRef.current < 2) {
+          autoAttemptsRef.current += 1;
+          retryTimerRef.current = setTimeout(() => {
+            checkedUserRef.current = null;
+            setRetryToken((value) => value + 1);
+          }, 1500);
+        }
       }
     })();
+    return () => {
+      operationRef.current += 1;
+      if (checkedUserRef.current === user.uid) checkedUserRef.current = null;
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
   }, [
     options.hasLoadedMemos,
     options.isMainWindow,
     options.isRestoreLockReady,
     options.isServerReady,
     options.user?.uid,
+    retryToken,
     setReadyBaseline,
   ]);
+
+  useEffect(() => {
+    const onOnline = () => {
+      if (phase === "error") {
+        autoAttemptsRef.current = 0;
+        checkedUserRef.current = null;
+        setRetryToken((value) => value + 1);
+      }
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [phase]);
+
+  const retry = useCallback(() => {
+    if (phase === "checking" || phase === "restoring") return;
+    autoAttemptsRef.current = 0;
+    checkedUserRef.current = null;
+    setErrorMessage(null);
+    setPhase("idle");
+    setRetryToken((value) => value + 1);
+  }, [phase]);
 
   const decline = useCallback(() => {
     if (phase !== "prompting") return;
@@ -245,7 +299,10 @@ export function useDesktopStartupServerRestore(
 
         const localMemos = await currentOptions.repository.listMemos();
         const localHash = await createStartupContentHash(userId, localMemos);
-        const latestServer = await currentOptions.getLatestServerSummary(services.gateway, userId);
+        const latestServer = await withStartupTimeout(
+          currentOptions.getLatestServerSummary(services.gateway, userId),
+          "서버 최신본 재확인",
+        );
         const decision = memoSync.compareStartupVersions({
           local: {
             contentHash: localHash,
@@ -264,6 +321,11 @@ export function useDesktopStartupServerRestore(
           setDialog(null);
           if (decision.kind === "conflict") {
             setPhase("conflict");
+            setErrorMessage("확인 중 로컬과 서버가 모두 변경되어 복원을 중단했습니다. 백업 기록에서 비교해 주세요.");
+          } else if (decision.kind === "unknown") {
+            setPhase("error");
+            setErrorMessage("최신 서버 상태를 확인할 수 없어 복원을 중단했습니다. 다시 확인해 주세요.");
+            currentOptions.onStatus("서버 최신본을 다시 확인해야 합니다. 로컬 메모는 유지했습니다.");
           } else {
             setReadyBaseline({ snapshot: latestServer, contentHash: localHash });
           }
@@ -273,7 +335,10 @@ export function useDesktopStartupServerRestore(
           return;
         }
 
-        const payload = await memoSync.loadBackupSnapshot(services.gateway, userId, latestServer.id);
+        const payload = await withStartupTimeout(
+          memoSync.loadBackupSnapshot(services.gateway, userId, latestServer.id),
+          "서버 메모 다운로드",
+        );
         if (!payload) throw new Error("최신 서버 메모를 불러오지 못했습니다.");
         if (operation !== operationRef.current || optionsRef.current.user?.uid !== userId) {
           return;
@@ -310,6 +375,7 @@ export function useDesktopStartupServerRestore(
     isBusy: phase === "checking" || phase === "restoring",
     accept,
     decline,
+    retry,
     baseline,
   };
 }

@@ -29,7 +29,7 @@ describe("AppUpdateDialog", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("dialog")).toHaveTextContent("현재 버전 v1.0.6입니다.");
     expect(screen.getByText("Windows 자동 업데이트를 추가했습니다.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "예" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "업데이트 실행" })).toHaveFocus();
   });
 
   it("supports the yes/no choices, Escape, and a focus loop", async () => {
@@ -48,7 +48,7 @@ describe("AppUpdateDialog", () => {
     await user.keyboard("{Shift>}{Tab}{/Shift}");
     expect(screen.getByRole("checkbox", { name: "1주일 뒤에 다시 안내" })).toHaveFocus();
     await user.keyboard("{Shift>}{Tab}{/Shift}");
-    expect(screen.getByRole("button", { name: "예" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "업데이트 실행" })).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(onDecline).toHaveBeenCalledOnce();
 
@@ -88,7 +88,7 @@ describe("AppUpdateDialog", () => {
     expect(screen.getByRole("progressbar")).toHaveValue(50);
     expect(screen.getByText("50% · 512바이트 / 1,024바이트")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "아니요" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "예" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "업데이트 실행" })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: "1주일 뒤에 다시 안내" })).toBeDisabled();
   });
 

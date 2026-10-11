@@ -34,6 +34,8 @@ describe("MemoWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "업데이트 내역" }));
 
     expect(screen.getByRole("region", { name: "업데이트 내역" })).toBeInTheDocument();
+    expect(screen.getByText("시작 비교 안정화와 수동 업데이트 확인")).toBeInTheDocument();
+    expect(screen.getByText("2026-10-12")).toBeInTheDocument();
     expect(screen.getByText("Windows 앱 자동 업데이트 안내 개선")).toBeInTheDocument();
     expect(
       screen.getByText(

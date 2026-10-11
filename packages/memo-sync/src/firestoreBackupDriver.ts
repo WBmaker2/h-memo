@@ -3,7 +3,9 @@ import {
   doc as firestoreDoc,
   documentId as firestoreDocumentId,
   getDoc as firestoreGetDoc,
+  getDocFromServer as firestoreGetDocFromServer,
   getDocs as firestoreGetDocs,
+  getDocsFromServer as firestoreGetDocsFromServer,
   limit as firestoreLimit,
   orderBy as firestoreOrderBy,
   query as firestoreQuery,
@@ -54,6 +56,8 @@ export type FirestoreBackupDriver = {
   doc(parent: unknown, ...segments: string[]): unknown;
   id(ref: unknown): string;
   getDoc(ref: unknown): Promise<DriverDocumentSnapshot>;
+  getDocFromServer?(ref: unknown): Promise<DriverDocumentSnapshot>;
+  getDocsFromServer?(ref: unknown): Promise<DriverQuerySnapshot>;
   getDocs(ref: unknown): Promise<DriverQuerySnapshot>;
   getDocsPage(ref: unknown, options: DriverPageQuery): Promise<DriverQuerySnapshot>;
   setDoc(ref: unknown, data: Record<string, unknown>, options?: { merge?: boolean }): Promise<void>;
@@ -75,7 +79,11 @@ export const firebaseBackupDriver: FirestoreBackupDriver = {
     (firestoreDoc as unknown as (parent: unknown, ...paths: string[]) => unknown)(parent, ...segments),
   id: (ref) => (ref as { id: string }).id,
   getDoc: async (ref) => (await firestoreGetDoc(ref as never)) as unknown as DriverDocumentSnapshot,
+  getDocFromServer: async (ref) =>
+    (await firestoreGetDocFromServer(ref as never)) as unknown as DriverDocumentSnapshot,
   getDocs: async (ref) => (await firestoreGetDocs(ref as never)) as unknown as DriverQuerySnapshot,
+  getDocsFromServer: async (ref) =>
+    (await firestoreGetDocsFromServer(ref as never)) as unknown as DriverQuerySnapshot,
   getDocsPage: async (ref, options) => {
     const constraints: unknown[] = [
       firestoreWhere("savedAt", ">=", options.savedAtFrom),

@@ -60,7 +60,9 @@ export function compareStartupVersions(input: {
 
   if (checkpoint && checkpoint.userId.trim() !== "") {
     const localMatchesCheckpoint = local.contentHash === checkpoint.contentHash;
-    const serverChangedSinceCheckpoint = server.id !== checkpoint.snapshotId;
+    const serverChangedSinceCheckpoint =
+      server.id !== checkpoint.snapshotId ||
+      (server.contentHash !== null && server.contentHash !== checkpoint.contentHash);
 
     if (localMatchesCheckpoint && !serverChangedSinceCheckpoint) {
       return { kind: "equal", server };

@@ -223,6 +223,34 @@ export async function loadActiveSnapshotSummary(
   return snapshotId === null ? null : loadSnapshotSummaryById(context, userId, snapshotId);
 }
 
+export async function loadLatestServerSnapshotSummary(
+  context: FirestoreBackupContext,
+  userId: string,
+): Promise<BackupSnapshotSummary | null> {
+  const getDoc = (context.driver.getDocFromServer ?? context.driver.getDoc).bind(context.driver);
+  const state = await getDoc(activationDoc(context, userId));
+  if (state.exists() && state.data().userId !== userId) {
+    throw new Error("Backup state belongs to a different user");
+  }
+  const snapshotId = activeSnapshotIdFromState(state);
+  if (snapshotId === null) {
+    const getDocs = (context.driver.getDocsFromServer ?? context.driver.getDocs).bind(context.driver);
+    const summaries = (await getDocs(snapshotCollection(context, userId))).docs
+      .filter((snapshot) => snapshot.data().userId === userId)
+      .map((snapshot) => parseBackupSnapshotSummary(snapshot.id, snapshot.data()))
+      .filter((summary): summary is BackupSnapshotSummary => summary !== null)
+      .sort((left, right) => (right.savedAt ?? "").localeCompare(left.savedAt ?? ""));
+    return summaries[0] ?? null;
+  }
+  const snapshot = await getDoc(context.driver.doc(snapshotCollection(context, userId), snapshotId));
+  if (!snapshot.exists() || snapshot.data().userId !== userId) {
+    throw new Error("활성 백업 기록을 찾을 수 없습니다.");
+  }
+  const summary = parseBackupSnapshotSummary(snapshot.id, snapshot.data());
+  if (!summary) throw new Error("활성 백업 기록이 완전한 상태가 아닙니다.");
+  return summary;
+}
+
 export async function loadSnapshotSummaryById(
   context: FirestoreBackupContext,
   userId: string,
