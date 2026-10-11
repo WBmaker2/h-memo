@@ -1,6 +1,6 @@
 [package]
 name = "h-memo-desktop"
-version = "1.0.8"
+version = "1.0.9"
 edition = "2021"
 description = "H Memo desktop app"
 license = "MIT"
