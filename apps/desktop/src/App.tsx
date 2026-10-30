@@ -2544,7 +2544,10 @@ export function App() {
       <StartupSyncNotice
         phase={startupServerRestore.phase}
         message={startupServerRestore.errorMessage}
+        isBusy={startupServerRestore.isBusy}
         onRetry={startupServerRestore.retry}
+        onResolveWithServer={startupServerRestore.resolveConflictWithServer}
+        onKeepLocal={startupServerRestore.keepLocalAndSyncCheckpoint}
       />
       <DesktopUpdatePrompt
         enabled={isMainWindow && isWindowsUpdaterAvailable}

@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryMemoRepository, createMemo } from "@h-memo/memo-core";
 import {
+  createLocalSyncCheckpoint,
   readLocalSyncCheckpoint,
+  writeLocalSyncCheckpoint,
   type BackupGateway,
   type BackupSnapshotSummary,
   type MemoBackupPayload,
@@ -65,7 +67,7 @@ function StartupHarness({
     />
     ) : null}
     <output data-testid="startup-phase">{state.phase}</output>
-    <StartupSyncNotice phase={state.phase} message={state.errorMessage} onRetry={state.retry} />
+    <StartupSyncNotice phase={state.phase} message={state.errorMessage} isBusy={state.isBusy} onRetry={state.retry} onResolveWithServer={state.resolveConflictWithServer} onKeepLocal={state.keepLocalAndSyncCheckpoint} />
   </>;
 }
 
@@ -348,5 +350,99 @@ describe("desktop startup server restore", () => {
     await waitFor(() => expect(screen.getByTestId("startup-phase")).toHaveTextContent("error"));
     expect(restoreServerMemos).not.toHaveBeenCalled();
     expect(screen.getByText(/최신 서버 상태를 확인할 수 없어 복원을 중단했습니다/)).toBeInTheDocument();
+  });
+
+  it("resolves a conflict with the server and clears the repeat warning", async () => {
+    const user = userEvent.setup();
+    writeLocalSyncCheckpoint(
+      window.localStorage,
+      createLocalSyncCheckpoint({
+        userId: USER.uid,
+        snapshotId: "desktop-server-snapshot-older",
+        contentHash: "a".repeat(64),
+        serverSavedAt: "2026-08-28T01:00:00.000Z",
+      })
+    );
+    const serverMemo = createMemo({
+      id: "desktop-conflict-server",
+      now: "2030-01-02T02:00:00.000Z",
+      plainText: "서버 충돌본",
+    });
+    const payload: MemoBackupPayload = {
+      version: 1,
+      userId: USER.uid,
+      createdAt: "2030-01-02T03:00:00.000Z",
+      memos: [serverMemo],
+    };
+    const restoreServerMemos = vi.fn().mockResolvedValue(undefined);
+    const options: UseDesktopStartupServerRestoreOptions = {
+      user: USER,
+      isMainWindow: true,
+      isServerReady: true,
+      isRestoreLockReady: true,
+      hasLoadedMemos: true,
+      repository: new MemoryMemoRepository([
+        createMemo({ id: "desktop-conflict-local", now: "2030-01-03T01:00:00.000Z", plainText: "로컬 변경" }),
+      ]),
+      storage: window.localStorage,
+      getServices: () => ({ gateway: createGateway(payload) }),
+      getLatestServerSummary: vi.fn().mockResolvedValue(createSummary({ contentHash: "c".repeat(64) })),
+      restoreServerMemos,
+      onStatus: vi.fn(),
+    };
+
+    render(<StartupHarness options={options} />);
+    await screen.findByRole("alertdialog", { name: "로컬과 서버 충돌 해소" });
+    await user.click(screen.getByRole("button", { name: "서버로 덮어쓰기" }));
+
+    await waitFor(() => expect(screen.getByTestId("startup-phase")).toHaveTextContent("ready"));
+    expect(restoreServerMemos).toHaveBeenCalledWith(USER.uid, payload);
+    expect(readLocalSyncCheckpoint(window.localStorage, USER.uid)).toMatchObject({
+      snapshotId: "desktop-server-snapshot-2030",
+    });
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("keeps local memos from a conflict and stops asking again", async () => {
+    const user = userEvent.setup();
+    writeLocalSyncCheckpoint(
+      window.localStorage,
+      createLocalSyncCheckpoint({
+        userId: USER.uid,
+        snapshotId: "desktop-server-snapshot-older",
+        contentHash: "a".repeat(64),
+        serverSavedAt: "2026-08-28T01:00:00.000Z",
+      })
+    );
+    const options: UseDesktopStartupServerRestoreOptions = {
+      user: USER,
+      isMainWindow: true,
+      isServerReady: true,
+      isRestoreLockReady: true,
+      hasLoadedMemos: true,
+      repository: new MemoryMemoRepository([
+        createMemo({ id: "desktop-keep-local", now: "2030-01-03T01:00:00.000Z", plainText: "로컬 유지" }),
+      ]),
+      storage: window.localStorage,
+      getServices: () => ({ gateway: createGateway({
+        version: 1,
+        userId: USER.uid,
+        createdAt: "2030-01-02T03:00:00.000Z",
+        memos: [],
+      }) }),
+      getLatestServerSummary: vi.fn().mockResolvedValue(createSummary({ contentHash: "c".repeat(64) })),
+      restoreServerMemos: vi.fn(),
+      onStatus: vi.fn(),
+    };
+
+    render(<StartupHarness options={options} />);
+    await screen.findByRole("alertdialog", { name: "로컬과 서버 충돌 해소" });
+    await user.click(screen.getByRole("button", { name: "내 메모 유지" }));
+
+    await waitFor(() => expect(screen.getByTestId("startup-phase")).toHaveTextContent("ready"));
+    expect(options.restoreServerMemos).not.toHaveBeenCalled();
+    expect(readLocalSyncCheckpoint(window.localStorage, USER.uid)).toMatchObject({
+      snapshotId: "desktop-server-snapshot-2030",
+    });
   });
 });

@@ -43,6 +43,7 @@ export type { FirestoreBackupDriver } from "./firestoreBackupDriver";
 export { createBackupContentHash, createBackupPreviewText } from "./backupFingerprint";
 export {
   compareStartupVersions,
+  formatStartupVersionDiagnosis,
   getLatestMemoUpdatedAt,
   type StartupLocalVersion,
   type StartupVersionDecision,

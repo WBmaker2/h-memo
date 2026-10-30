@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { BackupSnapshotSummary } from "./backupTypes";
 import {
   compareStartupVersions,
+  formatStartupVersionDiagnosis,
   getLatestMemoUpdatedAt,
   type StartupLocalVersion,
 } from "./startupVersionComparison";
@@ -112,6 +113,19 @@ describe("startup version comparison", () => {
         checkpoint: checkpoint(),
       })
     ).toMatchObject({ kind: "conflict" });
+  });
+
+  it("formats a short diagnosis without leaking full hashes", () => {
+    const diagnosis = formatStartupVersionDiagnosis({
+      local: local({ contentHash: HASH_B }),
+      server: server({ contentHash: HASH_C }),
+      checkpoint: checkpoint(),
+      decision: "conflict",
+    });
+    expect(diagnosis).toContain("decision=conflict");
+    expect(diagnosis).toContain("serverId=snapshot-2");
+    expect(diagnosis).not.toContain(HASH_B);
+    expect(diagnosis).toContain(HASH_B.slice(0, 8));
   });
 
   it("uses timestamps only when no checkpoint or server hash exists", () => {

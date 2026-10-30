@@ -94,6 +94,7 @@ export function useWebStartupServerRestore(
   optionsRef.current = options;
   const [phase, setPhase] = useState<WebStartupRestorePhase>("idle");
   const [dialog, setDialog] = useState<WebStartupRestoreDialogData | null>(null);
+  const [conflictServer, setConflictServer] = useState<BackupSnapshotSummary | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [baseline, setBaseline] = useState<StartupBaseline>({
     snapshotId: null,
@@ -122,6 +123,7 @@ export function useWebStartupServerRestore(
       operationRef.current += 1;
       checkedUserRef.current = null;
       setDialog(null);
+      setConflictServer(null);
       setErrorMessage(null);
       setPhase("idle");
       return;
@@ -134,6 +136,7 @@ export function useWebStartupServerRestore(
     const operation = ++operationRef.current;
     setPhase("checking");
     setDialog(null);
+    setConflictServer(null);
     setErrorMessage(null);
 
     void (async () => {
@@ -153,6 +156,7 @@ export function useWebStartupServerRestore(
         const server = await optionsRef.current.getLatestServerSummary(services.gateway, user.uid);
         if (operation !== operationRef.current) return;
 
+        const checkpoint = readStartupCheckpoint(optionsRef.current.storage, user.uid);
         const decision = memoSync.compareStartupVersions({
           local: {
             contentHash: localHash,
@@ -160,8 +164,36 @@ export function useWebStartupServerRestore(
             latestUpdatedAt: memoSync.getLatestMemoUpdatedAt(localMemos),
           },
           server,
-          checkpoint: readStartupCheckpoint(optionsRef.current.storage, user.uid),
+          checkpoint,
         });
+        try {
+          const formatDiagnosis = (
+            memoSync as unknown as {
+              formatStartupVersionDiagnosis?: (input: {
+                local: { contentHash: string; memoCount: number; latestUpdatedAt: string | null };
+                server: BackupSnapshotSummary | null;
+                checkpoint: { snapshotId: string; contentHash: string } | null;
+                decision: string;
+              }) => string;
+            }
+          ).formatStartupVersionDiagnosis;
+          if (typeof formatDiagnosis === "function") {
+            console.debug(
+              `[startup-sync] ${formatDiagnosis({
+                local: {
+                  contentHash: localHash,
+                  memoCount: localMemos.filter((memo) => memo.deletedAt === null).length,
+                  latestUpdatedAt: memoSync.getLatestMemoUpdatedAt(localMemos),
+                },
+                server,
+                checkpoint,
+                decision: decision.kind,
+              })}`
+            );
+          }
+        } catch {
+          // 테스트 모의 모듈에는 진단 헬퍼가 없을 수 있습니다.
+        }
 
         if (decision.kind === "server-newer" && server) {
           setBaseline({
@@ -182,8 +214,10 @@ export function useWebStartupServerRestore(
 
         if (decision.kind === "conflict") {
           setPhase("conflict");
+          setConflictServer(server);
+          setErrorMessage("로컬과 서버가 모두 변경되었습니다. 서버로 덮어쓰거나 내 메모 유지를 선택하면 다음 실행 때 다시 묻지 않습니다.");
           optionsRef.current.onStatus(
-            "로컬과 서버가 모두 변경되었습니다. 자동 백업을 중지했으니 백업 기록에서 비교 후 복원해 주세요."
+            "로컬과 서버가 모두 변경되었습니다. 서버로 덮어쓰거나 내 메모 유지를 선택하면 다음 실행 때 다시 묻지 않습니다."
           );
           return;
         }
@@ -265,6 +299,8 @@ export function useWebStartupServerRestore(
           setDialog(null);
           if (decision.kind === "conflict") {
             setPhase("conflict");
+            setConflictServer(latestServer);
+            setErrorMessage("서버 확인 중 로컬과 서버가 모두 변경되었습니다. 서버로 덮어쓰거나 내 메모 유지를 선택해 주세요.");
           } else {
             setReadyBaseline({
               snapshot: latestServer,
@@ -312,9 +348,108 @@ export function useWebStartupServerRestore(
     })();
   }, [dialog, phase, setReadyBaseline]);
 
+  const resolveConflictWithServer = useCallback(() => {
+    if (phase !== "conflict") return;
+    const operation = ++operationRef.current;
+    setPhase("restoring");
+    setErrorMessage(null);
+
+    void (async () => {
+      try {
+        const currentOptions = optionsRef.current;
+        const userId = currentOptions.user?.uid;
+        const services = currentOptions.getServices();
+        if (!userId || !services) throw new Error("서버 백업 세션이 준비되지 않았습니다.");
+
+        const latestServer = await currentOptions.getLatestServerSummary(services.gateway, userId);
+        if (!latestServer) throw new Error("최신 서버 메모를 불러오지 못했습니다.");
+        if (operation !== operationRef.current || currentOptions.user?.uid !== userId) return;
+
+        const payload = await memoSync.loadBackupSnapshot(services.gateway, userId, latestServer.id);
+        if (!payload) throw new Error("최신 서버 메모를 불러오지 못했습니다.");
+        if (operation !== operationRef.current || optionsRef.current.user?.uid !== userId) return;
+
+        await currentOptions.restoreServerMemos(userId, payload);
+        if (operation !== operationRef.current || optionsRef.current.user?.uid !== userId) return;
+
+        const restoredHash = await createStartupContentHash(userId, payload.memos);
+        writeStartupCheckpoint(currentOptions.storage, {
+          userId,
+          snapshotId: latestServer.id,
+          contentHash: restoredHash,
+          serverSavedAt: latestServer.savedAt,
+        });
+        if (operation !== operationRef.current) return;
+        setConflictServer(null);
+        setDialog(null);
+        setErrorMessage(null);
+        setReadyBaseline({
+          snapshot: latestServer,
+          contentHash: restoredHash,
+          localFingerprint: currentOptions.getLocalFingerprint(payload.memos),
+        });
+        currentOptions.onStatus(
+          `충돌을 해소했습니다. 서버 메모 ${payload.memos.length}개를 불러왔고, 기존 로컬 메모는 안전 지점에 보관했습니다.`
+        );
+      } catch (error) {
+        if (operation !== operationRef.current) return;
+        setPhase("conflict");
+        setErrorMessage(error instanceof Error ? error.message : "서버 메모를 불러오지 못했습니다.");
+        optionsRef.current.onStatus("서버 메모를 불러오지 못했습니다. 다시 시도해 주세요.");
+      }
+    })();
+  }, [phase, setReadyBaseline]);
+
+  const keepLocalAndSyncCheckpoint = useCallback(() => {
+    if (phase !== "conflict") return;
+    const operation = ++operationRef.current;
+    setPhase("restoring");
+    setErrorMessage(null);
+
+    void (async () => {
+      try {
+        const currentOptions = optionsRef.current;
+        const userId = currentOptions.user?.uid;
+        const services = currentOptions.getServices();
+        if (!userId || !services) throw new Error("서버 백업 세션이 준비되지 않았습니다.");
+
+        const localMemos = await currentOptions.repository.listMemos();
+        const localHash = await createStartupContentHash(userId, localMemos);
+        const latestServer = await currentOptions.getLatestServerSummary(services.gateway, userId);
+        if (!latestServer) throw new Error("최신 서버 메모를 확인할 수 없습니다.");
+        if (operation !== operationRef.current || currentOptions.user?.uid !== userId) return;
+
+        writeStartupCheckpoint(currentOptions.storage, {
+          userId,
+          snapshotId: latestServer.id,
+          contentHash: localHash,
+          serverSavedAt: latestServer.savedAt,
+        });
+        if (operation !== operationRef.current) return;
+        setConflictServer(null);
+        setDialog(null);
+        setErrorMessage(null);
+        setReadyBaseline({
+          snapshot: latestServer,
+          contentHash: localHash,
+          localFingerprint: currentOptions.getLocalFingerprint(localMemos),
+        });
+        currentOptions.onStatus(
+          "내 메모를 유지하기로 했습니다. 다음 자동 백업 때 서버에 올립니다. 다음 실행 때 다시 묻지 않습니다."
+        );
+      } catch (error) {
+        if (operation !== operationRef.current) return;
+        setPhase("conflict");
+        setErrorMessage(error instanceof Error ? error.message : "로컬 유지 처리에 실패했습니다.");
+        optionsRef.current.onStatus("로컬 유지 처리에 실패했습니다. 다시 시도해 주세요.");
+      }
+    })();
+  }, [phase, setReadyBaseline]);
+
   return {
     phase,
     dialog,
+    conflictServer,
     errorMessage,
     isBusy: phase === "checking" || phase === "restoring",
     isReadyForAutoBackup:
@@ -329,5 +464,7 @@ export function useWebStartupServerRestore(
     baseline,
     accept,
     decline,
+    resolveConflictWithServer,
+    keepLocalAndSyncCheckpoint,
   };
 }

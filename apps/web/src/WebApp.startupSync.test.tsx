@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryMemoRepository, createMemo } from "@h-memo/memo-core";
 import {
+  createLocalSyncCheckpoint,
   readLocalSyncCheckpoint,
+  writeLocalSyncCheckpoint,
   type BackupGateway,
   type BackupSnapshotSummary,
   type MemoBackupPayload,
@@ -15,6 +17,7 @@ import {
   useWebStartupServerRestore,
   type UseWebStartupServerRestoreOptions,
 } from "./features/startup-sync/useWebStartupServerRestore";
+import { StartupSyncNotice } from "./features/startup-sync/StartupSyncNotice";
 
 const USER = { uid: "startup-web-user" };
 
@@ -49,18 +52,29 @@ function StartupHarness({
   options: UseWebStartupServerRestoreOptions;
 }) {
   const state = useWebStartupServerRestore(options);
-  return state.dialog ? (
-    <StartupServerRestoreDialog
-      isOpen
-      isBusy={state.isBusy}
-      local={state.dialog.local}
-      server={state.dialog.server}
-      errorMessage={state.errorMessage}
-      onAccept={state.accept}
-      onDecline={state.decline}
-    />
-  ) : (
-    <output data-testid="startup-phase">{state.phase}</output>
+  return (
+    <>
+      {state.dialog ? (
+        <StartupServerRestoreDialog
+          isOpen
+          isBusy={state.isBusy}
+          local={state.dialog.local}
+          server={state.dialog.server}
+          errorMessage={state.errorMessage}
+          onAccept={state.accept}
+          onDecline={state.decline}
+        />
+      ) : (
+        <output data-testid="startup-phase">{state.phase}</output>
+      )}
+      <StartupSyncNotice
+        phase={state.phase}
+        message={state.errorMessage}
+        isBusy={state.isBusy}
+        onResolveWithServer={state.resolveConflictWithServer}
+        onKeepLocal={state.keepLocalAndSyncCheckpoint}
+      />
+    </>
   );
 }
 
@@ -116,6 +130,55 @@ describe("WebApp startup server restore", () => {
       expect(restoreServerMemos).toHaveBeenCalledWith(USER.uid, payload);
       expect(screen.getByTestId("startup-phase")).toHaveTextContent("ready");
     });
+    expect(readLocalSyncCheckpoint(window.localStorage, USER.uid)).toMatchObject({
+      snapshotId: "server-snapshot-2030",
+    });
+  });
+
+  it("resolves a conflict with the server and clears the repeat warning", async () => {
+    const user = userEvent.setup();
+    writeLocalSyncCheckpoint(
+      window.localStorage,
+      createLocalSyncCheckpoint({
+        userId: USER.uid,
+        snapshotId: "server-snapshot-older",
+        contentHash: "a".repeat(64),
+        serverSavedAt: "2026-08-28T01:00:00.000Z",
+      })
+    );
+    const serverMemo = createMemo({
+      id: "web-conflict-server",
+      now: "2030-01-02T02:00:00.000Z",
+      plainText: "서버 충돌본",
+    });
+    const payload: MemoBackupPayload = {
+      version: 1,
+      userId: USER.uid,
+      createdAt: "2030-01-02T03:00:00.000Z",
+      memos: [serverMemo],
+    };
+    const restoreServerMemos = vi.fn().mockResolvedValue(undefined);
+    const options: UseWebStartupServerRestoreOptions = {
+      user: USER,
+      isServerReady: true,
+      hasLoadedMemos: true,
+      repository: new MemoryMemoRepository([
+        createMemo({ id: "web-conflict-local", now: "2030-01-03T01:00:00.000Z", plainText: "로컬 변경" }),
+      ]),
+      storage: window.localStorage,
+      getServices: () => ({ gateway: createGateway(payload) }),
+      getLatestServerSummary: vi.fn().mockResolvedValue({ ...createSummary(), contentHash: "c".repeat(64) }),
+      getLocalFingerprint: (memos) => memos.map((memo) => memo.id).join(","),
+      restoreServerMemos,
+      onStatus: vi.fn(),
+    };
+
+    render(<StartupHarness options={options} />);
+    await screen.findByRole("alertdialog", { name: "로컬과 서버 충돌 해소" });
+    await user.click(screen.getByRole("button", { name: "서버로 덮어쓰기" }));
+
+    await waitFor(() => expect(screen.getByTestId("startup-phase")).toHaveTextContent("ready"));
+    expect(restoreServerMemos).toHaveBeenCalledWith(USER.uid, payload);
     expect(readLocalSyncCheckpoint(window.localStorage, USER.uid)).toMatchObject({
       snapshotId: "server-snapshot-2030",
     });

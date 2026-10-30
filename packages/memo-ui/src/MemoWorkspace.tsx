@@ -5,6 +5,12 @@ import { SettingsPanel, type SettingsPanelProps } from "./SettingsPanel";
 
 const UPDATE_HISTORY = [
   {
+    date: "2026-10-30",
+    title: "충돌 반복 안내 해소",
+    detail:
+      "로컬과 서버가 모두 바뀌면 서버로 덮어쓰기 또는 내 메모 유지를 선택할 수 있습니다. 선택하면 다음 실행 때 다시 묻지 않고, 서버로 덮어쓸 때는 기존 로컬 메모를 안전 지점에 보관합니다.",
+  },
+  {
     date: "2026-10-12",
     title: "시작 비교 안정화와 수동 업데이트 확인",
     detail:

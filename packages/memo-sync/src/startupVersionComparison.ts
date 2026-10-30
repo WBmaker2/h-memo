@@ -39,6 +39,28 @@ export function getLatestMemoUpdatedAt(memos: Memo[]): string | null {
   }, null);
 }
 
+function shortHash(value: string | null): string {
+  if (value === null) return "null";
+  return value.length > 8 ? value.slice(0, 8) : value;
+}
+
+export function formatStartupVersionDiagnosis(input: {
+  local: StartupLocalVersion;
+  server: BackupSnapshotSummary | null;
+  checkpoint: LocalSyncCheckpoint | null;
+  decision: StartupVersionDecisionKind;
+}): string {
+  const { local, server, checkpoint, decision } = input;
+  return [
+    `decision=${decision}`,
+    `local=${shortHash(local.contentHash)}`,
+    `serverId=${server?.id ?? "null"}`,
+    `server=${shortHash(server?.contentHash ?? null)}`,
+    `checkpointId=${checkpoint?.snapshotId ?? "null"}`,
+    `checkpoint=${shortHash(checkpoint?.contentHash ?? null)}`,
+  ].join(" ");
+}
+
 export function compareStartupVersions(input: {
   local: StartupLocalVersion;
   server: BackupSnapshotSummary | null;

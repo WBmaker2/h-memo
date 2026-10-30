@@ -177,6 +177,8 @@ describe("LandingPage", () => {
 
     const dialog = screen.getByRole("dialog", { name: "업데이트 기록" });
     expect(dialog).toBeInTheDocument();
+    expect(screen.getByText("충돌 반복 안내 해소")).toBeInTheDocument();
+    expect(screen.getByText("2026-10-30")).toBeInTheDocument();
     expect(screen.getByText("시작 비교 안정화와 수동 업데이트 확인")).toBeInTheDocument();
     expect(screen.getByText("2026-10-12")).toBeInTheDocument();
     expect(screen.getByText("Windows 앱 자동 업데이트 안내 개선")).toBeInTheDocument();

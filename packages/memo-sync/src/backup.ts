@@ -49,6 +49,7 @@ export {
 } from "./localSyncCheckpoint";
 export {
   compareStartupVersions,
+  formatStartupVersionDiagnosis,
   getLatestMemoUpdatedAt,
   type StartupLocalVersion,
   type StartupVersionDecision,

@@ -66,6 +66,7 @@ import {
   hasWebBackupConflict,
 } from "./webAutoBackup";
 import { useWebStartupServerRestore } from "./features/startup-sync/useWebStartupServerRestore";
+import { StartupSyncNotice } from "./features/startup-sync/StartupSyncNotice";
 
 const FIREBASE_UNAVAILABLE_MESSAGE =
   "구글 로그인 설정이 아직 준비되지 않아 서버 백업 기능을 사용할 수 없습니다.";
@@ -1673,6 +1674,13 @@ export function WebApp() {
           onDecline={startupServerRestore.decline}
         />
       ) : null}
+      <StartupSyncNotice
+        phase={startupServerRestore.phase}
+        message={startupServerRestore.errorMessage}
+        isBusy={startupServerRestore.isBusy}
+        onResolveWithServer={startupServerRestore.resolveConflictWithServer}
+        onKeepLocal={startupServerRestore.keepLocalAndSyncCheckpoint}
+      />
     </>
   );
 }
