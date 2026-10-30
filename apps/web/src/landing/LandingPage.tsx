@@ -24,6 +24,7 @@ const RELEASE_HISTORY: ReleaseHistoryEntry[] = [
     title: "충돌 반복 안내 해소",
     items: [
       "로컬과 서버가 모두 바뀌면 서버로 덮어쓰기 또는 내 메모 유지를 선택할 수 있습니다. 선택하면 다음 실행 때 다시 묻지 않고, 서버로 덮어쓸 때는 기존 로컬 메모를 안전 지점에 보관합니다.",
+      "랜딩 페이지의 제품 미리보기를 2026년 10월 최신 웹앱 실행 화면으로 교체하고 다운로드 안내를 다듬었습니다.",
     ],
   },
   {
@@ -185,19 +186,50 @@ export function LandingPage() {
   return (
     <main className="landing-page">
       <header className="landing-page__hero">
-        <p className="landing-page__eyebrow">교사 업무 메모 도우미</p>
-        <h1>H Memo</h1>
-        <p className="landing-page__tagline">
-          학교 업무에 필요한 메모를 저장하고 백업하는 Windows 메모앱
-        </p>
+        <div className="landing-page__hero-copy">
+          <p className="landing-page__badge">
+            {releaseVersion} · 2026-10-30 충돌 반복 안내 해소
+          </p>
+          <h1>H Memo</h1>
+          <p className="landing-page__tagline">
+            학교 업무 메모를 빠르게 기록하고, 로컬과 서버가 엇갈려도 안전하게 지켜주는 Windows 메모앱
+          </p>
+          <p className="landing-page__hero-sub">
+            로컬과 서버가 모두 바뀌면 서버로 덮어쓰기 또는 내 메모 유지를 고를 수 있고, 고른 뒤에는
+            다음 실행 때 다시 묻지 않습니다.
+          </p>
+          <div className="landing-page__hero-actions">
+            <a
+              href={WEB_APP_URL}
+              className="landing-page__button landing-page__button--web btn-pulse"
+              target="_blank"
+              rel="noreferrer"
+            >
+              웹앱 바로 실행
+            </a>
+            <a href="#download" className="landing-page__button">
+              Windows 설치 파일 받기
+            </a>
+          </div>
+        </div>
+        <figure className="landing-page__hero-figure">
+          <img
+            src={getInstallImagePath("h-memo-product-preview.png")}
+            alt="H Memo 웹앱 실행 화면 미리보기"
+            className="landing-page__image landing-page__image--hero"
+            loading="eager"
+          />
+          <figcaption>2026년 10월 웹앱 실행 화면: 주간 업무와 수업 아이디어 메모</figcaption>
+        </figure>
       </header>
 
-      <section className="landing-page__section landing-page__section--download">
+      <section className="landing-page__section landing-page__section--download" id="download" aria-label="프로그램 다운로드">
         <h2>프로그램 다운로드</h2>
         <p className="landing-page__release-notice">
-          {releaseVersion} 최신 버전 설치 파일을 받을 수 있습니다. v1.0.1부터 대한민국
-          시간 기준 일별 백업 보존과 자동 릴리스가 적용됩니다. Windows 앱은 새 버전을
-          자동으로 확인하고 원하는 시점에 업데이트할 수 있습니다.
+          {releaseVersion} 최신 버전 설치 파일을 받을 수 있습니다. 로컬과 서버가 모두
+          바뀌면 서버로 덮어쓰기 또는 내 메모 유지를 선택하고, 다음 실행 때 다시 묻지 않습니다.
+          서버로 덮어쓸 때는 기존 로컬 메모를 안전 지점에 보관합니다. 대한민국 시간 기준 일별 백업
+          보존과 자동 업데이트 확인도 함께 제공합니다.
         </p>
         <p>
           Windows MSI/EXE 설치 파일과 웹앱 실행 링크를 제공합니다. macOS 버전은 현재
@@ -348,9 +380,13 @@ export function LandingPage() {
         <h2>앱 소개</h2>
         <p>
           학교 행정 메모, 점검 체크리스트, 수업 운영 아이디어 등을 빠르게 기록하고
-          로컬 우선으로 저장한 뒤 필요한 경우 서버로 백업할 수 있습니다.
+          로컬 우선으로 저장한 뒤 필요한 경우 서버로 백업할 수 있습니다. 시작할 때 서버와
+          비교해 엇갈린 변경이 있으면 덮어쓰기·유지 중 하나를 고르고, 다음부터는 같은
+          질문을 반복하지 않습니다.
         </p>
         <ul className="landing-page__feature-grid">
+          <li className="landing-page__feature--new">로컬·서버 충돌 시 서버로 덮어쓰기 또는 내 메모 유지 선택</li>
+          <li className="landing-page__feature--new">충돌 해소 후 반복 안내 없음, 서버 덮어쓰기 전 안전 지점 보관</li>
           <li>메모를 로컬 파일처럼 빠르게 저장</li>
           <li>메모창 여러 개를 동시에 열어 업무를 분리하여 관리</li>
           <li>TXT/JSON 로컬 백업 내보내기</li>
@@ -368,8 +404,9 @@ export function LandingPage() {
             src={getInstallImagePath("h-memo-product-preview.png")}
             alt="H Memo 메모 관리 화면 미리보기"
             className="landing-page__image landing-page__image--preview"
+            loading="lazy"
           />
-          <figcaption>메모 본문, 메모 목록, 백업 동작이 함께 보이는 화면</figcaption>
+          <figcaption>2026년 10월 최신 실행 화면: 노란 메모지에 주간 업무와 수업 아이디어를 적어둔 모습. 메뉴에서 새 메모, 서버 백업, 업데이트 내역을 바로 열 수 있습니다.</figcaption>
         </figure>
       </section>
 
